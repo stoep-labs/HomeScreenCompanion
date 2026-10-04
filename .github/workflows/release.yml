@@ -1,0 +1,140 @@
+# Fork-only CI (brazerZa/HomeScreenCompanion): build every PR, and on every push to main
+# build a release and publish it as a GitHub Release, like Collectify does.
+#
+# Kept out of upstream PRs on purpose: HSC itself has no CI and its project file builds on
+# Windows only (Emby DLLs from %AppData%, powershell version stamp). This workflow works
+# around both without touching HSC's files, so pulling upstream changes never conflicts.
+#
+# Version = HSC's <Version> major.minor.build + the run number, e.g. 4.2.0.12. Nothing is
+# committed back to main.
+name: Build and release
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+env:
+  PROJECT: HomeScreenCompanion/HomeScreenCompanion.csproj
+  DLL: HomeScreenCompanion/bin/Release/netstandard2.0/HomeScreenCompanion.dll
+  # Emby reference assemblies; the plugin binds to the server's own copies at runtime.
+  EMBY_SDK_VERSION: 4.10.0.24-beta2
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Fetch Emby reference DLLs
+        run: |
+          set -euo pipefail
+          SYS="$RUNNER_TEMP/emby/Emby-Server/system"
+          mkdir -p "$SYS"
+          for pkg in mediabrowser.common mediabrowser.server.core; do
+            curl -fsSL -o "$RUNNER_TEMP/$pkg.nupkg" \
+              "https://api.nuget.org/v3-flatcontainer/$pkg/$EMBY_SDK_VERSION/$pkg.$EMBY_SDK_VERSION.nupkg"
+            unzip -q -o -j "$RUNNER_TEMP/$pkg.nupkg" 'lib/netstandard2.0/*.dll' -d "$SYS"
+          done
+          ls "$SYS"
+
+      # The project stamps the version into configPage.html with Windows powershell; the
+      # footer reads the version from the server at runtime, so skipping it changes nothing.
+      - name: Skip Windows-only build step
+        run: |
+          cat > Directory.Build.targets <<'EOF'
+          <Project>
+            <Target Name="InjectVersionIntoHtml" Condition="'$(OS)' != 'Windows_NT'" />
+          </Project>
+          EOF
+
+      - name: Work out version
+        run: |
+          set -euo pipefail
+          BASE=$(grep -oP '(?<=<Version>)[0-9]+\.[0-9]+\.[0-9]+' "$PROJECT")
+          VER="${BASE}.${GITHUB_RUN_NUMBER}"
+          echo "VER=${VER}" >> "$GITHUB_ENV"
+          echo "TAG=v${VER}" >> "$GITHUB_ENV"
+          echo "Version ${VER}"
+
+      - name: Build
+        run: >
+          dotnet build "$PROJECT" -c Release
+          -p:AppData="$RUNNER_TEMP/emby"
+          -p:Version="$VER"
+          --verbosity minimal
+
+      - name: Upload plugin DLL artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: HomeScreenCompanion-${{ env.VER }}
+          path: ${{ env.DLL }}
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: Home Screen Companion ${{ env.VER }} (Stoep fork)
+          files: ${{ env.DLL }}
+          fail_on_unmatched_files: true
+          make_latest: true
+          body: |
+            Release build from `${{ github.sha }}` on `main` of the Stoep fork of
+            [Home Screen Companion](https://github.com/soderlund91/HomeScreenCompanion).
+
+            Install via [Emby.GitHubRepoPluginInstall](https://github.com/bakes82/Emby.GitHubRepoPluginInstall):
+            add `https://github.com/${{ github.repository }}`, install/update, restart Emby.
+
+            Or download `HomeScreenCompanion.dll`, copy it into your Emby plugins folder and restart Emby.
+            It replaces the upstream plugin (same plugin id); settings are kept.
+
+      - name: Prune old releases
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          KEEP=5
+          API="https://api.github.com/repos/${{ github.repository }}/releases?per_page=100"
+          mapfile -t OLD < <(
+            curl -fsSL -H "Authorization: Bearer ${GH_TOKEN}" -H "Accept: application/vnd.github+json" "$API" \
+              | python3 -c "
+          import json, sys
+          releases = json.load(sys.stdin)
+          releases.sort(key=lambda r: r.get('created_at') or '', reverse=True)
+          for r in releases[${KEEP}:]:
+              print(f\"{r['id']}\t{r['tag_name']}\")
+          "
+          )
+          for row in "${OLD[@]+"${OLD[@]}"}"; do
+            rid="${row%%$'\t'*}"
+            tag="${row#*$'\t'}"
+            echo "Pruning old release: ${tag} (${rid})"
+            curl -fsSL -X DELETE \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/${rid}"
+            curl -fsSL -X DELETE \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/git/refs/tags/${tag}" \
+              || true
+          done
