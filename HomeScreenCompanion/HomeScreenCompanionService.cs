@@ -1907,6 +1907,29 @@ public class HomeScreenCompanionService : IService
         {
             var (poster, thumb) = FetchImageSources(item, httpClient, tempDir, providerManager, libraryManager, fileSystem, log);
 
+            // "top10": Netflix-style art composed from the poster — a portrait version for the
+            // Primary image and a landscape tile for the Thumb, so the row works with either image
+            // type. The big numeral only has room for ranks 1-10; later ranks get the circle badge.
+            if (string.Equals(badgeStyle, "top10", StringComparison.OrdinalIgnoreCase))
+            {
+                bool tile = poster != null && rank <= 10;
+
+                if (tile)
+                    try { TopTenTileRenderer.RenderPoster(poster!, rank, outputBase + ".jpg"); }
+                    catch (Exception ex) { log?.Invoke($"Top-list: top 10 poster failed for '{item.Name}' — {ex.Message}"); }
+                else if (poster != null)
+                    try { CreateRankedPoster(poster, rank, outputBase + ".jpg", "neutral"); }
+                    catch (Exception ex) { log?.Invoke($"Top-list: poster badge failed for '{item.Name}' — {ex.Message}"); }
+
+                if (tile)
+                    try { TopTenTileRenderer.Render(poster!, rank, outputBase + "-thumb.jpg"); }
+                    catch (Exception ex) { log?.Invoke($"Top-list: top 10 tile failed for '{item.Name}' — {ex.Message}"); }
+                else if (thumb != null)
+                    try { CreateRankedPoster(thumb, rank, outputBase + "-thumb.jpg", "neutral"); }
+                    catch (Exception ex) { log?.Invoke($"Top-list: thumb badge failed for '{item.Name}' — {ex.Message}"); }
+                return;
+            }
+
             if (poster != null)
                 try { CreateRankedPoster(poster, rank, outputBase + ".jpg", badgeStyle); }
                 catch (Exception ex) { log?.Invoke($"Top-list: poster badge failed for '{item.Name}' — {ex.Message}"); }

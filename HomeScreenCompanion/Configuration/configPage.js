@@ -4802,7 +4802,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         { val: 'ocean-blue', label: 'Ocean blue', bg: 'rgba(46,134,193,0.82)',   textColor: '#fff' },
         { val: 'soft-red',   label: 'Soft red',   bg: 'rgba(201,69,69,0.82)',    textColor: '#fff' },
         { val: 'violet',     label: 'Violet',     bg: 'rgba(123,82,181,0.82)',   textColor: '#fff' },
-        { val: 'none',       label: 'No number',  bg: 'transparent',             textColor: '#fff', noNumber: true }
+        { val: 'none',       label: 'No number',  bg: 'transparent',             textColor: '#fff', noNumber: true },
+        { val: 'top10',      label: 'Top 10 tile', bg: '#0d0d10',                textColor: '#0d0d10', tile: true }
     ];
 
     function buildBadgePickerHtml(selectedVal) {
@@ -4817,7 +4818,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var active = s.val === sel;
                 return '<label class="tl-badge-opt" style="' + (active ? cardActive : cardInactive) + '">' +
                     '<input type="radio" name="tlBadgeStyle" value="' + s.val + '" style="position:absolute;opacity:0;pointer-events:none;"' + (active ? ' checked' : '') + '>' +
-                    '<div style="width:46px;height:46px;border-radius:50%;background:' + s.bg + ';display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;color:' + s.textColor + ';font-family:sans-serif;">' + (s.noNumber ? '' : '7') + '</div>' +
+                    (s.tile
+                        ? '<div style="width:82px;height:46px;border-radius:4px;background:' + s.bg + ';display:flex;align-items:flex-end;justify-content:center;gap:2px;overflow:hidden;"><span style="font-size:44px;line-height:40px;font-weight:900;color:' + s.textColor + ';-webkit-text-stroke:1.5px #9696a0;font-family:Impact,sans-serif;">7</span><span style="width:24px;height:36px;margin-bottom:5px;border-radius:2px;background:linear-gradient(160deg,#6b7a8f,#2c3440);"></span></div>'
+                        : '<div style="width:46px;height:46px;border-radius:50%;background:' + s.bg + ';display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;color:' + s.textColor + ';font-family:sans-serif;">' + (s.noNumber ? '' : '7') + '</div>') +
                     '<span style="font-size:0.78em;opacity:0.8;white-space:nowrap;">' + s.label + '</span>' +
                     '</label>';
             }).join('') +
