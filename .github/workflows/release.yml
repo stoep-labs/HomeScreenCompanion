@@ -1,10 +1,6 @@
 # Fork-only CI (stoep-labs/HomeScreenCompanion): build every PR, and on every push to main
 # build a release and publish it as a GitHub Release, like Collectify does.
 #
-# The repo is public (a fork of a public repo), so anyone can open a PR. PR builds therefore
-# run on GitHub-hosted runners; only pushes to main / manual runs (org members) use the
-# self-hosted stoep runners.
-#
 # Kept out of upstream PRs on purpose: HSC itself has no CI and its project file builds on
 # Windows only (Emby DLLs from %AppData%, powershell version stamp). This workflow works
 # around both without touching HSC's files, so pulling upstream changes never conflicts.
@@ -35,18 +31,15 @@ env:
 
 jobs:
   build:
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted","Linux","X64","stoep"]') }}
+    runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v7
 
-      # Self-hosted stoep runners are non-root; install the SDK under the work dir.
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "8.0.x"
-        env:
-          DOTNET_INSTALL_DIR: ${{ runner.temp }}/dotnet
 
       - name: Fetch Emby reference DLLs
         run: |
@@ -56,13 +49,7 @@ jobs:
           for pkg in mediabrowser.common mediabrowser.server.core; do
             curl -fsSL -o "$RUNNER_TEMP/$pkg.nupkg" \
               "https://api.nuget.org/v3-flatcontainer/$pkg/$EMBY_SDK_VERSION/$pkg.$EMBY_SDK_VERSION.nupkg"
-            python3 - "$RUNNER_TEMP/$pkg.nupkg" "$SYS" <<'PY'
-          import os, sys, zipfile
-          with zipfile.ZipFile(sys.argv[1]) as z:
-              for n in z.namelist():
-                  if n.startswith("lib/netstandard2.0/") and n.endswith(".dll"):
-                      open(os.path.join(sys.argv[2], os.path.basename(n)), "wb").write(z.read(n))
-          PY
+            unzip -q -o -j "$RUNNER_TEMP/$pkg.nupkg" 'lib/netstandard2.0/*.dll' -d "$SYS"
           done
           ls "$SYS"
 
