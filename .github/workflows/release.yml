@@ -92,7 +92,7 @@ jobs:
         with:
           tag_name: ${{ env.TAG }}
           target_commitish: ${{ github.sha }}
-          name: Home Screen Companion ${{ env.VER }} (Stoep fork)
+          name: ${{ env.TAG }}
           files: ${{ env.DLL }}
           fail_on_unmatched_files: true
           make_latest: true
