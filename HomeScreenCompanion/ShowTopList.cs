@@ -129,6 +129,17 @@ namespace HomeScreenCompanion
             foreach (var old in previous.Where(p => !entries.Any(e => SameEntry(e, p))))
                 RemoveEntry(old, ResolveUsers(AllKnownUserIds(tl)));
 
+            // Users no longer targeted lose the favourites too, or a later show list of theirs
+            // would show this list's tags in its row.
+            var targets = new HashSet<string>(tl.HomeSectionUserIds ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
+            var droppedUsers = ResolveUsers(AllKnownUserIds(tl).Where(id => !targets.Contains(id)));
+            if (droppedUsers.Count > 0)
+                foreach (var entry in entries)
+                {
+                    var tagItem = FindTagItem(entry.TagName);
+                    if (tagItem != null) SetFavourite(droppedUsers, tagItem, false);
+                }
+
             tl.ShowEntries = entries;
             SyncSections(tl, settings);
 
