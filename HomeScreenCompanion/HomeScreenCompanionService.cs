@@ -168,6 +168,8 @@ namespace HomeScreenCompanion
     {
         public List<string> FolderNames { get; set; } = new List<string>();
         public Dictionary<string, int> MovieCounts { get; set; } = new Dictionary<string, int>();
+        // Names (lower case) of the lists in FolderNames that are show top-lists.
+        public List<string> ShowLists { get; set; } = new List<string>();
     }
 
     [Route("/HomeScreenCompanion/TopList/ManualItems", "GET")]
@@ -186,6 +188,7 @@ namespace HomeScreenCompanion
         public string BadgeStyle { get; set; } = "neutral";
         public List<string> UserIds { get; set; } = new List<string>();
         public string Message { get; set; } = "";
+        public string ContentType { get; set; } = "Movies";
     }
 
     [Route("/HomeScreenCompanion/TopList/Delete", "POST")]
@@ -199,6 +202,26 @@ namespace HomeScreenCompanion
         public bool Success { get; set; }
         public string FolderPath { get; set; } = "";
         public string Message { get; set; } = "";
+    }
+
+    // Creates or updates a show top-list (tags instead of a library, see ShowTopList).
+    [Route("/HomeScreenCompanion/TopList/PrepareShowList", "POST")]
+    [Authenticated(Roles = "Admin")]
+    public class PrepareShowTopListRequest : IReturn<PrepareShowTopListResponse>
+    {
+        public string ListName { get; set; } = "";
+        public string CustomName { get; set; } = "";
+        public string DisplayMode { get; set; } = "";
+        public string ImageType { get; set; } = "";
+        public List<string> UserIds { get; set; } = new List<string>();
+        public List<string> SeriesIds { get; set; } = new List<string>();
+    }
+
+    public class PrepareShowTopListResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = "";
+        public List<string> Log { get; set; } = new List<string>();
     }
 
     [Route("/HomeScreenCompanion/TopList/SyncHomeSections", "POST")]
@@ -2155,7 +2178,17 @@ public class HomeScreenCompanionService : IService
                         movieCounts[name.ToLowerInvariant()] = Directory.GetFiles(dir, "*.strm").Length;
                     }
                 }
-                return new GetTopListsResponse { FolderNames = folderNames, MovieCounts = movieCounts };
+
+                // Show top-lists have no folder of .strm files; they live in the configuration.
+                var showLists = new List<string>();
+                foreach (var tl in (Plugin.Instance.Configuration.TopLists ?? new List<TopListHomeSection>()).Where(ShowTopList.IsShowList))
+                {
+                    var name = SanitizeFolderName(tl.TagName);
+                    if (!folderNames.Contains(name, StringComparer.OrdinalIgnoreCase)) folderNames.Add(name);
+                    movieCounts[name.ToLowerInvariant()] = (tl.ShowEntries ?? new List<ShowTopListEntry>()).Count;
+                    showLists.Add(name.ToLowerInvariant());
+                }
+                return new GetTopListsResponse { FolderNames = folderNames, MovieCounts = movieCounts, ShowLists = showLists };
             }
             catch
             {
@@ -2168,6 +2201,11 @@ public class HomeScreenCompanionService : IService
             try
             {
                 var sanitized  = SanitizeFolderName(request.ListName);
+                var showList = (Plugin.Instance.Configuration.TopLists ?? new List<TopListHomeSection>())
+                    .FirstOrDefault(t => ShowTopList.IsShowList(t) && string.Equals(SanitizeFolderName(t.TagName), sanitized, StringComparison.OrdinalIgnoreCase));
+                if (showList != null)
+                    return GetShowListItems(showList);
+
                 var folderPath = Path.Combine(Plugin.Instance.DataFolderPath, "toplists", sanitized);
                 if (!Directory.Exists(folderPath))
                     return new GetManualTopListItemsResponse { Success = false, Message = "Folder not found." };
@@ -2214,10 +2252,125 @@ public class HomeScreenCompanionService : IService
             }
         }
 
+        public object Post(PrepareShowTopListRequest request)
+        {
+            try
+            {
+                var config = Plugin.Instance?.Configuration;
+                if (config == null)
+                    return new PrepareShowTopListResponse { Message = "Plugin configuration not available." };
+
+                var listName = (request.ListName ?? "").Trim();
+                var userIds = (request.UserIds ?? new List<string>()).Where(u => !string.IsNullOrWhiteSpace(u))
+                    .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                var series = ResolveSeries(request.SeriesIds ?? new List<string>());
+                if (listName.Length == 0) return new PrepareShowTopListResponse { Message = "A list name is required." };
+                if (userIds.Count == 0) return new PrepareShowTopListResponse { Message = "Please select at least one target user." };
+                if (series.Count == 0) return new PrepareShowTopListResponse { Message = "Please add at least one show." };
+
+                config.TopLists ??= new List<TopListHomeSection>();
+                var tl = config.TopLists.FirstOrDefault(t => string.Equals(t.TagName, listName, StringComparison.OrdinalIgnoreCase));
+                if (tl != null && !ShowTopList.IsShowList(tl))
+                    return new PrepareShowTopListResponse { Message = $"A movie top-list called '{listName}' already exists." };
+
+                var clash = ShowTopList.UsersInOtherShowLists(config, listName, userIds);
+                if (clash.Count > 0)
+                {
+                    var names = clash.Select(id => Guid.TryParse(id, out var g) ? _userManager.GetUserById(g)?.Name ?? id : id);
+                    return new PrepareShowTopListResponse
+                    {
+                        Message = "Each user can have only one show top-list. Already on another show top-list: " + string.Join(", ", names)
+                    };
+                }
+
+                if (tl == null)
+                {
+                    tl = new TopListHomeSection { TagName = listName, ContentType = "Shows", HomeSectionLibraryId = "" };
+                    config.TopLists.Add(tl);
+                }
+                tl.HomeSectionUserIds = userIds;
+                tl.MaxItems = ShowTopList.MaxRanks;
+
+                var settings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                try
+                {
+                    if (!string.IsNullOrEmpty(tl.HomeSectionSettings) && tl.HomeSectionSettings != "{}")
+                        settings = _jsonSerializer.DeserializeFromString<Dictionary<string, string>>(tl.HomeSectionSettings) ?? settings;
+                }
+                catch { }
+                settings["CustomName"] = string.IsNullOrWhiteSpace(request.CustomName) ? listName : request.CustomName.Trim();
+                settings["DisplayMode"] = request.DisplayMode ?? "";
+                settings["ImageType"] = request.ImageType ?? "";
+                settings["BadgeStyle"] = "top10";
+                tl.HomeSectionSettings = _jsonSerializer.SerializeToString(settings);
+
+                var log = NewShowTopList().Apply(config, tl, series);
+                Plugin.Instance!.SaveConfiguration();
+                _logger.Info($"Show top-list '{listName}': {string.Join(" · ", log)}");
+
+                return new PrepareShowTopListResponse
+                {
+                    Success = true,
+                    Message = $"{tl.ShowEntries.Count} of {Math.Min(series.Count, ShowTopList.MaxRanks)} show(s) ranked.",
+                    Log = log
+                };
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorException("Show top-list: save failed", ex);
+                return new PrepareShowTopListResponse { Message = ex.Message };
+            }
+        }
+
+        private GetManualTopListItemsResponse GetShowListItems(TopListHomeSection tl)
+        {
+            var settings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            try { settings = _jsonSerializer.DeserializeFromString<Dictionary<string, string>>(tl.HomeSectionSettings ?? "{}") ?? settings; }
+            catch { }
+            var shows = (tl.ShowEntries ?? new List<ShowTopListEntry>())
+                .Select(e => Guid.TryParse(e.SeriesId, out var g) ? _libraryManager.GetItemById(g) : null)
+                .Where(i => i != null)
+                .Select(i => new MovieItem { Name = i!.Name ?? "", Year = i.ProductionYear, ImdbId = i.GetProviderId("Imdb") ?? "", ItemId = i.Id.ToString("N") })
+                .ToList();
+            return new GetManualTopListItemsResponse
+            {
+                Success     = true,
+                ContentType = "Shows",
+                Movies      = shows,
+                CustomName  = settings.TryGetValue("CustomName", out var cn) ? cn : "",
+                DisplayMode = settings.TryGetValue("DisplayMode", out var dm) ? dm : "",
+                ImageType   = settings.TryGetValue("ImageType", out var it) ? it : "",
+                BadgeStyle  = "top10",
+                UserIds     = tl.HomeSectionUserIds ?? new List<string>()
+            };
+        }
+
+        private ShowTopList NewShowTopList()
+            => new ShowTopList(_libraryManager, _userManager, _userDataManager, _httpClient, _jsonSerializer, _logger);
+
+        // Item ids from the web client are internal (numeric) ids; GUIDs are accepted too.
+        private List<BaseItem> ResolveSeries(IEnumerable<string> ids)
+            => ids
+                .Select(id => long.TryParse(id, out var n) ? _libraryManager.GetItemById(n)
+                            : Guid.TryParse(id, out var g) ? _libraryManager.GetItemById(g) : null)
+                .Where(i => i is MediaBrowser.Controller.Entities.TV.Series)
+                .Select(i => i!)
+                .ToList();
+
         public object Post(DeleteTopListRequest request)
         {
             try
             {
+                var showList = Plugin.Instance?.Configuration?.TopLists?.FirstOrDefault(t =>
+                    ShowTopList.IsShowList(t) && string.Equals(t.TagName, request.TagName, StringComparison.OrdinalIgnoreCase));
+                if (showList != null)
+                {
+                    NewShowTopList().Remove(showList);
+                    Plugin.Instance!.Configuration.TopLists.Remove(showList);
+                    Plugin.Instance.SaveConfiguration();
+                    return new DeleteTopListResponse { Success = true };
+                }
+
                 var dataPath = Plugin.Instance.DataFolderPath;
                 var sanitized = SanitizeFolderName(request.TagName);
                 var folderPath = Path.Combine(dataPath, "toplists", sanitized);
@@ -2267,6 +2420,8 @@ public class HomeScreenCompanionService : IService
 
                 if (tl == null)
                     return new PrepareTopListHomeSectionsResponse { Success = false, Message = $"TopList '{request.TagName}' not found in config." };
+                if (ShowTopList.IsShowList(tl))
+                    return new PrepareTopListHomeSectionsResponse { Success = true, Message = "Show top-list rows are updated when the list is saved." };
 
                 var settingsDict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 try
@@ -2748,6 +2903,14 @@ public class HomeScreenCompanionService : IService
                         PruneUnknownUsers(tl.HomeSectionUserIds, knownUsers, response.Warnings, $"Top-list '{tl.TagName}'");
                         tl.HomeSectionTracked.RemoveAll(x => !IsKnownUser(knownUsers, x.UserId));
 
+                        // Show top-lists need no files or library; they are rebuilt below.
+                        if (ShowTopList.IsShowList(tl))
+                        {
+                            tl.HomeSectionLibraryId = "";
+                            restored.Add(tl);
+                            continue;
+                        }
+
                         var settings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                         try { settings = _jsonSerializer.DeserializeFromString<Dictionary<string, string>>(tl.HomeSectionSettings) ?? settings; }
                         catch { }
@@ -2814,6 +2977,18 @@ public class HomeScreenCompanionService : IService
                     }
 
                     config.TopLists = restored;
+                    foreach (var showTl in restored.Where(ShowTopList.IsShowList).ToList())
+                    {
+                        try
+                        {
+                            var ids = (showTl.ShowEntries ?? new List<ShowTopListEntry>()).Select(e => e.SeriesId).ToList();
+                            NewShowTopList().Apply(config, showTl, ResolveSeries(ids));
+                        }
+                        catch (Exception ex)
+                        {
+                            response.Warnings.Add($"Show top-list '{showTl.TagName}' could not be rebuilt ({ex.Message}).");
+                        }
+                    }
                     response.Applied.Add($"Top lists ({restored.Count})");
                 }
 

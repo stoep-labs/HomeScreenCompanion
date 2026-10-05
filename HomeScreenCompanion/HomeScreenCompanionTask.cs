@@ -4855,6 +4855,7 @@ namespace HomeScreenCompanion
             foreach (var tl in config.TopLists ?? new List<TopListHomeSection>())
             {
                 if (string.IsNullOrWhiteSpace(tl.TagName)) continue;
+                if (ShowTopList.IsShowList(tl)) continue; // no .strm folder: shows are ranked with tags
                 if (!managedTagNames.Contains(tl.TagName)) continue;
 
                 var sanitized = SanitizeTopListFolderName(tl.TagName);

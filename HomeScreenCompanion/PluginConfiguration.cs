@@ -128,6 +128,18 @@ namespace HomeScreenCompanion
         public string HomeSectionLibraryId { get; set; } = "auto";
         public string HomeSectionSettings { get; set; } = "{}";
         public List<HomeSectionTracking> HomeSectionTracked { get; set; } = new List<HomeSectionTracking>();
+
+        // "Movies" (default): ranked .strm copies in a top-list library.
+        // "Shows": no library — each ranked series gets its own tag whose item carries the
+        // ranked art, and the row lists those tags (see ShowTopList).
+        public string ContentType { get; set; } = "Movies";
+        public List<ShowTopListEntry> ShowEntries { get; set; } = new List<ShowTopListEntry>();
+    }
+
+    public class ShowTopListEntry
+    {
+        public string SeriesId { get; set; } = "";
+        public string TagName { get; set; } = "";
     }
 
     public class HomeSectionTracking

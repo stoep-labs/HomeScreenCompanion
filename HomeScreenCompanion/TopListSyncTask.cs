@@ -254,6 +254,7 @@ namespace HomeScreenCompanion
             {
                 string tlName = tl.TagName ?? "(unnamed)";
                 _log.Section($"Top-list '{tlName}'");
+                if (ShowTopList.IsShowList(tl)) { _log.Skip($"Top-list '{tlName}': show list — its row is kept up to date when the list is saved"); continue; }
                 if (string.IsNullOrEmpty(tl.HomeSectionLibraryId) || tl.HomeSectionLibraryId == "auto") { _log.Skip($"Top-list '{tlName}': skipped — no library has been created for it yet"); continue; }
                 int tlUpdated = 0, tlRemoved = 0;
 
