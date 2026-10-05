@@ -2330,7 +2330,7 @@ public class HomeScreenCompanionService : IService
             var shows = (tl.ShowEntries ?? new List<ShowTopListEntry>())
                 .Select(e => Guid.TryParse(e.SeriesId, out var g) ? _libraryManager.GetItemById(g) : null)
                 .Where(i => i != null)
-                .Select(i => new MovieItem { Name = i!.Name ?? "", Year = i.ProductionYear, ImdbId = i.GetProviderId("Imdb") ?? "", ItemId = i.Id.ToString("N") })
+                .Select(i => new MovieItem { Name = i!.Name ?? "", Year = i.ProductionYear, ImdbId = i.GetProviderId("Imdb") ?? "", ItemId = i.InternalId.ToString() })
                 .ToList();
             return new GetManualTopListItemsResponse
             {
