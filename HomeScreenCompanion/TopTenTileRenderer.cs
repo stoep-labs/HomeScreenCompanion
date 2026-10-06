@@ -8,7 +8,7 @@ namespace HomeScreenCompanion
     /// Renders Netflix-style "Top 10" art: a huge outlined rank numeral with the movie poster as
     /// a rounded card, on a blurred, darkened copy of the same poster. Two shapes:
     ///   Render       — 1280x720 tile (numeral left, poster right) for the Thumb image.
-    ///   RenderPoster — 1000x1500 poster (poster top-right, numeral bottom-left) for the Primary image.
+    ///   RenderPoster — 1600x1200 (4:3) card (full-height poster right, numeral behind it) for the Primary image.
     ///
     /// Both are always composed from the Primary (poster) image. The numeral size is fixed by
     /// what makes "10" fit, so every image in a list has the same numeral height.
@@ -17,8 +17,8 @@ namespace HomeScreenCompanion
     {
         public const int Width = 1280;
         public const int Height = 720;
-        public const int PosterWidth = 1000;
-        public const int PosterHeight = 1500;
+        public const int PosterWidth = 1600;
+        public const int PosterHeight = 1200;
 
         private const int TileCardH = 610;       // poster card height on the landscape tile
         private const int TileNumeralBoxW = 640; // "10" must fit inside this width
@@ -68,13 +68,16 @@ namespace HomeScreenCompanion
             Save(surface, outputPath);
         }
 
+        // Netflix-style card for the Primary image: 4:3, so Emby shows the row with its
+        // "fourThree" card shape (it picks the shape from the images' aspect ratio). The poster
+        // runs the full height on the right; the numeral sits behind its left edge.
         public static void RenderPoster(string posterPath, int rank, string outputPath)
         {
             if (rank < 1 || rank > 10)
                 throw new ArgumentOutOfRangeException(nameof(rank), "rank must be between 1 and 10");
 
             const int w = PosterWidth, h = PosterHeight;
-            const int margin = 40;
+            const int margin = 36;
             using var poster = SKBitmap.Decode(posterPath)
                 ?? throw new InvalidOperationException($"SkiaSharp could not decode '{posterPath}' (unsupported format or corrupt file)");
             using var surface = SKSurface.Create(new SKImageInfo(w, h, SKColorType.Rgba8888, SKAlphaType.Premul))
@@ -82,34 +85,33 @@ namespace HomeScreenCompanion
             var canvas = surface.Canvas;
 
             DrawBackdrop(canvas, poster, w, h);
-            DrawScrim(canvas, w, h, towardBottom: true);
-            DrawVignette(canvas, w, h, 0.5f);
+            DrawScrim(canvas, w, h, towardBottom: false);
+            DrawVignette(canvas, w, h, 0.45f);
 
-            // Poster card top-right; the numeral sits bottom-left in front of the card's corner,
-            // so it is always fully readable (a portrait card has no room beside the poster).
-            int pw = 620, ph = (int)(pw * 1.5);
-            int px = w - margin - pw, py = 50;
-            DrawCard(canvas, poster, new SKRect(px, py, px + pw, py + ph), RadiusFor(pw));
+            int ph = h - margin * 2;
+            int pw = (int)(ph / 1.5);
+            int px = w - margin - pw, py = margin;
+            int overlap = (int)(pw * 0.10);
 
-            float size = NumeralSize(w - margin * 2, 600);
+            // Netflix style: every numeral runs the full poster height; one that is too wide for
+            // the space left of the poster (e.g. "10") is squeezed horizontally instead of shrunk.
+            float size = SizeForCapHeight(ph * 0.98f);
             var num = rank.ToString();
-            using var fill = NumeralPaint(size, SKTextAlign.Left);
-            using var outline = OutlinePaint(size, SKTextAlign.Left);
-            var bounds = new SKRect();
-            fill.MeasureText(num, ref bounds);
-            float textX = margin + Stroke - bounds.Left;
-            float textY = h - 55;
-            using (var glow = OutlinePaint(size, SKTextAlign.Left))
+            using var fill = NumeralPaint(size, SKTextAlign.Right);
+            using var outline = OutlinePaint(size, SKTextAlign.Right);
+            float room = px + overlap - margin;
+            float inkW = InkWidth(fill, num) + Stroke * 2;
+            if (inkW > room)
             {
-                // Soft dark halo so the outline still reads where it crosses a bright poster.
-                glow.Color = SKColors.Black.WithAlpha(170);
-                glow.StrokeWidth = Stroke * 6;
-                glow.MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, 18);
-                canvas.DrawText(num, textX, textY, glow);
+                fill.TextScaleX = room / inkW;
+                outline.TextScaleX = room / inkW;
             }
+            float textX = px + overlap;
+            float textY = py + ph;
             canvas.DrawText(num, textX, textY, outline);
             canvas.DrawText(num, textX, textY, fill);
 
+            DrawCard(canvas, poster, new SKRect(px, py, px + pw, py + ph), RadiusFor(pw));
             Save(surface, outputPath);
         }
 
@@ -132,6 +134,21 @@ namespace HomeScreenCompanion
                 paint.MeasureText("10", ref bounds);
                 if (bounds.Width + Stroke * 2 <= maxW && -bounds.Top + Stroke <= maxCap)
                     return size;
+                size -= 4;
+            }
+            return size;
+        }
+
+        // Largest size whose digit height (with outline) fits maxCap.
+        private static float SizeForCapHeight(float maxCap)
+        {
+            float size = 1400;
+            while (size > 50)
+            {
+                using var paint = NumeralPaint(size, SKTextAlign.Right);
+                var bounds = new SKRect();
+                paint.MeasureText("8", ref bounds);
+                if (-bounds.Top + Stroke <= maxCap) return size;
                 size -= 4;
             }
             return size;
