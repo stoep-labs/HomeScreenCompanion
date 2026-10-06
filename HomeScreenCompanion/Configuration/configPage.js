@@ -706,6 +706,49 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }, { offset: Number.NEGATIVE_INFINITY }).element;
     }
 
+    // Smart Playlist "Sort by" settings of a source card (see SourceSort on the server).
+    function readMiSort(row) {
+        var sel = row.querySelector('.selMiSortBy');
+        if (!sel) return {};
+        var usersEl = row.querySelector('.mi-pop-users');
+        var exclude;
+        if (usersEl && usersEl.dataset.pending === '1') {
+            try { exclude = JSON.parse(decodeURIComponent(usersEl.dataset.userids || '%5B%5D')); } catch (e) { exclude = []; }
+        } else {
+            exclude = Array.from(row.querySelectorAll('.chkPopExclude:checked')).map(function (c) { return c.value; });
+        }
+        var days = parseInt((row.querySelector('.txtPopDays') || {}).value, 10);
+        return {
+            MiSortBy: sel.value || '',
+            MiSortOrder: (row.querySelector('.selMiSortOrder') || {}).value || 'Descending',
+            PopularityDays: isNaN(days) || days < 0 ? 30 : days,
+            PopularityMinViewers: Math.max(1, parseInt((row.querySelector('.txtPopMinViewers') || {}).value, 10) || 1),
+            PopularityCountPartial: !!(row.querySelector('.chkPopPartial') || {}).checked,
+            PopularityExcludeUserIds: exclude
+        };
+    }
+
+    function fillPopularityUsers() {
+        var pending = document.querySelectorAll('.mi-pop-users[data-pending="1"]');
+        if (!pending.length) return;
+        getHseUsers().then(function (users) {
+            pending.forEach(function (el) {
+                var ids = [];
+                try { ids = JSON.parse(decodeURIComponent(el.dataset.userids || '%5B%5D')); } catch (e) {}
+                el.innerHTML = buildUserMultiSelectHtml(users, ids, 'chkPopExclude');
+                el.style.opacity = '';
+                el.dataset.pending = '0';
+                wireUserMultiSelect(el);
+            });
+        });
+    }
+
+    document.addEventListener('change', function (e) {
+        if (!e.target || !e.target.classList || !e.target.classList.contains('selMiSortBy')) return;
+        var opts = e.target.closest('.mi-sort-row') && e.target.closest('.mi-sort-row').querySelector('.mi-pop-opts');
+        if (opts) opts.style.display = e.target.value === 'Popularity' ? 'block' : 'none';
+    });
+
     function readRowAsConfig(row) {
         var entryLabel = row.querySelector('.txtEntryLabel').value;
         var tagName = row.querySelector('.txtTagName').value || entryLabel;
@@ -834,6 +877,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             CollectionDescription: collDesc, CollectionPosterPath: collPoster,
             OverrideWhenActive: overrideWhenActive, SourceType: st,
             Urls: urls, LocalSources: localSources, Limit: miLimit,
+            MiSortBy: readMiSort(row).MiSortBy || '', MiSortOrder: readMiSort(row).MiSortOrder || 'Descending',
+            PopularityDays: readMiSort(row).PopularityDays, PopularityMinViewers: readMiSort(row).PopularityMinViewers,
+            PopularityCountPartial: !!readMiSort(row).PopularityCountPartial, PopularityExcludeUserIds: readMiSort(row).PopularityExcludeUserIds || [],
             MediaInfoFilters: miFilters, MediaInfoConditions: [],
             EnableHomeSection: enableHse, HomeSectionLibraryId: hseLibraryId,
             HomeSectionUserIds: hseUserIds, HomeSectionSettings: JSON.stringify(hseSettings),
@@ -1373,6 +1419,16 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         if (localSources.length === 0) localSources = [{ id: "", limit: 0 }];
 
         var mediaInfoLimit = tagConfig.Limit || 0;
+        var miSortBy = tagConfig.MiSortBy || '';
+        var miSortOrder = tagConfig.MiSortOrder || 'Descending';
+        var popDays = (tagConfig.PopularityDays === 0 || tagConfig.PopularityDays) ? tagConfig.PopularityDays : 30;
+        var popMin = tagConfig.PopularityMinViewers || 1;
+        var popPartial = !!tagConfig.PopularityCountPartial;
+        var popExclude = encodeURIComponent(JSON.stringify(tagConfig.PopularityExcludeUserIds || []));
+        var miSortOptions = [['', 'Keep the first matches (no sort)'], ['Popularity', 'Popularity on this server'], ['DateAdded', 'Date added'],
+                             ['PremiereDate', 'Release date'], ['CommunityRating', 'Rating'], ['Name', 'Name'], ['Random', 'Random']]
+            .map(function (o) { return '<option value="' + o[0] + '"' + (o[0] === miSortBy ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('');
+        setTimeout(fillPopularityUsers, 0);
         var aiLimit = tagConfig.Limit || 0;
         // Backwards compat: legacy single-target → derive separate tag + collection targets
         var _legacyTarget = tagConfig.MediaInfoTargetType || (tagConfig.MediaInfoSeasonMode ? 'Season' : '');
@@ -1584,6 +1640,32 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             <label style="font-size:0.9em; white-space:nowrap; margin:0;">Max items</label>
                             <input is="emby-input" class="txtMediaInfoLimit" type="number" value="${mediaInfoLimit}" min="0" style="width:90px;" />
                             <button type="button" is="emby-button" class="btnMiHelp raised" style="margin-left:auto; background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">help_outline</i><span>How to (filter guide)</span></button>
+                        </div>
+                        <div class="mi-sort-row" style="display:${sourceType === 'MediaInfo' ? 'block' : 'none'}; margin-bottom:14px;">
+                            <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                                <label style="font-size:0.9em; white-space:nowrap; margin:0;">Sort by</label>
+                                <select is="emby-select" class="selMiSortBy" style="width:auto; min-width:220px;">${miSortOptions}</select>
+                                <select is="emby-select" class="selMiSortOrder" style="width:auto;">
+                                    <option value="Descending" ${miSortOrder !== 'Ascending' ? 'selected' : ''}>Highest / newest first</option>
+                                    <option value="Ascending" ${miSortOrder === 'Ascending' ? 'selected' : ''}>Lowest / oldest first</option>
+                                </select>
+                            </div>
+                            <div class="fieldDescription" style="margin-top:6px;">With a sort, all matches are sorted and the top "Max items" kept; this order is also the ranking a top-list built from this tag follows.</div>
+                            <div class="mi-pop-opts" style="display:${miSortBy === 'Popularity' ? 'block' : 'none'}; margin-top:12px; padding:12px; border:1px solid var(--line-color); border-radius:4px;">
+                                <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
+                                    <label style="font-size:0.9em; margin:0;">Watched in the last</label>
+                                    <input is="emby-input" class="txtPopDays" type="number" min="0" value="${popDays}" style="width:80px;" />
+                                    <label style="font-size:0.9em; margin:0;">days (0 = all time)</label>
+                                    <label style="font-size:0.9em; margin:0 0 0 12px;">Minimum viewers</label>
+                                    <input is="emby-input" class="txtPopMinViewers" type="number" min="1" value="${popMin}" style="width:70px;" />
+                                </div>
+                                <label style="display:flex; align-items:center; gap:6px; font-size:0.9em; margin-bottom:10px;">
+                                    <input type="checkbox" class="chkPopPartial" ${popPartial ? 'checked' : ''} /> Count started but unfinished
+                                </label>
+                                <div style="font-size:0.9em; margin-bottom:6px;">Don't count these users</div>
+                                <div class="mi-pop-users" data-pending="1" data-userids="${popExclude}" style="font-size:0.9em; opacity:0.8;">Loading users…</div>
+                                <div class="fieldDescription" style="margin-top:8px;">Popularity = how many different users watched it. A show counts once per viewer, however many episodes they watched. Titles marked watched without a date only count with 0 (all time).</div>
+                            </div>
                         </div>
                         <div class="mi-toggle-row" style="display:${sourceType === 'MediaInfo' || mediaFilters.length > 0 ? 'none' : 'block'}; padding-top:14px; border-top:1px solid var(--line-color);">
                             <button type="button" is="emby-button" class="btnToggleAdditionalFilters raised" style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.85em;"><i class="md-icon" style="font-size:1em; margin-right:4px;">filter_list</i><span>Add filters (optional)</span></button>
@@ -1948,6 +2030,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var miPresetsSection = row.querySelector('.mi-presets-section');
                 if (miPresetsSection) miPresetsSection.style.display = isMi ? 'block' : 'none';
                 if (miLimitRow) miLimitRow.style.display = isMi ? 'flex' : 'none';
+                var miSortRow = row.querySelector('.mi-sort-row');
+                if (miSortRow) miSortRow.style.display = isMi ? 'block' : 'none';
                 if (miHelpBtnRow) miHelpBtnRow.style.display = isMi ? 'none' : 'flex';
                 if (isMi) {
                     if (miToggleRow)  miToggleRow.style.display  = 'none';
@@ -3374,7 +3458,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 }));
             } else {
                 var miLimitVal = parseInt((row.querySelector('.txtMediaInfoLimit') || {}).value, 10) || 0;
-                flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: miLimitVal, LocalSourceId: "" }));
+                flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: miLimitVal, LocalSourceId: "" }, readMiSort(row)));
             }
         });
 
@@ -3403,6 +3487,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             DryRunMode: view.querySelector('#chkDryRunMode').checked,
             PreserveTagsOnEmptyResult: view.querySelector('#chkPreserveTagsOnEmptyResult').checked,
             TopListMirrorCollections: view.querySelector('#chkTopListMirrorCollections').checked,
+            HideTopListLibraries: view.querySelector('#chkHideTopListLibraries').checked,
             Tags: flatTags,
             SavedFilters: savedFilters,
             HomeSyncEnabled: hscEnabled ? hscEnabled.checked : (lastHscConfig.HomeSyncEnabled || false),
@@ -3611,6 +3696,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     PlaylistName:     t.PlaylistName     || '',
                     PlaylistUserIds:  t.PlaylistUserIds  || [],
                     PlaylistMappings: t.PlaylistMappings || [],
+                    MiSortBy: t.MiSortBy || '',
+                    MiSortOrder: t.MiSortOrder || 'Descending',
+                    PopularityDays: (t.PopularityDays === 0 || t.PopularityDays) ? t.PopularityDays : 30,
+                    PopularityMinViewers: t.PopularityMinViewers || 1,
+                    PopularityCountPartial: t.PopularityCountPartial || false,
+                    PopularityExcludeUserIds: t.PopularityExcludeUserIds || [],
                 };
             }
             if (t.SourceType === 'External' && t.Url) grouped[key].Urls.push({ url: t.Url, limit: t.Limit });
@@ -6236,14 +6327,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
         var token = window.ApiClient.accessToken();
 
+        // Only what the list needs: the full tag scan is slow on big servers, so it is loaded
+        // when Create New is opened, and the server says which lists are tag-based.
         Promise.all([
-            fetch(window.ApiClient.getUrl('HomeScreenCompanion/Manage/Tags'), { headers: { 'X-MediaBrowser-Token': token } }).then(function (r) { return r.json(); }),
-            fetch(window.ApiClient.getUrl('HomeScreenCompanion/Manage/Collections'), { headers: { 'X-MediaBrowser-Token': token } }).then(function (r) { return r.json(); }),
+            Promise.resolve(null),
+            Promise.resolve(null),
             window.ApiClient.getPluginConfiguration(pluginId).catch(function () { return { Tags: [] }; }),
             fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/List'), { headers: { 'X-MediaBrowser-Token': token } }).then(function (r) { return r.json(); }).catch(function () { return { FolderNames: [] }; })
         ]).then(function (results) {
-            var tagsData = results[0];
-            var collectionsData = results[1];
+            var tagsData = null;
             var pluginConfig = results[2];
             var existingTopLists = new Set((results[3].FolderNames || []).map(function (n) { return n.toLowerCase(); }));
 
@@ -6292,7 +6384,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
             var searchInputStyle = 'background:var(--plugin-input-bg);border:1px solid var(--plugin-input-border);border-radius:4px;padding:5px 10px;font-size:0.9em;color:var(--plugin-popup-color);width:400px;max-width:100%;';
 
-            var realTagNamesLower = new Set((tagsData.Tags || []).map(function (t) { return (t.Name || '').toLowerCase(); }));
+            var realTagNamesLower = new Set((results[3].TagBased || []).map(function (n) { return (n || '').toLowerCase(); }));
 
             var showListKeys = new Set(results[3].ShowLists || []);
 
@@ -6394,10 +6486,22 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var btnCreateNew = container.querySelector('#btnCreateNewTopList');
             if (btnCreateNew) {
                 btnCreateNew.addEventListener('click', function () {
-                    showCreateTopListChooser(tagsData, existingTopLists, function () {
-                        container.dataset.loaded = '';
-                        loadTopListsTab(view);
-                    });
+                    var openChooser = function () {
+                        showCreateTopListChooser(tagsData, existingTopLists, function () {
+                            container.dataset.loaded = '';
+                            loadTopListsTab(view);
+                        });
+                    };
+                    if (tagsData) { openChooser(); return; }
+                    btnCreateNew.disabled = true;
+                    fetch(window.ApiClient.getUrl('HomeScreenCompanion/Manage/Tags'), { headers: { 'X-MediaBrowser-Token': token } })
+                        .then(function (r) { return r.json(); })
+                        .catch(function () { return { Tags: [] }; })
+                        .then(function (data) {
+                            tagsData = data || { Tags: [] };
+                            btnCreateNew.disabled = false;
+                            openChooser();
+                        });
                 });
             }
 
@@ -7346,6 +7450,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 view.querySelector('#chkDryRunMode').checked = config.DryRunMode || false;
                 view.querySelector('#chkPreserveTagsOnEmptyResult').checked = config.PreserveTagsOnEmptyResult || false;
                 view.querySelector('#chkTopListMirrorCollections').checked = config.TopListMirrorCollections || false;
+                view.querySelector('#chkHideTopListLibraries').checked = config.HideTopListLibraries !== false;
                 if (view.querySelector('#txtSearchTags')) {
                     view.querySelector('#txtSearchTags').value = '';
                     view.querySelector('#btnClearSearch').style.display = 'none';

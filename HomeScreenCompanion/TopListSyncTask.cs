@@ -446,6 +446,10 @@ namespace HomeScreenCompanion
 
             GrantTopListLibraryAccess(topLists, userManager, libraryManager, logger);
 
+            var hiddenFor = TopListLibraryVisibility.Apply(config, userManager, m => _log.Warn(m));
+            if (hiddenFor > 0)
+                _log.Info($"    Top-list libraries {(config.HideTopListLibraries ? "hidden from" : "shown again in")} My Media and Latest for {RunLog.Plural(hiddenFor, "user")}");
+
             Plugin.Instance?.SaveConfiguration();
             var summary = $"Updated {totalUpdated} section(s) across {topLists.Count} top-list(s).";
             _log.Info($"    {RunLog.Plural(totalUpdated, "section")} updated across {RunLog.Plural(topLists.Count, "top-list")}{(totalErrors > 0 ? $", {RunLog.Plural(totalErrors, "error")}" : "")}  ·  {RunLog.Elapsed(DateTime.Now - startTime)}");

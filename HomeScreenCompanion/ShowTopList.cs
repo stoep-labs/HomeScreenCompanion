@@ -82,7 +82,8 @@ namespace HomeScreenCompanion
             catch { }
 
             return series
-                .OrderBy(s => rank.TryGetValue(s.GetProviderId("Imdb") ?? "", out var r) ? r : int.MaxValue)
+                .OrderBy(s => rank.TryGetValue(s.GetProviderId("Imdb") ?? "", out var r) ? r
+                            : rank.TryGetValue(s.Id.ToString("N"), out var r2) ? r2 : int.MaxValue)
                 .ThenBy(s => s.SortName, StringComparer.OrdinalIgnoreCase)
                 .GroupBy(s => s.Id).Select(g => g.First())
                 .Take(MaxRanks)
