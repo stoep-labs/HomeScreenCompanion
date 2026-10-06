@@ -706,7 +706,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }, { offset: Number.NEGATIVE_INFINITY }).element;
     }
 
-    // Smart Playlist "Sort by" settings of a source card (see SourceSort on the server).
+    // Smart Playlist "Pick the top N by" settings of a source card (see SourceSort on the server).
     function readMiSort(row) {
         var sel = row.querySelector('.selMiSortBy');
         if (!sel) return {};
@@ -747,6 +747,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         if (!e.target || !e.target.classList || !e.target.classList.contains('selMiSortBy')) return;
         var opts = e.target.closest('.mi-sort-row') && e.target.closest('.mi-sort-row').querySelector('.mi-pop-opts');
         if (opts) opts.style.display = e.target.value === 'Popularity' ? 'block' : 'none';
+        // Most-watched always wins; Random has no direction.
+        var order = e.target.closest('.mi-sort-row') && e.target.closest('.mi-sort-row').querySelector('.selMiSortOrder');
+        if (order) order.style.display = e.target.value === 'Popularity' || e.target.value === 'Random' ? 'none' : '';
     });
 
     function readRowAsConfig(row) {
@@ -1425,7 +1428,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var popMin = tagConfig.PopularityMinViewers || 1;
         var popPartial = !!tagConfig.PopularityCountPartial;
         var popExclude = encodeURIComponent(JSON.stringify(tagConfig.PopularityExcludeUserIds || []));
-        var miSortOptions = [['', 'Keep the first matches (no sort)'], ['Popularity', 'Popularity on this server'], ['DateAdded', 'Date added'],
+        var miSortOptions = [['', 'First matches (no ranking)'], ['Popularity', 'Popularity on this server'], ['DateAdded', 'Date added'],
                              ['PremiereDate', 'Release date'], ['CommunityRating', 'Rating'], ['Name', 'Name'], ['Random', 'Random']]
             .map(function (o) { return '<option value="' + o[0] + '"' + (o[0] === miSortBy ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('');
         setTimeout(fillPopularityUsers, 0);
@@ -1643,14 +1646,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         </div>
                         <div class="mi-sort-row" style="display:${sourceType === 'MediaInfo' ? 'block' : 'none'}; margin-bottom:14px;">
                             <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-                                <label style="font-size:0.9em; white-space:nowrap; margin:0;">Sort by</label>
+                                <label style="font-size:0.9em; white-space:nowrap; margin:0;">Pick the top "Max items" by</label>
                                 <select is="emby-select" class="selMiSortBy" style="width:auto; min-width:220px;">${miSortOptions}</select>
-                                <select is="emby-select" class="selMiSortOrder" style="width:auto;">
+                                <select is="emby-select" class="selMiSortOrder" style="width:auto; display:${miSortBy === 'Popularity' || miSortBy === 'Random' ? 'none' : ''};">
                                     <option value="Descending" ${miSortOrder !== 'Ascending' ? 'selected' : ''}>Highest / newest first</option>
                                     <option value="Ascending" ${miSortOrder === 'Ascending' ? 'selected' : ''}>Lowest / oldest first</option>
                                 </select>
                             </div>
-                            <div class="fieldDescription" style="margin-top:6px;">With a sort, all matches are sorted and the top "Max items" kept; this order is also the ranking a top-list built from this tag follows.</div>
+                            <div class="fieldDescription" style="margin-top:6px;">This decides which titles get the tag: all matches are ranked and the top "Max items" kept. It does not set the order a home row shows them in — that is the row's own Sort By (e.g. Random). Only a Top 10 / top-list built from this tag follows this ranking.</div>
                             <div class="mi-pop-opts" style="display:${miSortBy === 'Popularity' ? 'block' : 'none'}; margin-top:12px; padding:12px; border:1px solid var(--line-color); border-radius:4px;">
                                 <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
                                     <label style="font-size:0.9em; margin:0;">Watched in the last</label>

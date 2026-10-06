@@ -9,10 +9,11 @@ using System.Linq;
 namespace HomeScreenCompanion
 {
     /// <summary>
-    /// "Sort by" for Local Media Information (Smart Playlist) sources. Without a sort the source
-    /// keeps the first N matches as before; with one, all matches are sorted and the top N kept.
-    /// The sorted order is also the source's rank order (tag_ranks), so top-lists built from the
-    /// tag follow it.
+    /// "Pick the top N by" for Local Media Information (Smart Playlist) sources. Without it the
+    /// source keeps the first N matches as before; with it, all matches are ranked and the top N
+    /// kept. This only decides which titles get the tag — a home row orders them by its own
+    /// Sort By. The ranking is also the source's rank order (tag_ranks), so top-lists built from
+    /// the tag follow it.
     ///
     /// Popularity = unique viewers: the number of users who watched the title within the last
     /// N days (0 = all time). A show counts once per viewer however many episodes they watched.
@@ -33,10 +34,9 @@ namespace HomeScreenCompanion
                     var viewers = popularity.CountViewers(items, t, log);
                     int min = Math.Max(1, t.PopularityMinViewers);
                     var kept = items.Where(i => viewers.TryGetValue(i.Id, out var v) && v >= min);
-                    var ordered = desc
-                        ? kept.OrderByDescending(i => viewers[i.Id])
-                        : kept.OrderBy(i => viewers[i.Id]);
-                    return ordered.ThenByDescending(i => i.CommunityRating ?? 0)
+                    // Always most-watched first: the point is to pick the popular titles.
+                    return kept.OrderByDescending(i => viewers[i.Id])
+                                  .ThenByDescending(i => i.CommunityRating ?? 0)
                                   .ThenBy(i => i.SortName, StringComparer.OrdinalIgnoreCase)
                                   .ToList();
                 }
