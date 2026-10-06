@@ -134,6 +134,9 @@ namespace HomeScreenCompanion
         // ranked art, and the row lists those tags (see ShowTopList).
         public string ContentType { get; set; } = "Movies";
         public List<ShowTopListEntry> ShowEntries { get; set; } = new List<ShowTopListEntry>();
+        // Shows only: when set, the list is rebuilt on every sync from the series carrying this
+        // tag, in the source list's order (tag_ranks). Empty = shows picked by hand.
+        public string ShowSourceTag { get; set; } = "";
     }
 
     public class ShowTopListEntry

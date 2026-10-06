@@ -110,7 +110,7 @@ namespace HomeScreenCompanion
     [Route("/HomeScreenCompanion/Manage/Tags", "GET")]
     [Authenticated(Roles = "Admin")]
     public class GetManagedTagsRequest : IReturn<GetManagedTagsResponse> { }
-    public class ManagedTagInfo { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public int ItemCount { get; set; } public int MovieCount { get; set; } public List<string> ItemTypes { get; set; } = new List<string>(); }
+    public class ManagedTagInfo { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public int ItemCount { get; set; } public int MovieCount { get; set; } public int SeriesCount { get; set; } public List<string> ItemTypes { get; set; } = new List<string>(); }
     public class GetManagedTagsResponse { public List<ManagedTagInfo> Tags { get; set; } = new List<ManagedTagInfo>(); }
 
     [Route("/HomeScreenCompanion/Manage/Collections", "GET")]
@@ -189,6 +189,7 @@ namespace HomeScreenCompanion
         public List<string> UserIds { get; set; } = new List<string>();
         public string Message { get; set; } = "";
         public string ContentType { get; set; } = "Movies";
+        public string SourceTag { get; set; } = "";
     }
 
     [Route("/HomeScreenCompanion/TopList/Delete", "POST")]
@@ -215,6 +216,8 @@ namespace HomeScreenCompanion
         public string ImageType { get; set; } = "";
         public List<string> UserIds { get; set; } = new List<string>();
         public List<string> SeriesIds { get; set; } = new List<string>();
+        // When set, the shows come from this tag (rebuilt on every sync) and SeriesIds is ignored.
+        public string SourceTag { get; set; } = "";
     }
 
     public class PrepareShowTopListResponse
@@ -1087,9 +1090,13 @@ public class HomeScreenCompanionService : IService
             var tagCount = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             var tagMovieKeys = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             var tagTypes = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+            var tagSeriesCount = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (var item in allItems)
             {
                 if (item.Tags == null) continue;
+                if (item is MediaBrowser.Controller.Entities.TV.Series)
+                    foreach (var t in item.Tags)
+                        if (!string.IsNullOrWhiteSpace(t)) tagSeriesCount[t] = (tagSeriesCount.TryGetValue(t, out var sc) ? sc : 0) + 1;
                 var typeKey = GetItemTypeKey(item);
                 var isMovie = item is MediaBrowser.Controller.Entities.Movies.Movie;
                 string movieKey = null;
@@ -1126,12 +1133,22 @@ public class HomeScreenCompanionService : IService
                 t => t.Id.ToString("N"),
                 StringComparer.OrdinalIgnoreCase);
 
+            // Tags that show top-lists put on series are internal: never offer them as tags.
+            var showListTags = new HashSet<string>(
+                (Plugin.Instance?.Configuration?.TopLists ?? new List<TopListHomeSection>())
+                    .Where(ShowTopList.IsShowList)
+                    .SelectMany(t => t.ShowEntries ?? new List<ShowTopListEntry>())
+                    .Select(e => e.TagName),
+                StringComparer.OrdinalIgnoreCase);
+
             var tags = tagCount
+                .Where(kv => !showListTags.Contains(kv.Key))
                 .Select(kv => new ManagedTagInfo
                 {
                     Name = kv.Key,
                     ItemCount = kv.Value,
                     MovieCount = tagMovieKeys.TryGetValue(kv.Key, out var movieSet) ? movieSet.Count : 0,
+                    SeriesCount = tagSeriesCount.TryGetValue(kv.Key, out var seriesCount) ? seriesCount : 0,
                     Id = tagIdMap.TryGetValue(kv.Key, out var tid) ? tid : "",
                     ItemTypes = tagTypes.TryGetValue(kv.Key, out var typeSet2) ? typeSet2.ToList() : new List<string>()
                 })
@@ -2263,10 +2280,13 @@ public class HomeScreenCompanionService : IService
                 var listName = (request.ListName ?? "").Trim();
                 var userIds = (request.UserIds ?? new List<string>()).Where(u => !string.IsNullOrWhiteSpace(u))
                     .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-                var series = ResolveSeries(request.SeriesIds ?? new List<string>());
+                var sourceTag = (request.SourceTag ?? "").Trim();
+                var series = sourceTag.Length > 0
+                    ? ShowTopList.RankedSeriesFromTag(_libraryManager, _jsonSerializer, sourceTag)
+                    : ResolveSeries(request.SeriesIds ?? new List<string>());
                 if (listName.Length == 0) return new PrepareShowTopListResponse { Message = "A list name is required." };
                 if (userIds.Count == 0) return new PrepareShowTopListResponse { Message = "Please select at least one target user." };
-                if (series.Count == 0) return new PrepareShowTopListResponse { Message = "Please add at least one show." };
+                if (series.Count == 0 && sourceTag.Length == 0) return new PrepareShowTopListResponse { Message = "Please add at least one show." };
 
                 config.TopLists ??= new List<TopListHomeSection>();
                 var tl = config.TopLists.FirstOrDefault(t => string.Equals(t.TagName, listName, StringComparison.OrdinalIgnoreCase));
@@ -2290,6 +2310,7 @@ public class HomeScreenCompanionService : IService
                 }
                 tl.HomeSectionUserIds = userIds;
                 tl.MaxItems = ShowTopList.MaxRanks;
+                tl.ShowSourceTag = sourceTag;
 
                 var settings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 try
@@ -2311,7 +2332,9 @@ public class HomeScreenCompanionService : IService
                 return new PrepareShowTopListResponse
                 {
                     Success = true,
-                    Message = $"{tl.ShowEntries.Count} of {Math.Min(series.Count, ShowTopList.MaxRanks)} show(s) ranked.",
+                    Message = sourceTag.Length > 0 && series.Count == 0
+                        ? $"Saved. No shows carry the tag '{sourceTag}' yet — the list fills on the next sync."
+                        : $"{tl.ShowEntries.Count} of {Math.Min(series.Count, ShowTopList.MaxRanks)} show(s) ranked.",
                     Log = log
                 };
             }
@@ -2336,6 +2359,7 @@ public class HomeScreenCompanionService : IService
             {
                 Success     = true,
                 ContentType = "Shows",
+                SourceTag   = tl.ShowSourceTag ?? "",
                 Movies      = shows,
                 CustomName  = settings.TryGetValue("CustomName", out var cn) ? cn : "",
                 DisplayMode = settings.TryGetValue("DisplayMode", out var dm) ? dm : "",

@@ -52,6 +52,43 @@ namespace HomeScreenCompanion
             _logger = logger;
         }
 
+        /// <summary>
+        /// The series carrying <paramref name="tag"/>, in the order the tag's source listed them
+        /// (tag_ranks/&lt;tag&gt;.json, written by the tag sync), then by name. Top <see cref="MaxRanks"/>.
+        /// </summary>
+        public static List<BaseItem> RankedSeriesFromTag(ILibraryManager libraryManager, IJsonSerializer jsonSerializer, string tag)
+        {
+            var series = libraryManager.GetItemList(new InternalItemsQuery
+            {
+                Tags = new[] { tag },
+                IncludeItemTypes = new[] { "Series" },
+                Recursive = true,
+                IsVirtualItem = false
+            }).ToList();
+
+            var rank = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var invalid = Path.GetInvalidFileNameChars();
+                var safe = new string((tag ?? "unknown").Select(c => Array.IndexOf(invalid, c) >= 0 ? '_' : c).ToArray()).Trim('.');
+                var rankFile = Path.Combine(Plugin.Instance!.DataFolderPath, "tag_ranks", (string.IsNullOrWhiteSpace(safe) ? "unknown" : safe) + ".json");
+                if (File.Exists(rankFile))
+                {
+                    var ids = jsonSerializer.DeserializeFromFile<List<string>>(rankFile) ?? new List<string>();
+                    for (int i = 0; i < ids.Count; i++)
+                        if (!string.IsNullOrEmpty(ids[i]) && !rank.ContainsKey(ids[i])) rank[ids[i]] = i;
+                }
+            }
+            catch { }
+
+            return series
+                .OrderBy(s => rank.TryGetValue(s.GetProviderId("Imdb") ?? "", out var r) ? r : int.MaxValue)
+                .ThenBy(s => s.SortName, StringComparer.OrdinalIgnoreCase)
+                .GroupBy(s => s.Id).Select(g => g.First())
+                .Take(MaxRanks)
+                .ToList();
+        }
+
         public static bool IsShowList(TopListHomeSection tl)
             => string.Equals(tl?.ContentType, "Shows", StringComparison.OrdinalIgnoreCase);
 

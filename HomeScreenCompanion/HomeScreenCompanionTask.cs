@@ -4852,10 +4852,32 @@ namespace HomeScreenCompanion
             );
 
             // Recreate .strm/.nfo files for each tag-based top-list
+            bool showListsUpdated = false;
             foreach (var tl in config.TopLists ?? new List<TopListHomeSection>())
             {
                 if (string.IsNullOrWhiteSpace(tl.TagName)) continue;
-                if (ShowTopList.IsShowList(tl)) continue; // no .strm folder: shows are ranked with tags
+                if (ShowTopList.IsShowList(tl))
+                {
+                    // No .strm folder: shows are ranked with tags. Lists fed by a tag are rebuilt
+                    // here, right after the tag sync wrote the source order (tag_ranks).
+                    if (!dryRun && !string.IsNullOrWhiteSpace(tl.ShowSourceTag))
+                    {
+                        try
+                        {
+                            var ranked = ShowTopList.RankedSeriesFromTag(_libraryManager, _jsonSerializer, tl.ShowSourceTag);
+                            var lines = new ShowTopList(_libraryManager, _userManager, _userDataManager, _httpClient, _jsonSerializer, _logger)
+                                .Apply(config, tl, ranked);
+                            showListsUpdated = true;
+                            _log.Ok($"Show top-list '{tl.TagName}': {ranked.Count} show(s) from tag '{tl.ShowSourceTag}'");
+                            foreach (var line in lines) _log.Debug("    " + line);
+                        }
+                        catch (Exception ex)
+                        {
+                            _log.Error($"Show top-list '{tl.TagName}' failed — {ex.Message}");
+                        }
+                    }
+                    continue;
+                }
                 if (!managedTagNames.Contains(tl.TagName)) continue;
 
                 var sanitized = SanitizeTopListFolderName(tl.TagName);
@@ -5020,6 +5042,9 @@ namespace HomeScreenCompanion
 
                 _log.Ok($"Top-list '{tl.TagName}': {RunLog.Plural(count, "movie")} synced to its library folder");
             }
+
+            // Show lists keep their ranked shows and tracked rows in the configuration.
+            if (showListsUpdated) Plugin.Instance.SaveConfiguration();
         }
 
         private static string SanitizeTopListFolderName(string name)

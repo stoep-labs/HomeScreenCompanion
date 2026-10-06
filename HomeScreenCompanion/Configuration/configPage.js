@@ -4985,13 +4985,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     // existingData = { listName, customName, displayMode, imageType, userIds: [], movies: [{ItemId,ImdbId,Name,Year}] }
     // contentType 'Shows' turns this into the show top-list dialog: it searches series,
     // always uses the Top 10 art and saves through TopList/PrepareShowList (no library).
-    function showManualTopListModal(onSuccess, existingData, contentType) {
+    function showManualTopListModal(onSuccess, existingData, contentType, options) {
         function escAttr(s) { return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
         function escHtml(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
         var isEdit = !!existingData;
         var isShows = contentType === 'Shows' || !!(existingData && existingData.contentType === 'Shows');
         var maxShows = 10;
+        // Shows fed by a tag: no picker, the list is rebuilt from the tag on every sync.
+        var sourceTag = (existingData && existingData.sourceTag) || (options && options.sourceTag) || '';
         var inputStyle = 'background:var(--plugin-input-bg);border:1px solid var(--plugin-input-border);border-radius:4px;padding:6px 10px;font-size:0.9em;color:var(--plugin-popup-color);width:100%;box-sizing:border-box;';
         var labelStyle = 'font-size:0.82em;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;opacity:0.65;display:block;margin-bottom:5px;';
         var fieldStyle = 'margin-bottom:14px;';
@@ -5038,7 +5040,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var usersHtml = buildUserMultiSelectHtml(users, presetUserIds, 'chkMtlUser');
 
 
-            var presetName       = (existingData && existingData.listName)    || '';
+            var presetName       = (existingData && existingData.listName)    || sourceTag || '';
             var presetCustomName = (existingData && existingData.customName)  || '';
             var presetDisplay    = (existingData && existingData.displayMode) || '';
             var presetImageType  = (existingData && existingData.imageType)   || '';
@@ -5106,6 +5108,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '<div style="flex:1;min-width:0;padding-left:20px;">' +
                 '<div style="' + colHeaderStyle + '"><i class="md-icon" style="font-size:0.9em;vertical-align:middle;margin-right:5px;">format_list_numbered</i>' + (isShows ? 'Show List' : 'Movie List') + '</div>' +
 
+                (sourceTag
+                    ? '<div style="font-size:0.9em;line-height:1.6;padding:10px 12px;border:1px solid var(--line-color);border-radius:4px;">' +
+                      '<div style="font-weight:600;margin-bottom:6px;"><i class="md-icon" style="font-size:1em;vertical-align:middle;margin-right:4px;">label</i>' + escHtml(sourceTag) + '</div>' +
+                      'The shows carrying this tag, in the order of the tag\'s source list. The top ' + maxShows + ' are ranked, and the list is rebuilt every time the Tag &amp; Collection sync runs.' +
+                      '</div>' +
+                      '<div class="mtlSelectedList" style="display:none;"></div>'
+                    : '') +
+                (sourceTag ? '<div style="display:none;">' : '') +
                 '<div style="' + fieldStyle + '">' +
                 '<label style="' + labelStyle + '">' + (isShows ? 'Add Show' : 'Add Movie') + '</label>' +
                 '<div style="position:relative;">' +
@@ -5113,7 +5123,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '<div class="mtlSearchResults" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:200;background:var(--plugin-popup-bg,#2a2a2a);border:1px solid var(--line-color);border-radius:4px;max-height:200px;overflow-y:auto;margin-top:2px;box-shadow:0 4px 12px rgba(0,0,0,0.45);"></div>' +
                 '</div></div>' +
 
-                '<div class="mtlSelectedList" style="max-height:500px;overflow-y:auto;border:1px solid var(--line-color);border-radius:4px;padding:4px 8px;min-height:60px;"></div>' +
+                (sourceTag ? '' : '<div class="mtlSelectedList" style="max-height:500px;overflow-y:auto;border:1px solid var(--line-color);border-radius:4px;padding:4px 8px;min-height:60px;"></div>') +
+                (sourceTag ? '</div>' : '') +
                 '</div>' +
 
                 '</div>' +
@@ -5169,7 +5180,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             function updateCreateBtn() {
                 var nameVal  = (modal.querySelector('.mtlListName').value || '').trim();
                 var hasUsers = modal.querySelectorAll('.chkMtlUser:checked').length > 0;
-                modal.querySelector('.btnMtlCreate').disabled = (nameVal.length === 0 || selectedMovies.length === 0 || !hasUsers);
+                modal.querySelector('.btnMtlCreate').disabled = (nameVal.length === 0 || (selectedMovies.length === 0 && !sourceTag) || !hasUsers);
             }
 
             renderSelectedList();
@@ -5274,7 +5285,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                 if (!listName)                    { errEl.textContent = 'Please enter a name for the list.'; return; }
                 if (selectedUserIds.length === 0) { errEl.textContent = 'Please select at least one target user.'; return; }
-                if (selectedMovies.length === 0)  { errEl.textContent = 'Please add at least one ' + itemWord + '.'; return; }
+                if (selectedMovies.length === 0 && !sourceTag) { errEl.textContent = 'Please add at least one ' + itemWord + '.'; return; }
 
                 if (isShows) {
                     createBtn.disabled = true;
@@ -5286,7 +5297,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         body: JSON.stringify({
                             ListName: listName, CustomName: customNameVal, DisplayMode: displayMode, ImageType: imageType,
                             UserIds: selectedUserIds,
-                            SeriesIds: selectedMovies.map(function (m) { return m.ItemId; })
+                            SourceTag: sourceTag,
+                            SeriesIds: sourceTag ? [] : selectedMovies.map(function (m) { return m.ItemId; })
                         })
                     })
                     .then(function (r) { return r.json(); })
@@ -5392,6 +5404,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     '<div style="flex:1;min-width:220px;font-size:0.92em;line-height:1.7;">' +
                     '<span style="' + labelStyle + '">Target users</span><div>' + escHtml(userNames.join(', ') || '—') + '</div>' +
                     '<span style="' + labelStyle + 'margin-top:10px;">Image type</span><div>' + escHtml(data.ImageType || 'Auto') + '</div>' +
+                    '<span style="' + labelStyle + 'margin-top:10px;">Shows come from</span><div>' +
+                    (data.SourceTag ? 'Tag <strong>' + escHtml(data.SourceTag) + '</strong> — rebuilt on every sync' : 'Picked by hand') + '</div>' +
                     '</div>' +
                     '</div>' +
                     '<div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;">' +
@@ -5401,6 +5415,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 body.querySelector('.btnTlEditShows').addEventListener('click', function () {
                     showManualTopListModal(onSuccess, {
                         contentType: 'Shows',
+                        sourceTag:   data.SourceTag || '',
                         listName:    tagName,
                         customName:  data.CustomName || '',
                         displayMode: data.DisplayMode || '',
@@ -5845,22 +5860,54 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
             btnByTagCard.addEventListener('click', function () { renderStep2(); });
 
-            btnShowsCard.addEventListener('click', function () {
+            btnShowsCard.addEventListener('click', function () { renderStepShows(); });
+        }
+
+        // Shows: pick by hand, or follow a tag that is on shows (rebuilt every sync).
+        function renderStepShows() {
+            var cardStyle = 'flex:1;cursor:pointer;background:var(--plugin-input-bg,rgba(255,255,255,0.05));border:1px solid var(--plugin-input-border,rgba(255,255,255,0.12));border-radius:8px;padding:20px 16px;text-align:left;color:inherit;transition:border-color 0.15s;';
+            modal.innerHTML =
+                '<div style="' + innerStyle + '">' +
+                '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">' +
+                '<div style="display:flex;align-items:center;gap:10px;">' +
+                '<button type="button" class="btnChooserBack" style="background:transparent;border:none;color:var(--theme-text-secondary);cursor:pointer;padding:2px;line-height:1;opacity:0.7;"><i class="md-icon">arrow_back</i></button>' +
+                '<h3 style="margin:0;font-size:1.1em;color:#52B54B;">Show Top-List</h3>' +
+                '</div>' +
+                '<button type="button" class="btnChooserClose" style="background:transparent;border:none;color:inherit;cursor:pointer;padding:2px;opacity:0.6;line-height:1;"><i class="md-icon">close</i></button>' +
+                '</div>' +
+                '<div style="display:flex;gap:16px;">' +
+                '<button type="button" class="btnShowsManual" style="' + cardStyle + '">' +
+                '<div style="font-size:1.4em;margin-bottom:10px;color:#52B54B;"><i class="md-icon">format_list_numbered</i></div>' +
+                '<div style="font-weight:600;font-size:0.95em;margin-bottom:6px;">Pick shows</div>' +
+                '<div style="font-size:0.82em;color:var(--theme-text-secondary);line-height:1.5;">Choose up to 10 shows and their order yourself</div>' +
+                '</button>' +
+                '<button type="button" class="btnShowsByTag" style="' + cardStyle + '">' +
+                '<div style="font-size:1.4em;margin-bottom:10px;color:#52B54B;"><i class="md-icon">label</i></div>' +
+                '<div style="font-weight:600;font-size:0.95em;margin-bottom:6px;">From a tag</div>' +
+                '<div style="font-size:0.82em;color:var(--theme-text-secondary);line-height:1.5;">Follow a tag on your shows — rebuilt on every sync</div>' +
+                '</button>' +
+                '</div>' +
+                '</div>';
+            modal.querySelector('.btnChooserClose').addEventListener('click', function () { modal.remove(); document.removeEventListener('keydown', onEsc); });
+            modal.querySelector('.btnChooserBack').addEventListener('click', function () { renderStep1(); });
+            modal.querySelector('.btnShowsManual').addEventListener('click', function () {
                 modal.remove();
                 document.removeEventListener('keydown', onEsc);
                 showManualTopListModal(onSuccess, null, 'Shows');
             });
+            modal.querySelector('.btnShowsByTag').addEventListener('click', function () { renderStep2(true); });
         }
 
-        function renderStep2() {
-            var tags = (tagsData.Tags || []);
+        function renderStep2(forShows) {
+            var tags = (tagsData.Tags || []).filter(function (t) { return !forShows || (t.SeriesCount || 0) > 0; });
             var inputStyle = 'background:var(--plugin-input-bg);border:1px solid var(--plugin-input-border);border-radius:4px;padding:6px 10px;font-size:0.9em;color:var(--plugin-popup-color);width:100%;box-sizing:border-box;';
 
             var tagRowsHtml = tags.length === 0
-                ? '<p style="padding:12px 4px;color:var(--theme-text-secondary);font-size:0.88em;font-style:italic;">No tags found.</p>'
+                ? '<p style="padding:12px 4px;color:var(--theme-text-secondary);font-size:0.88em;font-style:italic;">' + (forShows ? 'No tags on shows yet. Add a source in the Tag &amp; Collection tab that tags shows, run the sync, then come back.' : 'No tags found.') + '</p>'
                 : tags.map(function (tag) {
                     var name  = tag.Name || '';
-                    var count = tag.MovieCount != null ? tag.MovieCount : (tag.ItemCount != null ? tag.ItemCount : 0);
+                    var count = forShows ? (tag.SeriesCount || 0)
+                        : (tag.MovieCount != null ? tag.MovieCount : (tag.ItemCount != null ? tag.ItemCount : 0));
                     var hasTopList = existingTopLists.has(sanitizeName(name).toLowerCase());
                     var badge = hasTopList
                         ? '<span style="font-size:0.72em;background:rgba(180,140,50,0.18);color:#c9a84c;border-radius:3px;padding:1px 6px;margin-left:6px;white-space:nowrap;">top-list</span>'
@@ -5869,7 +5916,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         'style="width:100%;cursor:pointer;background:transparent;border:none;border-bottom:1px solid var(--line-color);' +
                         'padding:10px 4px;display:flex;align-items:center;color:inherit;text-align:left;">' +
                         '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(name) + badge + '</span>' +
-                        '<span style="margin-left:12px;white-space:nowrap;font-size:0.85em;color:var(--theme-text-secondary);">' + count + ' movies</span>' +
+                        '<span style="margin-left:12px;white-space:nowrap;font-size:0.85em;color:var(--theme-text-secondary);">' + count + (forShows ? ' shows' : ' movies') + '</span>' +
                         '</button>';
                 }).join('');
 
@@ -5891,7 +5938,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '</div>';
 
             modal.querySelector('.btnChooserClose').addEventListener('click', function () { modal.remove(); document.removeEventListener('keydown', onEsc); });
-            modal.querySelector('.btnChooserBack').addEventListener('click', function () { renderStep1(); });
+            modal.querySelector('.btnChooserBack').addEventListener('click', function () { if (forShows) renderStepShows(); else renderStep1(); });
 
             modal.querySelector('#tlChooserSearch').addEventListener('input', function () {
                 var q = this.value.toLowerCase();
@@ -5907,7 +5954,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     var tagName = this.dataset.name;
                     modal.remove();
                     document.removeEventListener('keydown', onEsc);
-                    showTopListModal(tagName, tagName, onSuccess);
+                    if (forShows) showManualTopListModal(onSuccess, null, 'Shows', { sourceTag: tagName });
+                    else showTopListModal(tagName, tagName, onSuccess);
                 });
             });
         }
