@@ -748,7 +748,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var opts = e.target.closest('.mi-sort-row') && e.target.closest('.mi-sort-row').querySelector('.mi-pop-opts');
         if (opts) opts.style.display = e.target.value === 'Popularity' ? 'block' : 'none';
         // Most-watched always wins; Random has no direction.
-        var order = e.target.closest('.mi-sort-row') && e.target.closest('.mi-sort-row').querySelector('.selMiSortOrder');
+        var order = e.target.closest('.mi-sort-row') && e.target.closest('.mi-sort-row').querySelector('.mi-sort-order');
         if (order) order.style.display = e.target.value === 'Popularity' || e.target.value === 'Random' ? 'none' : '';
     });
 
@@ -1648,10 +1648,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
                                 <label style="font-size:0.9em; white-space:nowrap; margin:0;">Pick the top "Max items" by</label>
                                 <select is="emby-select" class="selMiSortBy" style="width:auto; min-width:220px;">${miSortOptions}</select>
-                                <select is="emby-select" class="selMiSortOrder" style="width:auto; display:${miSortBy === 'Popularity' || miSortBy === 'Random' ? 'none' : ''};">
+                                <span class="mi-sort-order" style="display:${miSortBy === 'Popularity' || miSortBy === 'Random' ? 'none' : ''};"><select is="emby-select" class="selMiSortOrder" style="width:auto;">
                                     <option value="Descending" ${miSortOrder !== 'Ascending' ? 'selected' : ''}>Highest / newest first</option>
                                     <option value="Ascending" ${miSortOrder === 'Ascending' ? 'selected' : ''}>Lowest / oldest first</option>
-                                </select>
+                                </select></span>
                             </div>
                             <div class="fieldDescription" style="margin-top:6px;">This decides which titles get the tag: all matches are ranked and the top "Max items" kept. It does not set the order a home row shows them in — that is the row's own Sort By (e.g. Random). Only a Top 10 / top-list built from this tag follows this ranking.</div>
                             <div class="mi-pop-opts" style="display:${miSortBy === 'Popularity' ? 'block' : 'none'}; margin-top:12px; padding:12px; border:1px solid var(--line-color); border-radius:4px;">
