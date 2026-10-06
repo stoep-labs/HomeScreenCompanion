@@ -170,6 +170,8 @@ namespace HomeScreenCompanion
         public Dictionary<string, int> MovieCounts { get; set; } = new Dictionary<string, int>();
         // Names (lower case) of the lists in FolderNames that are show top-lists.
         public List<string> ShowLists { get; set; } = new List<string>();
+        // Top-list names that are existing tags (tag-based lists); the rest are manual.
+        public List<string> TagBased { get; set; } = new List<string>();
     }
 
     [Route("/HomeScreenCompanion/TopList/ManualItems", "GET")]
@@ -2205,7 +2207,13 @@ public class HomeScreenCompanionService : IService
                     movieCounts[name.ToLowerInvariant()] = (tl.ShowEntries ?? new List<ShowTopListEntry>()).Count;
                     showLists.Add(name.ToLowerInvariant());
                 }
-                return new GetTopListsResponse { FolderNames = folderNames, MovieCounts = movieCounts, ShowLists = showLists };
+                // One cheap lookup per list instead of the full tag scan the page used to wait for.
+                var tagBased = (Plugin.Instance.Configuration.TopLists ?? new List<TopListHomeSection>())
+                    .Where(t => !string.IsNullOrWhiteSpace(t.TagName))
+                    .Where(t => _libraryManager.GetItemList(new InternalItemsQuery { Tags = new[] { t.TagName }, Recursive = true, Limit = 1 }).Length > 0)
+                    .Select(t => t.TagName)
+                    .ToList();
+                return new GetTopListsResponse { FolderNames = folderNames, MovieCounts = movieCounts, ShowLists = showLists, TagBased = tagBased };
             }
             catch
             {

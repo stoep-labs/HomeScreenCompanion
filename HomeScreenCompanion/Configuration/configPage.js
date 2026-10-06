@@ -6237,14 +6237,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
         var token = window.ApiClient.accessToken();
 
+        // Only what the list needs: the full tag scan is slow on big servers, so it is loaded
+        // when Create New is opened, and the server says which lists are tag-based.
         Promise.all([
-            fetch(window.ApiClient.getUrl('HomeScreenCompanion/Manage/Tags'), { headers: { 'X-MediaBrowser-Token': token } }).then(function (r) { return r.json(); }),
-            fetch(window.ApiClient.getUrl('HomeScreenCompanion/Manage/Collections'), { headers: { 'X-MediaBrowser-Token': token } }).then(function (r) { return r.json(); }),
+            Promise.resolve(null),
+            Promise.resolve(null),
             window.ApiClient.getPluginConfiguration(pluginId).catch(function () { return { Tags: [] }; }),
             fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/List'), { headers: { 'X-MediaBrowser-Token': token } }).then(function (r) { return r.json(); }).catch(function () { return { FolderNames: [] }; })
         ]).then(function (results) {
-            var tagsData = results[0];
-            var collectionsData = results[1];
+            var tagsData = null;
             var pluginConfig = results[2];
             var existingTopLists = new Set((results[3].FolderNames || []).map(function (n) { return n.toLowerCase(); }));
 
@@ -6293,7 +6294,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
             var searchInputStyle = 'background:var(--plugin-input-bg);border:1px solid var(--plugin-input-border);border-radius:4px;padding:5px 10px;font-size:0.9em;color:var(--plugin-popup-color);width:400px;max-width:100%;';
 
-            var realTagNamesLower = new Set((tagsData.Tags || []).map(function (t) { return (t.Name || '').toLowerCase(); }));
+            var realTagNamesLower = new Set((results[3].TagBased || []).map(function (n) { return (n || '').toLowerCase(); }));
 
             var showListKeys = new Set(results[3].ShowLists || []);
 
@@ -6395,10 +6396,22 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var btnCreateNew = container.querySelector('#btnCreateNewTopList');
             if (btnCreateNew) {
                 btnCreateNew.addEventListener('click', function () {
-                    showCreateTopListChooser(tagsData, existingTopLists, function () {
-                        container.dataset.loaded = '';
-                        loadTopListsTab(view);
-                    });
+                    var openChooser = function () {
+                        showCreateTopListChooser(tagsData, existingTopLists, function () {
+                            container.dataset.loaded = '';
+                            loadTopListsTab(view);
+                        });
+                    };
+                    if (tagsData) { openChooser(); return; }
+                    btnCreateNew.disabled = true;
+                    fetch(window.ApiClient.getUrl('HomeScreenCompanion/Manage/Tags'), { headers: { 'X-MediaBrowser-Token': token } })
+                        .then(function (r) { return r.json(); })
+                        .catch(function () { return { Tags: [] }; })
+                        .then(function (data) {
+                            tagsData = data || { Tags: [] };
+                            btnCreateNew.disabled = false;
+                            openChooser();
+                        });
                 });
             }
 
