@@ -381,6 +381,7 @@ namespace HomeScreenCompanion
 
                 var userDataCache = new Dictionary<(Guid, long), (bool Played, DateTimeOffset? LastPlayedDate, int PlayCount)>();
                 var seriesLastPlayedCache = new Dictionary<(Guid, long), DateTimeOffset?>();
+                var popularityCounter = new PopularityCounter(_libraryManager, _userManager, _userDataManager); // reads each user's watch data once per run
                 var preloadedUsers = _userManager.GetUserList(new UserQuery { IsDisabled = false });
 
                 var activeTagOverrides = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -782,9 +783,10 @@ namespace HomeScreenCompanion
                                 if (ItemMatchesMediaInfo(item, tagConfig, debug, seriesEpisodeCache, personCache, userDataCache, ci, preloadedUsers, seriesLastPlayedCache, collectionMembershipCache, seriesEpisodeNamesCache))
                                 {
                                     matchedLocalItems.Add(item);
-                                    if (effectiveLimit < 10000 && matchedLocalItems.Count >= effectiveLimit) break;
+                                    if (!SourceSort.IsSorted(tagConfig) && effectiveLimit < 10000 && matchedLocalItems.Count >= effectiveLimit) break;
                                 }
                             }
+                            ApplySourceSort(tagConfig, matchedLocalItems, effectiveLimit, popularityCounter);
                             gs.ListCount = itemsToScan.Count;
                             if (TagConfigTargetsEpisodes(tagConfig))
                             {
@@ -959,7 +961,7 @@ namespace HomeScreenCompanion
                             rankIdsByTag[tagName] = rankIds;
                         }
                         var rankSeen = new HashSet<string>(rankIds, StringComparer.OrdinalIgnoreCase);
-                        foreach (var rankId in matchedLocalItems.Select(i => i.GetProviderId("Imdb") ?? "").Where(id => !string.IsNullOrEmpty(id)))
+                        foreach (var rankId in matchedLocalItems.Select(RankKey).Where(id => !string.IsNullOrEmpty(id)))
                             if (rankSeen.Add(rankId)) rankIds.Add(rankId);
 
                         // If this is a priority-override entry but produced zero results,
@@ -1988,9 +1990,10 @@ namespace HomeScreenCompanion
                         if (ItemMatchesMediaInfo(item, tagConfig, debug, seriesEpisodeCache, personCache, userDataCache, ci, preloadedUsers, seriesLastPlayedCache, collectionMembershipCache, seriesEpisodeNamesCache))
                         {
                             matchedLocalItems.Add(item);
-                            if (effectiveLimit < 10000 && matchedLocalItems.Count >= effectiveLimit) break;
+                            if (!SourceSort.IsSorted(tagConfig) && effectiveLimit < 10000 && matchedLocalItems.Count >= effectiveLimit) break;
                         }
                     }
+                    ApplySourceSort(tagConfig, matchedLocalItems, effectiveLimit, new PopularityCounter(_libraryManager, _userManager, _userDataManager));
                     if (debug)
                     {
                         _log.Debug($"  Scanned {_itemsToScan.Count:N0} items in {groupTimer.ElapsedMilliseconds} ms  ·  {matchedLocalItems.Count} matched");
@@ -2174,7 +2177,7 @@ namespace HomeScreenCompanion
             if (!dryRun)
             {
                 WriteRankFile(tagName, matchedLocalItems
-                    .Select(i => i.GetProviderId("Imdb") ?? "")
+                    .Select(RankKey)
                     .Where(id => !string.IsNullOrEmpty(id))
                     .ToList());
             }
@@ -2486,6 +2489,27 @@ namespace HomeScreenCompanion
         // per URL / local source with the same Name + Tag, so several entries can share one key.
         private static string GroupKey(TagConfig t) =>
             (t.Name ?? "").Trim() + "\x1F" + (t.Tag ?? "").Trim();
+
+        // Rank file entry: the IMDb id, or the item's own id for items without one (shows from
+        // local sources often have none). Readers that only know IMDb ids skip the others.
+        internal static string RankKey(BaseItem item)
+        {
+            var imdb = item.GetProviderId("Imdb");
+            return !string.IsNullOrEmpty(imdb) ? imdb : item.Id.ToString("N");
+        }
+
+        // Sorted Smart Playlist sources match everything, then keep the top N in sort order.
+        // Sorting in place keeps tagOutputItems/collectionOutputItems (same list) in step.
+        private void ApplySourceSort(TagConfig tagConfig, List<BaseItem> matched, int limit, PopularityCounter popularity)
+        {
+            if (!SourceSort.IsSorted(tagConfig)) return;
+            var sorted = SourceSort.Sort(matched, tagConfig, popularity, m => _log.Info("  " + m));
+            if (limit < 10000 && sorted.Count > limit) sorted = sorted.Take(limit).ToList();
+            matched.Clear();
+            matched.AddRange(sorted);
+            _log.Info($"  Sorted by {tagConfig.MiSortBy}{(tagConfig.MiSortBy == "Random" ? "" : string.Equals(tagConfig.MiSortOrder, "Ascending", StringComparison.OrdinalIgnoreCase) ? " (lowest first)" : " (highest first)")}: {matched.Count} kept"
+                + (matched.Count > 0 ? " — " + string.Join(", ", matched.Take(10).Select((i, n) => $"{n + 1}. {i.Name}")) : ""));
+        }
 
         // Writes tag_ranks/<tag>.json — the IMDb ids of a tag's matched items in source order,
         // used by SyncTopListFolders to number .strm files.

@@ -3147,6 +3147,9 @@ public class HomeScreenCompanionService : IService
             t.HomeSectionTracked  ??= new List<HomeSectionTracking>();
             t.PlaylistUserIds     ??= new List<string>();
             t.PlaylistMappings    ??= new List<PlaylistMapping>();
+            t.PopularityExcludeUserIds ??= new List<string>();
+            t.MiSortBy            ??= "";
+            t.MiSortOrder         ??= "Descending";
             if (string.IsNullOrEmpty(t.HomeSectionLibraryId)) t.HomeSectionLibraryId = "auto";
             if (string.IsNullOrEmpty(t.HomeSectionSettings)) t.HomeSectionSettings = "{}";
             foreach (var m in t.PlaylistMappings) m.LastSyncedItemIds ??= new List<long>();
