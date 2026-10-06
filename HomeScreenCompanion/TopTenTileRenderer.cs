@@ -8,7 +8,7 @@ namespace HomeScreenCompanion
     /// Renders Netflix-style "Top 10" art: a huge outlined rank numeral with the movie poster as
     /// a rounded card, on a blurred, darkened copy of the same poster. Two shapes:
     ///   Render       — 1280x720 tile (numeral left, poster right) for the Thumb image.
-    ///   RenderPoster — 1600x1200 (4:3) card (full-height poster right, numeral behind it) for the Primary image.
+    ///   RenderPoster — 1500x1200 (5:4) card (full-height poster right, numeral behind it) for the Primary image.
     ///
     /// Both are always composed from the Primary (poster) image. The numeral size is fixed by
     /// what makes "10" fit, so every image in a list has the same numeral height.
@@ -17,7 +17,7 @@ namespace HomeScreenCompanion
     {
         public const int Width = 1280;
         public const int Height = 720;
-        public const int PosterWidth = 1600;
+        public const int PosterWidth = 1500;
         public const int PosterHeight = 1200;
 
         private const int TileCardH = 610;       // poster card height on the landscape tile
@@ -68,8 +68,8 @@ namespace HomeScreenCompanion
             Save(surface, outputPath);
         }
 
-        // Netflix-style card for the Primary image: 4:3, so Emby shows the row with its
-        // "fourThree" card shape (it picks the shape from the images' aspect ratio). The poster
+        // Netflix-style card for the Primary image: 5:4 (Emby treats 1.2-1.4 as its
+        // "fourThree" card shape; it picks the shape from the images' aspect ratio). The poster
         // runs the full height on the right; the numeral sits behind its left edge.
         public static void RenderPoster(string posterPath, int rank, string outputPath)
         {
@@ -77,7 +77,7 @@ namespace HomeScreenCompanion
                 throw new ArgumentOutOfRangeException(nameof(rank), "rank must be between 1 and 10");
 
             const int w = PosterWidth, h = PosterHeight;
-            const int margin = 36;
+            const int margin = 16;
             using var poster = SKBitmap.Decode(posterPath)
                 ?? throw new InvalidOperationException($"SkiaSharp could not decode '{posterPath}' (unsupported format or corrupt file)");
             using var surface = SKSurface.Create(new SKImageInfo(w, h, SKColorType.Rgba8888, SKAlphaType.Premul))
@@ -93,9 +93,13 @@ namespace HomeScreenCompanion
             int px = w - margin - pw, py = margin;
             int overlap = (int)(pw * 0.10);
 
-            // Netflix style: every numeral runs the full poster height; one that is too wide for
-            // the space left of the poster (e.g. "10") is squeezed horizontally instead of shrunk.
-            float size = SizeForCapHeight(ph * 0.98f);
+            // Netflix style: every numeral runs (nearly) the full poster height; one that is too
+            // wide for the space left of the poster (e.g. "10") is squeezed horizontally instead
+            // of shrunk. Emby shows this image in a 4:3 card and crops ~37px off the top and
+            // bottom, so the numeral (with its outline and the overshoot of round digits) stays
+            // inside that safe area.
+            const int safe = 64;
+            float size = SizeForCapHeight(h - safe * 2);
             var num = rank.ToString();
             using var fill = NumeralPaint(size, SKTextAlign.Right);
             using var outline = OutlinePaint(size, SKTextAlign.Right);
@@ -107,7 +111,7 @@ namespace HomeScreenCompanion
                 outline.TextScaleX = room / inkW;
             }
             float textX = px + overlap;
-            float textY = py + ph;
+            float textY = h - safe;
             canvas.DrawText(num, textX, textY, outline);
             canvas.DrawText(num, textX, textY, fill);
 
