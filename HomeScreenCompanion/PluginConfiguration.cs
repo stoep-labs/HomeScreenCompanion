@@ -29,6 +29,8 @@ namespace HomeScreenCompanion
             "Example: [{\"title\":\"Inception\",\"year\":2010,\"imdb_id\":\"tt1375666\",\"type\":\"movie\"}]";
         public bool ExtendedConsoleOutput { get; set; } = false;
         public bool LogMissingItems { get; set; } = false;
+        // Keep movie top-list libraries out of users' "My Media" tiles and "Latest" rows.
+        public bool HideTopListLibraries { get; set; } = true;
         public bool DryRunMode { get; set; } = false;
         public bool PreserveTagsOnEmptyResult { get; set; } = true;
         // Give top-list copies the same collection memberships as their original movie.

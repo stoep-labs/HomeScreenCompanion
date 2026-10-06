@@ -3403,6 +3403,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             DryRunMode: view.querySelector('#chkDryRunMode').checked,
             PreserveTagsOnEmptyResult: view.querySelector('#chkPreserveTagsOnEmptyResult').checked,
             TopListMirrorCollections: view.querySelector('#chkTopListMirrorCollections').checked,
+            HideTopListLibraries: view.querySelector('#chkHideTopListLibraries').checked,
             Tags: flatTags,
             SavedFilters: savedFilters,
             HomeSyncEnabled: hscEnabled ? hscEnabled.checked : (lastHscConfig.HomeSyncEnabled || false),
@@ -7346,6 +7347,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 view.querySelector('#chkDryRunMode').checked = config.DryRunMode || false;
                 view.querySelector('#chkPreserveTagsOnEmptyResult').checked = config.PreserveTagsOnEmptyResult || false;
                 view.querySelector('#chkTopListMirrorCollections').checked = config.TopListMirrorCollections || false;
+                view.querySelector('#chkHideTopListLibraries').checked = config.HideTopListLibraries !== false;
                 if (view.querySelector('#txtSearchTags')) {
                     view.querySelector('#txtSearchTags').value = '';
                     view.querySelector('#btnClearSearch').style.display = 'none';
