@@ -88,9 +88,13 @@ namespace HomeScreenCompanion
             DrawScrim(canvas, w, h, towardBottom: false);
             DrawVignette(canvas, w, h, 0.45f);
 
-            int ph = h - margin * 2;
+            // Emby shows this image in a 4:3 card and crops the top and bottom; the poster sits
+            // inside the visible part so its rounded corners show.
+            int crop = (h - w * 3 / 4) / 2;
+            int py = crop + margin;
+            int ph = h - py * 2;
             int pw = (int)(ph / 1.5);
-            int px = w - margin - pw, py = margin;
+            int px = w - margin - pw;
             int overlap = (int)(pw * 0.10);
 
             // Netflix style: every numeral runs (nearly) the full poster height; one that is too
@@ -98,7 +102,7 @@ namespace HomeScreenCompanion
             // of shrunk. Emby shows this image in a 4:3 card and crops ~37px off the top and
             // bottom, so the numeral (with its outline and the overshoot of round digits) stays
             // inside that safe area.
-            const int safe = 64;
+            int safe = crop + 27;
             float size = SizeForCapHeight(h - safe * 2);
             var num = rank.ToString();
             using var fill = NumeralPaint(size, SKTextAlign.Right);
