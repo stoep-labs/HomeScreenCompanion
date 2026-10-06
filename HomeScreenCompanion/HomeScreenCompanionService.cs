@@ -96,6 +96,33 @@ namespace HomeScreenCompanion
         public string Message { get; set; } = "";
     }
 
+    // What a Local Media Information source would tag, from its unsaved settings. Changes nothing.
+    [Route("/HomeScreenCompanion/PreviewSource", "POST")]
+    [Authenticated(Roles = "Admin")]
+    public class PreviewSourceRequest : IReturn<PreviewSourceResponse>
+    {
+        public TagConfig Source { get; set; } = new TagConfig();
+    }
+
+    public class PreviewSourceResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = "";
+        public int Scanned { get; set; }
+        public bool ShowViewers { get; set; }
+        public List<PreviewSourceItem> Items { get; set; } = new List<PreviewSourceItem>();
+    }
+
+    public class PreviewSourceItem
+    {
+        public string Id { get; set; } = "";
+        public string Name { get; set; } = "";
+        public string Type { get; set; } = "";
+        public int? Year { get; set; }
+        public int? Viewers { get; set; }
+        public string ImageTag { get; set; } = "";
+    }
+
     [Route("/HomeScreenCompanion/Hsc/Status", "GET")]
     [Authenticated(Roles = "Admin")]
     public class HscGetStatusRequest : IReturn<HscSyncStatusResponse> { }
@@ -662,6 +689,37 @@ public class HomeScreenCompanionService : IService
                 return new RunEntryResponse { Success = false, Message = "Task not initialized" };
             var (success, message) = await task.RunSingleEntryAsync(request.EntryName, CancellationToken.None);
             return new RunEntryResponse { Success = success, Message = message };
+        }
+
+        public async Task<object> Post(PreviewSourceRequest request)
+        {
+            var task = HomeScreenCompanionTask.Instance;
+            if (task == null)
+                return new PreviewSourceResponse { Message = "Task not initialized" };
+            var source = request.Source ?? new TagConfig();
+            source.SourceType = "MediaInfo";
+            if (string.IsNullOrWhiteSpace(source.Tag)) source.Tag = string.IsNullOrWhiteSpace(source.Name) ? "preview" : source.Name;
+            if (string.IsNullOrWhiteSpace(source.Name)) source.Name = source.Tag;
+
+            var preview = await task.PreviewEntryAsync(source, CancellationToken.None);
+            if (!preview.Done)
+                return new PreviewSourceResponse { Message = preview.Message };
+            bool showViewers = string.Equals(source.MiSortBy, "Popularity", StringComparison.OrdinalIgnoreCase);
+            return new PreviewSourceResponse
+            {
+                Success = true,
+                Scanned = preview.Scanned,
+                ShowViewers = showViewers,
+                Items = preview.Items.Select(i => new PreviewSourceItem
+                {
+                    Id = i.Id.ToString("N"),
+                    Name = i.Name ?? "",
+                    Type = i.GetType().Name,
+                    Year = i.ProductionYear,
+                    Viewers = showViewers && preview.Viewers.TryGetValue(i.Id, out var v) ? v : (int?)null,
+                    ImageTag = i.HasImage(ImageType.Primary) ? (i.GetImageInfo(ImageType.Primary, 0)?.DateModified.Ticks.ToString() ?? "") : ""
+                }).ToList()
+            };
         }
 
         public async Task<object> Post(TestAiSourceRequest request)

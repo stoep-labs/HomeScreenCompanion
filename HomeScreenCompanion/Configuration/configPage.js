@@ -728,6 +728,73 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         };
     }
 
+    // Preview: runs this source's current (unsaved) filters and "Pick the top N by" on the
+    // server without tagging anything, and lists what it would tag.
+    function showSourcePreview(row, btn) {
+        var view = document.querySelector('#HomeScreenCompanionConfigPage');
+        var label = row.querySelector('.txtEntryLabel').value;
+        var tag = row.querySelector('.txtTagName').value || label;
+        var rows = Array.from(view.querySelectorAll('.tag-row'));
+        var source = getUiConfig(view, true).Tags.filter(function (t) {
+            return t.SourceType === 'MediaInfo' && t.Name === label && t.Tag === tag;
+        })[rows.filter(function (r) {
+            return r.querySelector('.selSourceType').value === 'MediaInfo'
+                && r.querySelector('.txtEntryLabel').value === label
+                && (r.querySelector('.txtTagName').value || r.querySelector('.txtEntryLabel').value) === tag;
+        }).indexOf(row)];
+        if (!source) return;
+
+        var overlay = document.getElementById('miPreviewModalOverlay');
+        var body = overlay.querySelector('.mi-preview-body');
+        overlay.querySelector('.mi-preview-subtitle').textContent = (label || tag || 'This source') + ' — what it would tag right now';
+        body.innerHTML = '<div style="padding:20px 0; text-align:center; opacity:0.8;">Checking your library…</div>';
+        overlay.classList.add('modal-visible');
+        btn.disabled = true;
+
+        fetch(window.ApiClient.getUrl('HomeScreenCompanion/PreviewSource'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
+            body: JSON.stringify({ Source: source })
+        }).then(function (r) { return r.json(); })
+        .then(function (res) {
+            if (!res.Success) {
+                body.innerHTML = '<div style="padding:12px 0;">' + escapeHtml(res.Message || 'Preview failed.') + '</div>';
+                return;
+            }
+            var items = res.Items || [];
+            var summary = items.length + ' title' + (items.length === 1 ? '' : 's') + ' would get the tag'
+                + ' (' + res.Scanned.toLocaleString() + ' checked).';
+            if (!items.length) {
+                summary = 'Nothing matches, so nothing would be tagged.';
+                if (res.ShowViewers) {
+                    var days = source.PopularityDays;
+                    summary += ' No matching title was watched by at least ' + (source.PopularityMinViewers || 1) + ' user(s) '
+                        + (days > 0 ? 'in the last ' + days + ' days.' : 'ever.');
+                }
+            }
+            var html = '<div style="margin-bottom:12px; opacity:0.85;">' + escapeHtml(summary) + '</div>';
+            items.forEach(function (it, n) {
+                var img = it.ImageTag
+                    ? '<img src="' + window.ApiClient.getUrl('Items/' + it.Id + '/Images/Primary', { maxHeight: 90, tag: it.ImageTag }) + '" style="width:40px; height:60px; object-fit:cover; border-radius:3px;" loading="lazy" />'
+                    : '<div style="width:40px; height:60px; border-radius:3px; background:rgba(128,128,128,0.2);"></div>';
+                var meta = [it.Year, it.Type === 'Series' ? 'Show' : it.Type === 'Movie' ? 'Movie' : it.Type].filter(Boolean).join(' · ');
+                var viewers = it.Viewers != null
+                    ? '<div style="margin-left:auto; white-space:nowrap; opacity:0.85;">' + it.Viewers + ' viewer' + (it.Viewers === 1 ? '' : 's') + '</div>'
+                    : '';
+                html += '<div style="display:flex; align-items:center; gap:12px; padding:6px 0; border-bottom:1px solid rgba(128,128,128,0.15);">'
+                    + '<div style="width:24px; text-align:right; opacity:0.6;">' + (n + 1) + '</div>' + img
+                    + '<div style="min-width:0;"><div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escapeHtml(it.Name) + '</div>'
+                    + '<div style="font-size:0.85em; opacity:0.7;">' + escapeHtml(meta) + '</div></div>' + viewers + '</div>';
+            });
+            if (items.length && source.MiSortBy) {
+                html += '<div class="fieldDescription" style="margin-top:12px;">Numbered in ranking order. A home row shows them in its own Sort By order.</div>';
+            }
+            body.innerHTML = html;
+        }).catch(function (err) {
+            body.innerHTML = '<div style="padding:12px 0;">Preview failed: ' + escapeHtml(err.message) + '</div>';
+        }).finally(function () { btn.disabled = false; });
+    }
+
     function fillPopularityUsers() {
         var pending = document.querySelectorAll('.mi-pop-users[data-pending="1"]');
         if (!pending.length) return;
@@ -1642,7 +1709,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         <div class="mi-limit-row" style="display:${sourceType === 'MediaInfo' ? 'flex' : 'none'}; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap;">
                             <label style="font-size:0.9em; white-space:nowrap; margin:0;">Max items</label>
                             <input is="emby-input" class="txtMediaInfoLimit" type="number" value="${mediaInfoLimit}" min="0" style="width:90px;" />
-                            <button type="button" is="emby-button" class="btnMiHelp raised" style="margin-left:auto; background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">help_outline</i><span>How to (filter guide)</span></button>
+                            <button type="button" is="emby-button" class="btnMiPreview raised" style="margin-left:auto; background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">visibility</i><span>Preview</span></button>
+                            <button type="button" is="emby-button" class="btnMiHelp raised" style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">help_outline</i><span>How to (filter guide)</span></button>
                         </div>
                         <div class="mi-sort-row" style="display:${sourceType === 'MediaInfo' ? 'block' : 'none'}; margin-bottom:14px;">
                             <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
@@ -2193,6 +2261,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         row.addEventListener('click', e => {
             if (e.target.closest('.btnMiHelp')) {
                 document.getElementById('miHelpModalOverlay').classList.add('modal-visible');
+                return;
+            }
+            if (e.target.closest('.btnMiPreview')) {
+                showSourcePreview(row, e.target.closest('.btnMiPreview'));
                 return;
             }
             if (e.target.closest('.btnToggleAdditionalFilters')) {
@@ -7026,6 +7098,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var miHelpOverlay = view.querySelector('#miHelpModalOverlay');
                 view.querySelector('#btnCloseMiHelp').addEventListener('click', () => miHelpOverlay.classList.remove('modal-visible'));
                 miHelpOverlay.addEventListener('click', e => { if (e.target === miHelpOverlay) miHelpOverlay.classList.remove('modal-visible'); });
+
+                var miPreviewOverlay = view.querySelector('#miPreviewModalOverlay');
+                view.querySelector('#btnCloseMiPreview').addEventListener('click', () => miPreviewOverlay.classList.remove('modal-visible'));
+                miPreviewOverlay.addEventListener('click', e => { if (e.target === miPreviewOverlay) miPreviewOverlay.classList.remove('modal-visible'); });
 
                 var tagTargetHelpOverlay = view.querySelector('#tagTargetHelpModalOverlay');
                 view.querySelector('#btnCloseTagTargetHelp').addEventListener('click', () => tagTargetHelpOverlay.classList.remove('modal-visible'));

@@ -1826,6 +1826,24 @@
         </div>
     </div>
 
+    <div id="miPreviewModalOverlay" class="modal-backdrop">
+        <div class="modal-content" style="max-width:640px; width:95%;">
+            <div class="modal-header-bar" style="background:linear-gradient(135deg,#00a4dc 0%,#007ba8 100%);">
+                <i class="md-icon modal-header-icon">visibility</i>
+                <div>
+                    <h2 class="modal-header-title">Preview</h2>
+                    <span class="mi-preview-subtitle" style="opacity:0.9;font-size:0.9em;">What this source would tag right now</span>
+                </div>
+            </div>
+            <div class="modal-body-scroll" style="padding:20px 24px;">
+                <div class="mi-preview-body"></div>
+                <div style="text-align:right;margin-top:20px;padding-top:16px;border-top:1px solid var(--line-color,rgba(128,128,128,0.3));">
+                    <button is="emby-button" type="button" id="btnCloseMiPreview" class="raised button-submit" style="background:#00a4dc;color:white;padding:0 25px;">Close</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="miHelpModalOverlay" class="modal-backdrop">
         <div class="modal-content" style="max-width:700px; width:95%;">
             <div class="modal-header-bar" style="background:linear-gradient(135deg,#00a4dc 0%,#007ba8 100%);">

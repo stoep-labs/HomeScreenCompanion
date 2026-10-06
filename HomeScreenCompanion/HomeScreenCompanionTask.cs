@@ -1539,13 +1539,45 @@ namespace HomeScreenCompanion
             }
         }
 
+        // Set while PreviewEntryAsync runs: the single-entry run uses this unsaved source, changes
+        // nothing and stops once the source's matches are known.
+        private SourcePreview? _preview;
+
+        /// <summary>
+        /// What a Local Media Information source would tag right now, from its unsaved settings.
+        /// Runs the real single-entry matching code with nothing written (no tags, no log).
+        /// </summary>
+        internal async Task<SourcePreview> PreviewEntryAsync(TagConfig source, CancellationToken cancellationToken)
+        {
+            var preview = new SourcePreview(source);
+            if (IsRunning) { preview.Message = "A sync is running — try again when it has finished."; return preview; }
+            IsRunning = true;
+            var savedLog = _log;
+            var savedWrittenTags = _writtenTags;
+            _preview = preview;
+            try
+            {
+                var (success, message) = await RunSingleEntryInternalAsync(source.Name, cancellationToken);
+                if (!preview.Done) preview.Message = success ? "This source has no preview." : message;
+            }
+            catch (Exception ex) { preview.Message = "Preview failed: " + ex.Message; }
+            finally
+            {
+                _preview = null;
+                _log = savedLog;
+                _writtenTags = savedWrittenTags;
+                IsRunning = false;
+            }
+            return preview;
+        }
+
         private async Task<(bool Success, string Message)> RunSingleEntryInternalAsync(string entryName, CancellationToken cancellationToken)
         {
             var config = Plugin.Instance?.Configuration;
             if (config == null) return (false, "Config not found");
             _writtenTags = BuildWrittenTags(config);
 
-            var tagConfig = config.Tags.FirstOrDefault(t =>
+            var tagConfig = _preview?.Source ?? config.Tags.FirstOrDefault(t =>
                 string.Equals(t.Name, entryName, StringComparison.OrdinalIgnoreCase) ||
                 (!string.IsNullOrWhiteSpace(t.Name) == false && string.Equals(t.Tag, entryName, StringComparison.OrdinalIgnoreCase)));
             if (tagConfig == null) { LastRunStatus = $"Failed: entry not found"; _log.Error($"Group '{entryName}' was not found in the saved settings — save your settings and try again"); return (false, $"Entry '{entryName}' not found in saved config"); }
@@ -1554,7 +1586,7 @@ namespace HomeScreenCompanion
             // A group with several URLs / local sources is stored as one flat TagConfig per source
             // (same Name + Tag). tagConfig owns the shared settings; groupEntries supplies the sources.
             var groupEntryKey = GroupKey(tagConfig);
-            var groupEntries = config.Tags
+            var groupEntries = _preview != null ? new List<TagConfig> { tagConfig } : config.Tags
                 .Where(t => string.Equals(GroupKey(t), groupEntryKey, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
@@ -1562,10 +1594,12 @@ namespace HomeScreenCompanion
             string _srcLabel = string.IsNullOrEmpty(tagConfig.SourceType) ? "External" : tagConfig.SourceType;
 
             bool debug = config.ExtendedConsoleOutput;
-            bool dryRun = config.DryRunMode;
+            bool dryRun = config.DryRunMode || _preview != null;
             bool logMissing = config.LogMissingItems;
             var startTime = DateTime.Now;
-            _log = new RunLog(ExecutionLog, _logger, "", debug);
+            _log = _preview != null ? new RunLog(new List<string>(), null, "", false) : new RunLog(ExecutionLog, _logger, "", debug);
+            if (_preview != null && tagConfig.SourceType != "MediaInfo")
+                return (false, "Preview is only available for Local Media Information sources.");
 
             if (tagConfig.SourceType == "AI" && tagConfig.AiRefreshIntervalDays > 0 &&
                 tagConfig.AiLastRunDate > DateTime.MinValue &&
@@ -1864,7 +1898,7 @@ namespace HomeScreenCompanion
             // Remove this tag from the cache before repopulating so blacklisted items don't get
             // immediately re-tagged by the real-time event handler when UpdateItem is called.
             // (Full run clears the entire cache first; single run must do a targeted removal.)
-            TagCacheManager.Instance.RemoveTagFromAllEntries(tagName);
+            if (_preview == null) TagCacheManager.Instance.RemoveTagFromAllEntries(tagName);
             var matchedLocalItems = new List<BaseItem>();
             List<BaseItem> tagOutputItems = matchedLocalItems;
             List<BaseItem> collectionOutputItems = matchedLocalItems;
@@ -1993,7 +2027,13 @@ namespace HomeScreenCompanion
                             if (!SourceSort.IsSorted(tagConfig) && effectiveLimit < 10000 && matchedLocalItems.Count >= effectiveLimit) break;
                         }
                     }
-                    ApplySourceSort(tagConfig, matchedLocalItems, effectiveLimit, new PopularityCounter(_libraryManager, _userManager, _userDataManager));
+                    var _popularity = new PopularityCounter(_libraryManager, _userManager, _userDataManager);
+                    ApplySourceSort(tagConfig, matchedLocalItems, effectiveLimit, _popularity);
+                    if (_preview != null)
+                    {
+                        _preview.Complete(matchedLocalItems, _itemsToScan.Count, _popularity.LastViewers);
+                        return (true, "");
+                    }
                     if (debug)
                     {
                         _log.Debug($"  Scanned {_itemsToScan.Count:N0} items in {groupTimer.ElapsedMilliseconds} ms  ·  {matchedLocalItems.Count} matched");

@@ -75,6 +75,9 @@ namespace HomeScreenCompanion
         private readonly IUserDataManager _userDataManager;
         private readonly Dictionary<long, List<UserItemData>> _recordsByUser = new Dictionary<long, List<UserItemData>>();
 
+        // Viewer counts from the last CountViewers call (shown by the source preview).
+        public Dictionary<Guid, int> LastViewers { get; private set; } = new Dictionary<Guid, int>();
+
         public PopularityCounter(ILibraryManager libraryManager, IUserManager userManager, IUserDataManager userDataManager)
         {
             _libraryManager = libraryManager;
@@ -132,7 +135,8 @@ namespace HomeScreenCompanion
 
             log($"Popularity: {titles.Count} title(s), {target.Count} watch key(s), {users} user(s), {hits} viewing record(s) matched, {viewers.Count} title(s) watched "
                 + (cutoff.HasValue ? $"in the last {t.PopularityDays} day(s)" : "ever"));
-            return viewers.ToDictionary(kv => kv.Key, kv => kv.Value.Count);
+            LastViewers = viewers.ToDictionary(kv => kv.Key, kv => kv.Value.Count);
+            return LastViewers;
         }
 
         private static bool Counts(UserItemData d, DateTimeOffset? cutoff, bool countPartial)
@@ -161,5 +165,26 @@ namespace HomeScreenCompanion
         }
 
         private static string Norm(string id) => (id ?? "").Replace("-", "");
+    }
+
+    /// <summary>Result of HomeScreenCompanionTask.PreviewEntryAsync.</summary>
+    internal sealed class SourcePreview
+    {
+        public SourcePreview(TagConfig source) { Source = source; }
+
+        public TagConfig Source { get; }
+        public bool Done { get; private set; }
+        public string Message { get; set; } = "";
+        public int Scanned { get; private set; }
+        public List<BaseItem> Items { get; private set; } = new List<BaseItem>();
+        public Dictionary<Guid, int> Viewers { get; private set; } = new Dictionary<Guid, int>();
+
+        public void Complete(List<BaseItem> items, int scanned, Dictionary<Guid, int> viewers)
+        {
+            Items = items.ToList();
+            Scanned = scanned;
+            Viewers = viewers;
+            Done = true;
+        }
     }
 }
