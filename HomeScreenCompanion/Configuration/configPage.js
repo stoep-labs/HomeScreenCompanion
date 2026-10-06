@@ -5647,6 +5647,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                 renderSelectedList();
                 originalManualState = getManualFormState();
+                // After a save the saved values become the new baseline, so changing a field
+                // back to its previous value counts as a change again.
+                body.tlResetBaseline = function () { originalManualState = getManualFormState(); };
 
                 var searchInput = wrapper.querySelector('.mtlMovieSearch');
                 var resultsBox  = wrapper.querySelector('.mtlSearchResults');
@@ -5836,6 +5839,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     });
                 }
                 var originalRegularState = getRegularFormState();
+                body.tlResetBaseline = function () { originalRegularState = getRegularFormState(); };
                 function updateRegularDirty() {
                     body.dataset.dirty = getRegularFormState() !== originalRegularState ? '1' : '0';
                     checkFormState();
@@ -7209,7 +7213,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 _dirtyBodies.reduce(function (p, b) {
                     return p.then(function () { return typeof b.tlSaveForm === 'function' ? b.tlSaveForm() : Promise.resolve(); });
                 }, Promise.resolve()).then(function () {
-                    _dirtyBodies.forEach(function (b) { delete b.dataset.dirty; });
+                    _dirtyBodies.forEach(function (b) {
+                        delete b.dataset.dirty;
+                        if (typeof b.tlResetBaseline === 'function') b.tlResetBaseline();
+                    });
                     if (_btn) { _btn.innerHTML = _origHtml; _btn.disabled = false; }
                     doSave();
                 }).catch(function (err) {
