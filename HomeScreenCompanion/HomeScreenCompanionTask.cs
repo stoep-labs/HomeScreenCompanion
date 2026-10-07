@@ -5003,7 +5003,7 @@ namespace HomeScreenCompanion
                         try
                         {
                             var ranked = ShowTopList.RankedSeriesFromTag(_libraryManager, _jsonSerializer, tl.ShowSourceTag);
-                            var lines = new ShowTopList(_libraryManager, _userManager, _userDataManager, _httpClient, _jsonSerializer, _logger)
+                            var lines = new ShowTopList(_libraryManager, _userManager, _userDataManager, _httpClient, _jsonSerializer, _logger, _providerManager, _fileSystem)
                                 .Apply(config, tl, ranked);
                             showListsUpdated = true;
                             _log.Ok($"Show top-list '{tl.TagName}': {ranked.Count} show(s) from tag '{tl.ShowSourceTag}'");

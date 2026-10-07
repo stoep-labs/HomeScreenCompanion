@@ -2385,7 +2385,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     .then(function (result) {
                         lbl.textContent = 'Run Group';
                         btn.disabled = false;
-                        if (view) refreshStatus(view);
+                        if (view) { invalidateTagTabs(view); refreshStatus(view); }
                         window.Dashboard.alert(result.Success ? ('Done: ' + result.Message) : ('Failed: ' + result.Message));
                     }).catch(function () {
                         lbl.textContent = 'Run Group';
@@ -2532,7 +2532,13 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
         row.querySelector('.btnDuplicateRow').addEventListener('click', () => {
             var config = readRowAsConfig(row);
+            // The copy gets its own tag, collection and playlist, so it never writes into (or
+            // removes from) the original's. Playlist links belong to the original's playlists.
             config.Name = (config.Name || config.Tag || 'Source') + ' (copy)';
+            if (config.Tag) config.Tag = config.Tag + ' (copy)';
+            if (config.CollectionName) config.CollectionName = config.CollectionName + ' (copy)';
+            if (config.PlaylistName) config.PlaylistName = config.PlaylistName + ' (copy)';
+            config.PlaylistMappings = [];
             renderTagGroup(config, row.closest('#tagListContainer'), true, undefined, true);
             applyFilters(view);
             setTimeout(checkFormState, 0);
@@ -2743,6 +2749,16 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         renderLogLines(content, entries, running(selected));
     }
 
+    // A sync changes tags, so the tabs that list tags (Top-Lists, Cleanup) load them again the
+    // next time they are opened. lastSyncRunKey identifies the last finished sync seen.
+    var lastSyncRunKey = null;
+    function invalidateTagTabs(view) {
+        ['#tlContainer', '#tcManageContainer'].forEach(function (sel) {
+            var el = view.querySelector(sel);
+            if (el) el.dataset.loaded = '';
+        });
+    }
+
     function refreshStatus(view) {
         var myId = ++statusRequestId;
         Promise.all([
@@ -2754,6 +2770,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var result = results[0], hscResult = results[1], tlResult = results[2];
             var label = view.querySelector('#lastRunStatusLabel'), dot = view.querySelector('#dotStatus'), content = view.querySelector('#logContent');
             var btnSave = view.querySelector('.btn-save'), btnRun = view.querySelector('#btnRunSync');
+
+            if (!result.IsRunning) {
+                var runKey = (result.StartedUtc || '') + '|' + (result.LastRunStatus || '');
+                if (lastSyncRunKey !== null && runKey !== lastSyncRunKey) invalidateTagTabs(view);
+                lastSyncRunKey = runKey;
+            }
 
             var eitherRunning = result.IsRunning || (hscResult && hscResult.IsRunning);
             if (eitherRunning) {
@@ -4936,7 +4958,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         return checked ? checked.value : 'neutral';
     }
 
-    function showTopListModal(tagName, displayName, onSuccess, existingData) {
+    // isShows: the tag is on shows, so this saves a show top-list (TopList/PrepareShowList, no
+    // library, up to 10 shows) instead of a movie top-list.
+    // kinds = { movies, shows }: what the tag is on. A tag on both gets a Movies | Shows switch;
+    // a show list from such a tag is saved as "<tag> (Shows)" so it doesn't clash with the movie list.
+    function showTopListModal(tagName, displayName, onSuccess, existingData, isShows, kinds) {
+        var listName = isShows && kinds && kinds.movies ? tagName + ' (Shows)' : tagName;
         function escAttr(s) { return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
         function escHtml(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
@@ -4968,7 +4995,16 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
             var html =
                 '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:22px;">' +
+                '<div style="display:flex;align-items:center;gap:14px;">' +
                 '<h3 style="margin:0;font-size:1.1em;color:#52B54B;">' + (existingData ? 'Edit' : 'Create') + ' Top-List: ' + escHtml(displayName) + '</h3>' +
+                (existingData || !(kinds && kinds.movies && kinds.shows) ? '' :
+                    '<div class="mtlKindSwitch" style="display:inline-flex;border:1px solid var(--plugin-input-border,rgba(255,255,255,0.2));border-radius:14px;overflow:hidden;font-size:0.8em;">' +
+                    ['Movies', 'Shows'].map(function (k) {
+                        var on = (k === 'Shows') === !!isShows;
+                        return '<button type="button" data-kind="' + k + '" style="border:none;cursor:pointer;padding:3px 12px;' +
+                            (on ? 'background:#52B54B;color:#fff;' : 'background:transparent;color:inherit;opacity:0.75;') + '">' + k + '</button>';
+                    }).join('') + '</div>') +
+                '</div>' +
                 '<button type="button" class="btnTlmClose" style="background:transparent;border:none;color:inherit;cursor:pointer;padding:2px;opacity:0.6;line-height:1;"><i class="md-icon">close</i></button>' +
                 '</div>' +
 
@@ -4998,11 +5034,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '<option value="Thumb">Thumb</option>' +
                 '</select></div>' +
 
-                buildBadgePickerHtml(existingData ? existingData.badgeStyle : 'neutral') +
+                buildBadgePickerHtml(existingData ? existingData.badgeStyle : (isShows ? 'top10' : 'neutral')) +
 
                 '<div style="' + fieldStyle + '">' +
-                '<label style="' + labelStyle + '">Max items <span style="font-weight:400;text-transform:none;letter-spacing:0;opacity:0.7;">(0 = all)</span></label>' +
-                '<input type="number" class="tlm-max-items" min="0" step="1" style="' + inputStyle + '" placeholder="0" />' +
+                '<label style="' + labelStyle + '">Max items <span style="font-weight:400;text-transform:none;letter-spacing:0;opacity:0.7;">' + (isShows ? '(up to 10 shows)' : '(0 = all)') + '</span></label>' +
+                '<input type="number" class="tlm-max-items" min="0" ' + (isShows ? 'max="10" ' : '') + 'step="1" style="' + inputStyle + '" placeholder="' + (isShows ? '10' : '0') + '" />' +
                 '</div>' +
 
                 '<div class="tlm-error" style="color:#cc3333;font-size:0.85em;min-height:1.2em;margin-bottom:4px;"></div>' +
@@ -5014,6 +5050,13 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
             renderBox(html);
             initBadgePicker(modal);
+            modal.querySelectorAll('.mtlKindSwitch button').forEach(function (b) {
+                b.addEventListener('click', function () {
+                    if ((b.dataset.kind === 'Shows') === !!isShows) return;
+                    modal.remove();
+                    showTopListModal(tagName, displayName, onSuccess, null, b.dataset.kind === 'Shows', kinds);
+                });
+            });
             wireUserMultiSelect(modal);
 
             if (existingData) {
@@ -5048,6 +5091,29 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 saveBtn.disabled = true;
                 saveBtn.innerHTML = 'Preparing files <span class="tc-dot-loader"><span></span><span></span><span></span></span>';
 
+                if (isShows) {
+                    fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/PrepareShowList'), {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-Emby-Token': tok },
+                        body: JSON.stringify({
+                            ListName: listName, CustomName: customName, DisplayMode: displayMode, ImageType: imageType,
+                            UserIds: selectedUserIds, SourceTag: tagName, BadgeStyle: badgeStyle, MaxItems: maxItems
+                        })
+                    })
+                    .then(function (r) { return r.json(); })
+                    .then(function (res) {
+                        if (!res.Success) throw new Error(res.Message || 'Failed to save the show top-list.');
+                        modal.remove();
+                        if (typeof onSuccess === 'function') onSuccess();
+                    })
+                    .catch(function (err) {
+                        saveBtn.disabled = false;
+                        saveBtn.innerHTML = '<i class="md-icon" style="font-size:1em;vertical-align:middle;margin-right:6px;">check</i>Save and apply';
+                        errEl.textContent = err.message || String(err);
+                    });
+                    return;
+                }
+
                 // Step 1: Create folder + write .strm files
                 fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/PrepareFolder'), {
                     method: 'POST',
@@ -5075,9 +5141,24 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         });
     }
 
+    // What a manual top-list can rank: movies (HSC's list) or, for a show top-list, series.
+    function loadTopListCandidates(isShows, tok) {
+        if (!isShows)
+            return fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/AllMovies'), {
+                headers: { 'X-MediaBrowser-Token': tok }
+            }).then(function (r) { return r.json(); });
+        return window.ApiClient.getJSON(window.ApiClient.getUrl('Items', {
+            IncludeItemTypes: 'Series', Recursive: true, SortBy: 'SortName', Fields: 'ProviderIds,ProductionYear'
+        })).then(function (res) {
+            return { Movies: (res.Items || []).map(function (i) {
+                return { ItemId: i.Id, Name: i.Name || '', Year: i.ProductionYear || null, ImdbId: (i.ProviderIds || {}).Imdb || '' };
+            }) };
+        });
+    }
+
     // existingData = { listName, customName, displayMode, imageType, userIds: [], movies: [{ItemId,ImdbId,Name,Year}] }
-    // contentType 'Shows' turns this into the show top-list dialog: it searches series,
-    // always uses the Top 10 art and saves through TopList/PrepareShowList (no library).
+    // contentType 'Shows' turns this into the show top-list dialog: it searches series and saves
+    // through TopList/PrepareShowList (no library). A Movies | Shows switch picks it when creating.
     function showManualTopListModal(onSuccess, existingData, contentType, options) {
         function escAttr(s) { return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;'); }
         function escHtml(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
@@ -5108,17 +5189,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
         var tok = window.ApiClient.accessToken ? window.ApiClient.accessToken() : '';
 
-        var loadCandidates = isShows
-            ? window.ApiClient.getJSON(window.ApiClient.getUrl('Items', {
-                  IncludeItemTypes: 'Series', Recursive: true, SortBy: 'SortName', Fields: 'ProviderIds,ProductionYear'
-              })).then(function (res) {
-                  return { Movies: (res.Items || []).map(function (i) {
-                      return { ItemId: i.Id, Name: i.Name || '', Year: i.ProductionYear || null, ImdbId: (i.ProviderIds || {}).Imdb || '' };
-                  }) };
-              })
-            : fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/AllMovies'), {
-                  headers: { 'X-MediaBrowser-Token': tok }
-              }).then(function (r) { return r.json(); });
+        var loadCandidates = loadTopListCandidates(isShows, tok);
 
         Promise.all([
             loadCandidates,
@@ -5137,7 +5208,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var presetCustomName = (existingData && existingData.customName)  || '';
             var presetDisplay    = (existingData && existingData.displayMode) || '';
             var presetImageType  = (existingData && existingData.imageType)   || '';
-            var presetBadgeStyle = (existingData && existingData.badgeStyle)  || 'neutral';
+            var presetBadgeStyle = (existingData && existingData.badgeStyle)  || (isShows ? 'top10' : 'neutral');
 
             var displayOptions = [
                 { val: '',               label: 'Always' },
@@ -5165,7 +5236,16 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             innerBox.innerHTML =
                 // ── Header ──────────────────────────────────────────────────
                 '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">' +
+                '<div style="display:flex;align-items:center;gap:14px;">' +
                 '<h3 style="margin:0;font-size:1.1em;color:#52B54B;">' + escHtml(titleText) + '</h3>' +
+                (isEdit || sourceTag ? '' :
+                    '<div class="mtlKindSwitch" style="display:inline-flex;border:1px solid var(--plugin-input-border,rgba(255,255,255,0.2));border-radius:14px;overflow:hidden;font-size:0.8em;">' +
+                    ['Movies', 'Shows'].map(function (k) {
+                        var on = (k === 'Shows') === isShows;
+                        return '<button type="button" data-kind="' + k + '" style="border:none;cursor:pointer;padding:3px 12px;' +
+                            (on ? 'background:#52B54B;color:#fff;' : 'background:transparent;color:inherit;opacity:0.75;') + '">' + k + '</button>';
+                    }).join('') + '</div>') +
+                '</div>' +
                 '<button type="button" class="btnMtlClose" style="background:transparent;border:none;color:inherit;cursor:pointer;padding:2px;opacity:0.6;line-height:1;"><i class="md-icon">close</i></button>' +
                 '</div>' +
 
@@ -5223,10 +5303,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '</div>' +
 
                 '<div style="border-top:1px solid var(--line-color);padding-top:14px;margin-top:4px;">' +
-                (isShows
-                    ? '<div style="font-size:0.85em;opacity:0.75;line-height:1.5;">Shows always use the Top 10 art (big number beside the poster), ranks 1–' + maxShows + '. ' +
-                      'No library is created: each show gets its own tag, and the row lists those tags. Each user can have one show top-list.</div>'
-                    : buildBadgePickerHtml(presetBadgeStyle)) +
+                buildBadgePickerHtml(presetBadgeStyle) +
                 '</div>' +
 
                 '<div class="mtl-error" style="color:#cc3333;font-size:0.85em;min-height:1.2em;margin-top:12px;margin-bottom:4px;"></div>' +
@@ -5238,6 +5315,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
             initBadgePicker(modal);
             wireUserMultiSelect(modal);
+            modal.querySelectorAll('.mtlKindSwitch button').forEach(function (b) {
+                b.addEventListener('click', function () {
+                    if ((b.dataset.kind === 'Shows') === isShows) return;
+                    modal.remove();
+                    document.removeEventListener('keydown', onEsc);
+                    showManualTopListModal(onSuccess, null, b.dataset.kind === 'Shows' ? 'Shows' : '');
+                });
+            });
 
             // In edit mode, set list name field readonly again (the value= attr trick above may not
             // work if the readonly attr comes after a style attr — set it via JS to be safe)
@@ -5391,6 +5476,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             ListName: listName, CustomName: customNameVal, DisplayMode: displayMode, ImageType: imageType,
                             UserIds: selectedUserIds,
                             SourceTag: sourceTag,
+                            BadgeStyle: badgeStyle,
                             SeriesIds: sourceTag ? [] : selectedMovies.map(function (m) { return m.ItemId; })
                         })
                     })
@@ -5456,6 +5542,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         try { editJson = JSON.parse(row.dataset.editjson || '{}'); } catch (e) { editJson = {}; }
 
         var tagName     = editJson.tagName     || '';
+        var isShows     = !!editJson.isShows;
         var isManual    = !!editJson.isManual;
         var displayName = editJson.displayName || editJson.customName || tagName;
 
@@ -5473,61 +5560,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var tok = window.ApiClient.accessToken ? window.ApiClient.accessToken() : '';
 
         // Show top-lists: a read-only summary; Edit opens the show dialog.
-        if (editJson.isShows) {
-            Promise.all([
-                fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/ManualItems') + '?ListName=' + encodeURIComponent(tagName), {
-                    headers: { 'X-MediaBrowser-Token': tok }
-                }).then(function (r) { return r.json(); }),
-                getHseUsers()
-            ]).then(function (res) {
-                var data = res[0] || {};
-                var shows = data.Movies || [];
-                var userNames = (res[1] || []).filter(function (u) { return (data.UserIds || []).indexOf(u.Id) !== -1; })
-                    .map(function (u) { return u.Name; });
-                body.innerHTML =
-                    '<div style="display:flex;gap:30px;flex-wrap:wrap;">' +
-                    '<div style="flex:1;min-width:220px;">' +
-                    '<span style="' + labelStyle + '">Ranked shows</span>' +
-                    (shows.length
-                        ? '<ol style="margin:4px 0 0 18px;padding:0;font-size:0.92em;line-height:1.7;">' + shows.map(function (m) {
-                              return '<li>' + escHtml(m.Name) + (m.Year ? ' (' + m.Year + ')' : '') + '</li>';
-                          }).join('') + '</ol>'
-                        : '<div style="opacity:0.6;font-size:0.9em;">No shows.</div>') +
-                    '</div>' +
-                    '<div style="flex:1;min-width:220px;font-size:0.92em;line-height:1.7;">' +
-                    '<span style="' + labelStyle + '">Target users</span><div>' + escHtml(userNames.join(', ') || '—') + '</div>' +
-                    '<span style="' + labelStyle + 'margin-top:10px;">Image type</span><div>' + escHtml(data.ImageType || 'Auto') + '</div>' +
-                    '<span style="' + labelStyle + 'margin-top:10px;">Shows come from</span><div>' +
-                    (data.SourceTag ? 'Tag <strong>' + escHtml(data.SourceTag) + '</strong> — rebuilt on every sync' : 'Picked by hand') + '</div>' +
-                    '</div>' +
-                    '</div>' +
-                    '<div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;">' +
-                    '<button type="button" is="emby-button" class="raised btnTlEditShows"><i class="md-icon" style="margin-right:5px;">edit</i>Edit</button>' +
-                    deleteHtml +
-                    '</div>';
-                body.querySelector('.btnTlEditShows').addEventListener('click', function () {
-                    showManualTopListModal(onSuccess, {
-                        contentType: 'Shows',
-                        sourceTag:   data.SourceTag || '',
-                        listName:    tagName,
-                        customName:  data.CustomName || '',
-                        displayMode: data.DisplayMode || '',
-                        imageType:   data.ImageType || '',
-                        userIds:     data.UserIds || [],
-                        movies:      shows.map(function (m) { return { ItemId: m.ItemId, Name: m.Name, Year: m.Year, ImdbId: m.ImdbId }; })
-                    });
-                });
-            }).catch(function (err) {
-                body.innerHTML = '<div style="color:#cc3333;">Failed to load: ' + escHtml(err.message || String(err)) + '</div>';
-            });
-            return;
-        }
-
         if (isManual) {
             Promise.all([
-                fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/AllMovies'), {
-                    headers: { 'X-MediaBrowser-Token': tok }
-                }).then(function (r) { return r.json(); }),
+                loadTopListCandidates(isShows, tok),
                 getHseUsers(),
                 fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/ManualItems') + '?ListName=' + encodeURIComponent(tagName), {
                     headers: { 'X-MediaBrowser-Token': tok }
@@ -5545,7 +5580,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var presetUserIds    = data.UserIds      || editJson.userIds      || [];
                 var presetDisplay    = data.DisplayMode  || editJson.displayMode  || '';
                 var presetImageType  = data.ImageType    || editJson.imageType    || '';
-                var presetBadgeStyle = data.BadgeStyle   || editJson.badgeStyle   || 'neutral';
+                var presetBadgeStyle = data.BadgeStyle   || editJson.badgeStyle   || (isShows ? 'top10' : 'neutral');
                 var presetCustomName = data.CustomName   || editJson.customName   || '';
                 var presetMovies     = data.Movies       || [];
 
@@ -5594,10 +5629,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     '</div>' +
 
                     '<div style="flex:1;min-width:0;padding-left:20px;">' +
-                    '<div style="' + colHeaderStyle + '"><i class="md-icon" style="font-size:0.9em;vertical-align:middle;margin-right:5px;">format_list_numbered</i>Movie List</div>' +
+                    '<div style="' + colHeaderStyle + '"><i class="md-icon" style="font-size:0.9em;vertical-align:middle;margin-right:5px;">format_list_numbered</i>' + (isShows ? 'Show List' : 'Movie List') + '</div>' +
 
                     '<div style="' + fieldStyle + '">' +
-                    '<label style="' + labelStyle + '">Add Movie</label>' +
+                    '<label style="' + labelStyle + '">' + (isShows ? 'Add Show' : 'Add Movie') + '</label>' +
                     '<div style="position:relative;">' +
                     '<input type="text" class="mtlMovieSearch" autocomplete="off" style="' + inputStyle + '" placeholder="Type to search…" />' +
                     '<div class="mtlSearchResults" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:200;background:var(--plugin-popup-bg,#2a2a2a);border:1px solid var(--line-color);border-radius:4px;max-height:200px;overflow-y:auto;margin-top:2px;box-shadow:0 4px 12px rgba(0,0,0,0.45);"></div>' +
@@ -5681,6 +5716,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     if (!resultRow || !resultRow.dataset.itemid) return;
                     e.preventDefault();
                     if (selectedMovies.some(function (m) { return m.ItemId === resultRow.dataset.itemid; })) return;
+                    if (isShows && selectedMovies.length >= 10) {
+                        wrapper.querySelector('.mtl-error').textContent = 'A show top-list holds up to 10 shows.';
+                        return;
+                    }
                     selectedMovies.push({
                         ItemId: resultRow.dataset.itemid,
                         ImdbId: resultRow.dataset.imdbid || '',
@@ -5739,9 +5778,27 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         var userIds         = Array.from(wrapper.querySelectorAll('.chkMtlUser:checked')).map(function (c) { return c.value; });
 
                         if (userIds.length === 0)      { reject(new Error('Please select at least one target user.')); return; }
-                        if (selectedMovies.length === 0) { reject(new Error('Please add at least one movie.')); return; }
+                        if (selectedMovies.length === 0) { reject(new Error('Please add at least one ' + (isShows ? 'show' : 'movie') + '.')); return; }
 
                         var tok2 = window.ApiClient.accessToken ? window.ApiClient.accessToken() : '';
+                        if (isShows) {
+                            fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/PrepareShowList'), {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'X-Emby-Token': tok2 },
+                                body: JSON.stringify({
+                                    ListName: tagName, CustomName: customNameVal, DisplayMode: displayMode, ImageType: imageType,
+                                    UserIds: userIds, BadgeStyle: badgeStyle,
+                                    SeriesIds: selectedMovies.map(function (m) { return m.ItemId; })
+                                })
+                            })
+                            .then(function (r) { return r.json(); })
+                            .then(function (res) {
+                                if (!res.Success) throw new Error(res.Message || 'Failed to save the show top-list.');
+                                resolve();
+                            })
+                            .catch(reject);
+                            return;
+                        }
                         fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/PrepareManualFolder'), {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json', 'X-Emby-Token': tok2 },
@@ -5811,8 +5868,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     buildBadgePickerHtml(presetBadgeStyle) +
 
                     '<div style="' + fieldStyle + '">' +
-                    '<label style="' + labelStyle + '">Max items <span style="font-weight:400;text-transform:none;letter-spacing:0;opacity:0.7;">(0 = all)</span></label>' +
-                    '<input type="number" class="tlm-max-items" min="0" step="1" style="' + inputStyle + '" placeholder="0" />' +
+                    '<label style="' + labelStyle + '">Max items <span style="font-weight:400;text-transform:none;letter-spacing:0;opacity:0.7;">' + (isShows ? '(up to 10 shows)' : '(0 = all)') + '</span></label>' +
+                    '<input type="number" class="tlm-max-items" min="0" ' + (isShows ? 'max="10" ' : '') + 'step="1" style="' + inputStyle + '" placeholder="' + (isShows ? '10' : '0') + '" />' +
                     '</div>' +
 
                     '<div class="tlm-error" style="color:#cc3333;font-size:0.85em;min-height:1.2em;margin-bottom:4px;"></div>' +
@@ -5864,6 +5921,24 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         var badgeStyle    = readBadgeStyle(body);
                         var maxItems      = Math.max(0, parseInt(wrapper.querySelector('.tlm-max-items').value, 10) || 0);
                         var tok2 = window.ApiClient.accessToken ? window.ApiClient.accessToken() : '';
+
+                        if (isShows) {
+                            fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/PrepareShowList'), {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json', 'X-Emby-Token': tok2 },
+                                body: JSON.stringify({
+                                    ListName: tagName, CustomName: customNameVal, DisplayMode: displayMode, ImageType: imageType,
+                                    UserIds: userIds, SourceTag: editJson.sourceTag || tagName, BadgeStyle: badgeStyle, MaxItems: maxItems
+                                })
+                            })
+                            .then(function (r) { return r.json(); })
+                            .then(function (res) {
+                                if (!res.Success) throw new Error(res.Message || 'Failed to save the show top-list.');
+                                resolve();
+                            })
+                            .catch(reject);
+                            return;
+                        }
 
                         fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/PrepareFolder'), {
                             method: 'POST',
@@ -5930,11 +6005,6 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '<div style="font-weight:600;font-size:0.95em;margin-bottom:6px;">By tag</div>' +
                 '<div style="font-size:0.82em;color:var(--theme-text-secondary);line-height:1.5;">Create from an existing tag in your library</div>' +
                 '</button>' +
-                '<button type="button" class="btnChooseShows" style="flex:1;cursor:pointer;background:var(--plugin-input-bg,rgba(255,255,255,0.05));border:1px solid var(--plugin-input-border,rgba(255,255,255,0.12));border-radius:8px;padding:20px 16px;text-align:left;color:inherit;transition:border-color 0.15s;">' +
-                '<div style="font-size:1.4em;margin-bottom:10px;color:#52B54B;"><i class="md-icon">tv</i></div>' +
-                '<div style="font-weight:600;font-size:0.95em;margin-bottom:6px;">Shows</div>' +
-                '<div style="font-size:0.82em;color:var(--theme-text-secondary);line-height:1.5;">Pick up to 10 TV shows and rank them</div>' +
-                '</button>' +
                 '</div>' +
                 '</div>';
 
@@ -5942,9 +6012,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
             var btnManualCard = modal.querySelector('.btnChooseManual');
             var btnByTagCard  = modal.querySelector('.btnChooseByTag');
-            var btnShowsCard  = modal.querySelector('.btnChooseShows');
 
-            [btnManualCard, btnByTagCard, btnShowsCard].forEach(function (btn) {
+            [btnManualCard, btnByTagCard].forEach(function (btn) {
                 btn.addEventListener('mouseover', function () { this.style.borderColor = '#52B54B'; });
                 btn.addEventListener('mouseout',  function () { this.style.borderColor = 'var(--plugin-input-border,rgba(255,255,255,0.12))'; });
             });
@@ -5957,54 +6026,21 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
             btnByTagCard.addEventListener('click', function () { renderStep2(); });
 
-            btnShowsCard.addEventListener('click', function () { renderStepShows(); });
         }
 
-        // Shows: pick by hand, or follow a tag that is on shows (rebuilt every sync).
-        function renderStepShows() {
-            var cardStyle = 'flex:1;cursor:pointer;background:var(--plugin-input-bg,rgba(255,255,255,0.05));border:1px solid var(--plugin-input-border,rgba(255,255,255,0.12));border-radius:8px;padding:20px 16px;text-align:left;color:inherit;transition:border-color 0.15s;';
-            modal.innerHTML =
-                '<div style="' + innerStyle + '">' +
-                '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">' +
-                '<div style="display:flex;align-items:center;gap:10px;">' +
-                '<button type="button" class="btnChooserBack" style="background:transparent;border:none;color:var(--theme-text-secondary);cursor:pointer;padding:2px;line-height:1;opacity:0.7;"><i class="md-icon">arrow_back</i></button>' +
-                '<h3 style="margin:0;font-size:1.1em;color:#52B54B;">Show Top-List</h3>' +
-                '</div>' +
-                '<button type="button" class="btnChooserClose" style="background:transparent;border:none;color:inherit;cursor:pointer;padding:2px;opacity:0.6;line-height:1;"><i class="md-icon">close</i></button>' +
-                '</div>' +
-                '<div style="display:flex;gap:16px;">' +
-                '<button type="button" class="btnShowsManual" style="' + cardStyle + '">' +
-                '<div style="font-size:1.4em;margin-bottom:10px;color:#52B54B;"><i class="md-icon">format_list_numbered</i></div>' +
-                '<div style="font-weight:600;font-size:0.95em;margin-bottom:6px;">Pick shows</div>' +
-                '<div style="font-size:0.82em;color:var(--theme-text-secondary);line-height:1.5;">Choose up to 10 shows and their order yourself</div>' +
-                '</button>' +
-                '<button type="button" class="btnShowsByTag" style="' + cardStyle + '">' +
-                '<div style="font-size:1.4em;margin-bottom:10px;color:#52B54B;"><i class="md-icon">label</i></div>' +
-                '<div style="font-weight:600;font-size:0.95em;margin-bottom:6px;">From a tag</div>' +
-                '<div style="font-size:0.82em;color:var(--theme-text-secondary);line-height:1.5;">Follow a tag on your shows — rebuilt on every sync</div>' +
-                '</button>' +
-                '</div>' +
-                '</div>';
-            modal.querySelector('.btnChooserClose').addEventListener('click', function () { modal.remove(); document.removeEventListener('keydown', onEsc); });
-            modal.querySelector('.btnChooserBack').addEventListener('click', function () { renderStep1(); });
-            modal.querySelector('.btnShowsManual').addEventListener('click', function () {
-                modal.remove();
-                document.removeEventListener('keydown', onEsc);
-                showManualTopListModal(onSuccess, null, 'Shows');
-            });
-            modal.querySelector('.btnShowsByTag').addEventListener('click', function () { renderStep2(true); });
-        }
-
-        function renderStep2(forShows) {
-            var tags = (tagsData.Tags || []).filter(function (t) { return !forShows || (t.SeriesCount || 0) > 0; });
+        // A tag that is only on shows makes a show top-list; any other tag a movie top-list.
+        function isShowTag(tag) { return (tag.SeriesCount || 0) > 0 && !(tag.MovieCount > 0); }
+        function renderStep2() {
+            var tags = tagsData.Tags || [];
             var inputStyle = 'background:var(--plugin-input-bg);border:1px solid var(--plugin-input-border);border-radius:4px;padding:6px 10px;font-size:0.9em;color:var(--plugin-popup-color);width:100%;box-sizing:border-box;';
 
             var tagRowsHtml = tags.length === 0
-                ? '<p style="padding:12px 4px;color:var(--theme-text-secondary);font-size:0.88em;font-style:italic;">' + (forShows ? 'No tags on shows yet. Add a source in the Tag &amp; Collection tab that tags shows, run the sync, then come back.' : 'No tags found.') + '</p>'
+                ? '<p style="padding:12px 4px;color:var(--theme-text-secondary);font-size:0.88em;font-style:italic;">' + 'No tags found.' + '</p>'
                 : tags.map(function (tag) {
                     var name  = tag.Name || '';
-                    var count = forShows ? (tag.SeriesCount || 0)
-                        : (tag.MovieCount != null ? tag.MovieCount : (tag.ItemCount != null ? tag.ItemCount : 0));
+                    var movieCount = tag.MovieCount != null ? tag.MovieCount : (tag.ItemCount != null ? tag.ItemCount : 0);
+                    var countText = [movieCount > 0 || !(tag.SeriesCount > 0) ? movieCount + ' movies' : '',
+                                     tag.SeriesCount > 0 ? tag.SeriesCount + ' shows' : ''].filter(Boolean).join(' · ');
                     var hasTopList = existingTopLists.has(sanitizeName(name).toLowerCase());
                     var badge = hasTopList
                         ? '<span style="font-size:0.72em;background:rgba(180,140,50,0.18);color:#c9a84c;border-radius:3px;padding:1px 6px;margin-left:6px;white-space:nowrap;">top-list</span>'
@@ -6013,7 +6049,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         'style="width:100%;cursor:pointer;background:transparent;border:none;border-bottom:1px solid var(--line-color);' +
                         'padding:10px 4px;display:flex;align-items:center;color:inherit;text-align:left;">' +
                         '<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(name) + badge + '</span>' +
-                        '<span style="margin-left:12px;white-space:nowrap;font-size:0.85em;color:var(--theme-text-secondary);">' + count + (forShows ? ' shows' : ' movies') + '</span>' +
+                        '<span style="margin-left:12px;white-space:nowrap;font-size:0.85em;color:var(--theme-text-secondary);">' + countText + '</span>' +
                         '</button>';
                 }).join('');
 
@@ -6035,7 +6071,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '</div>';
 
             modal.querySelector('.btnChooserClose').addEventListener('click', function () { modal.remove(); document.removeEventListener('keydown', onEsc); });
-            modal.querySelector('.btnChooserBack').addEventListener('click', function () { if (forShows) renderStepShows(); else renderStep1(); });
+            modal.querySelector('.btnChooserBack').addEventListener('click', function () { renderStep1(); });
 
             modal.querySelector('#tlChooserSearch').addEventListener('input', function () {
                 var q = this.value.toLowerCase();
@@ -6049,10 +6085,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 btn.addEventListener('mouseout',  function () { this.style.background = 'transparent'; });
                 btn.addEventListener('click', function () {
                     var tagName = this.dataset.name;
+                    var tagInfo = tags.filter(function (t) { return t.Name === tagName; })[0] || {};
                     modal.remove();
                     document.removeEventListener('keydown', onEsc);
-                    if (forShows) showManualTopListModal(onSuccess, null, 'Shows', { sourceTag: tagName });
-                    else showTopListModal(tagName, tagName, onSuccess);
+                    showTopListModal(tagName, tagName, onSuccess, null, isShowTag(tagInfo),
+                        { movies: tagInfo.MovieCount > 0, shows: tagInfo.SeriesCount > 0 });
                 });
             });
         }
@@ -6333,15 +6370,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
         var token = window.ApiClient.accessToken();
 
-        // Only what the list needs: the full tag scan is slow on big servers, so it is loaded
-        // when Create New is opened, and the server says which lists are tag-based.
         Promise.all([
-            Promise.resolve(null),
-            Promise.resolve(null),
+            fetch(window.ApiClient.getUrl('HomeScreenCompanion/Manage/Tags'), { headers: { 'X-MediaBrowser-Token': token } }).then(function (r) { return r.json(); }),
+            fetch(window.ApiClient.getUrl('HomeScreenCompanion/Manage/Collections'), { headers: { 'X-MediaBrowser-Token': token } }).then(function (r) { return r.json(); }),
             window.ApiClient.getPluginConfiguration(pluginId).catch(function () { return { Tags: [] }; }),
             fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/List'), { headers: { 'X-MediaBrowser-Token': token } }).then(function (r) { return r.json(); }).catch(function () { return { FolderNames: [] }; })
         ]).then(function (results) {
-            var tagsData = null;
+            var tagsData = results[0];
+            var collectionsData = results[1];
             var pluginConfig = results[2];
             var existingTopLists = new Set((results[3].FolderNames || []).map(function (n) { return n.toLowerCase(); }));
 
@@ -6390,7 +6426,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
             var searchInputStyle = 'background:var(--plugin-input-bg);border:1px solid var(--plugin-input-border);border-radius:4px;padding:5px 10px;font-size:0.9em;color:var(--plugin-popup-color);width:400px;max-width:100%;';
 
-            var realTagNamesLower = new Set((results[3].TagBased || []).map(function (n) { return (n || '').toLowerCase(); }));
+            var realTagNamesLower = new Set((tagsData.Tags || []).map(function (t) { return (t.Name || '').toLowerCase(); }));
 
             var showListKeys = new Set(results[3].ShowLists || []);
 
@@ -6403,8 +6439,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 return {
                     tagName:     tl.TagName || '',
                     displayName: settings.CustomName || tl.TagName || '',
-                    isManual:    !realTagNamesLower.has((tl.TagName || '').toLowerCase()),
+                    isManual:    showListKeys.has(key) ? !tl.ShowSourceTag : !realTagNamesLower.has((tl.TagName || '').toLowerCase()),
                     isShows:     showListKeys.has(key),
+                    sourceTag:   tl.ShowSourceTag || '',
                     count:       (results[3].MovieCounts || {})[key] || 0,
                     userIds:     tl.HomeSectionUserIds || [],
                     customName:  settings.CustomName  || '',
@@ -6422,11 +6459,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var labelStyle = 'font-size:0.78em;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;opacity:0.65;display:block;margin-bottom:2px;';
                 var rows = items.map(function (item) {
                     var isManual = item.isManual;
-                    var typeBadge = item.isShows
-                        ? '<span class="tag-indicator toplist" style="margin-left:0;margin-right:12px;flex-shrink:0;"><i class="md-icon" style="font-size:1.1em;">tv</i> Shows</span>'
-                        : isManual
+                    var typeBadge = isManual
                         ? '<span class="tag-indicator toplist" style="margin-left:0;margin-right:12px;flex-shrink:0;"><i class="md-icon" style="font-size:1.1em;">format_list_numbered</i> Manual</span>'
-                        : '<span class="tag-indicator tag" style="margin-left:0;margin-right:12px;flex-shrink:0;"><i class="md-icon" style="font-size:1.1em;">label</i> ' + escHtml(item.tagName) + '</span>';
+                        : '<span class="tag-indicator tag" style="margin-left:0;margin-right:12px;flex-shrink:0;"><i class="md-icon" style="font-size:1.1em;">label</i> ' + escHtml(item.sourceTag || item.tagName) + '</span>';
                     var displayModeLabel = ({'': 'Always', 'tv': 'TV mode only', 'mobile,desktop': 'Non-TV only'})[item.displayMode] || 'Always';
                     var imageTypeLabel = item.imageType || 'Auto';
                     var maxItemsLabel  = item.maxItems ? String(item.maxItems) : '0 (all)';
@@ -6435,6 +6470,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         displayName: item.displayName,
                         isManual:    item.isManual,
                         isShows:     !!item.isShows,
+                        sourceTag:   item.sourceTag || '',
                         userIds:     item.userIds,
                         customName:  item.customName,
                         displayMode: item.displayMode,
@@ -6467,7 +6503,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '</button>' +
                 '</div>' +
                 '<div style="margin-bottom:16px;font-size:0.9em;color:var(--theme-text-secondary);line-height:1.5;">' +
-                'Create a ranked home row. Movie top-lists use numbered copies in their own library; show top-lists rank up to 10 TV shows with tags.' +
+                'Create a top-list home section from a tag managed by the plugin. Top-lists work with movies and shows.' +
                 '</div>' +
                 '<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;">' +
                 '<input type="text" id="tlSearch" placeholder="Search…" style="' + searchInputStyle + '" />' +
@@ -6492,22 +6528,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var btnCreateNew = container.querySelector('#btnCreateNewTopList');
             if (btnCreateNew) {
                 btnCreateNew.addEventListener('click', function () {
-                    var openChooser = function () {
-                        showCreateTopListChooser(tagsData, existingTopLists, function () {
-                            container.dataset.loaded = '';
-                            loadTopListsTab(view);
-                        });
-                    };
-                    if (tagsData) { openChooser(); return; }
-                    btnCreateNew.disabled = true;
-                    fetch(window.ApiClient.getUrl('HomeScreenCompanion/Manage/Tags'), { headers: { 'X-MediaBrowser-Token': token } })
-                        .then(function (r) { return r.json(); })
-                        .catch(function () { return { Tags: [] }; })
-                        .then(function (data) {
-                            tagsData = data || { Tags: [] };
-                            btnCreateNew.disabled = false;
-                            openChooser();
-                        });
+                    showCreateTopListChooser(tagsData, existingTopLists, function () {
+                        container.dataset.loaded = '';
+                        loadTopListsTab(view);
+                    });
                 });
             }
 

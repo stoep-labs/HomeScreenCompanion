@@ -249,6 +249,8 @@ namespace HomeScreenCompanion
         public List<string> SeriesIds { get; set; } = new List<string>();
         // When set, the shows come from this tag (rebuilt on every sync) and SeriesIds is ignored.
         public string SourceTag { get; set; } = "";
+        public string BadgeStyle { get; set; } = "top10";
+        public int MaxItems { get; set; }   // 1–10; 0 = 10
     }
 
     public class PrepareShowTopListResponse
@@ -1124,32 +1126,30 @@ public class HomeScreenCompanionService : IService
 
         public object Get(GetManagedTagsRequest request)
         {
-            var allItems = _libraryManager.GetItemList(new InternalItemsQuery
+            // One small query per tag (Emby filters by tag id), instead of loading every item on
+            // the server and reading its tags: same result, but seconds faster on big libraries.
+            var tagItems = _libraryManager.GetItemList(new InternalItemsQuery
             {
-                Recursive = true,
-                IsVirtualItem = false,
-                IncludeItemTypes = new[] { "Movie", "Series", "Episode", "Season", "Audio", "MusicVideo", "MusicAlbum", "MusicArtist", "Book", "Game", "Trailer", "Video", "Person", "BoxSet", "Photo", "PhotoAlbum", "Playlist", "Recording", "Studio" }
-            }).ToList();
+                IncludeItemTypes = new[] { "Tag" },
+                Recursive = true
+            });
+            var tagIdMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var t in tagItems)
+                if (!string.IsNullOrEmpty(t.Name) && !tagIdMap.ContainsKey(t.Name)) tagIdMap[t.Name] = t.Id.ToString("N");
 
-            // Also fetch extras (ExtraType = ThemeSong, BehindTheScenes, etc.) which are excluded by default
+            // Extras (ExtraType = ThemeSong, BehindTheScenes, etc.) are excluded by default.
+            Array? allExtraTypes = null;
+            System.Reflection.PropertyInfo? extraTypesProp = null;
             try
             {
-                var extraQuery = new InternalItemsQuery { Recursive = true, IsVirtualItem = false };
-                var extraTypesProp = typeof(InternalItemsQuery).GetProperty("ExtraTypes");
-                if (extraTypesProp != null)
+                extraTypesProp = typeof(InternalItemsQuery).GetProperty("ExtraTypes");
+                var elemType = extraTypesProp?.PropertyType.GetElementType();
+                if (elemType != null && elemType.IsEnum)
                 {
-                    var elemType = extraTypesProp.PropertyType.GetElementType();
-                    if (elemType != null && elemType.IsEnum)
-                    {
-                        var all = System.Enum.GetValues(elemType);
-                        var arr = System.Array.CreateInstance(elemType, all.Length);
-                        all.CopyTo(arr, 0);
-                        extraTypesProp.SetValue(extraQuery, arr);
-                    }
+                    var all = System.Enum.GetValues(elemType);
+                    allExtraTypes = System.Array.CreateInstance(elemType, all.Length);
+                    all.CopyTo(allExtraTypes, 0);
                 }
-                var seenIds = new HashSet<Guid>(allItems.Select(i => i.Id));
-                foreach (var extra in _libraryManager.GetItemList(extraQuery))
-                    if (seenIds.Add(extra.Id)) allItems.Add(extra);
             }
             catch { }
 
@@ -1157,47 +1157,51 @@ public class HomeScreenCompanionService : IService
             var tagMovieKeys = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             var tagTypes = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             var tagSeriesCount = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            foreach (var item in allItems)
+            foreach (var tagItem in tagItems)
             {
-                if (item.Tags == null) continue;
-                if (item is MediaBrowser.Controller.Entities.TV.Series)
-                    foreach (var t in item.Tags)
-                        if (!string.IsNullOrWhiteSpace(t)) tagSeriesCount[t] = (tagSeriesCount.TryGetValue(t, out var sc) ? sc : 0) + 1;
-                var typeKey = GetItemTypeKey(item);
-                var isMovie = item is MediaBrowser.Controller.Entities.Movies.Movie;
-                string movieKey = null;
-                if (isMovie)
+                var tag = tagItem.Name;
+                if (string.IsNullOrWhiteSpace(tag)) continue;
+                var items = _libraryManager.GetItemList(new InternalItemsQuery
                 {
-                    var imdb = item.GetProviderId("Imdb");
-                    movieKey = !string.IsNullOrEmpty(imdb)
-                        ? imdb
-                        : (item.Name ?? "") + "_" + (item.ProductionYear?.ToString() ?? "");
+                    Recursive = true,
+                    IsVirtualItem = false,
+                    TagIds = new[] { tagItem.InternalId },
+                    IncludeItemTypes = new[] { "Movie", "Series", "Episode", "Season", "Audio", "MusicVideo", "MusicAlbum", "MusicArtist", "Book", "Game", "Trailer", "Video", "Person", "BoxSet", "Photo", "PhotoAlbum", "Playlist", "Recording", "Studio" }
+                }).ToList();
+                if (allExtraTypes != null && extraTypesProp != null)
+                {
+                    try
+                    {
+                        var extraQuery = new InternalItemsQuery { Recursive = true, IsVirtualItem = false, TagIds = new[] { tagItem.InternalId } };
+                        extraTypesProp.SetValue(extraQuery, allExtraTypes);
+                        var seenIds = new HashSet<Guid>(items.Select(i => i.Id));
+                        foreach (var extra in _libraryManager.GetItemList(extraQuery))
+                            if (seenIds.Add(extra.Id)) items.Add(extra);
+                    }
+                    catch { }
                 }
-                foreach (var tag in item.Tags)
+
+                foreach (var item in items)
                 {
-                    if (string.IsNullOrWhiteSpace(tag)) continue;
+                    if (item is MediaBrowser.Controller.Entities.TV.Series)
+                        tagSeriesCount[tag] = (tagSeriesCount.TryGetValue(tag, out var sc) ? sc : 0) + 1;
                     tagCount.TryGetValue(tag, out var c);
                     tagCount[tag] = c + 1;
-                    if (isMovie && movieKey != null)
+                    if (item is MediaBrowser.Controller.Entities.Movies.Movie)
                     {
+                        var imdb = item.GetProviderId("Imdb");
+                        var movieKey = !string.IsNullOrEmpty(imdb)
+                            ? imdb
+                            : (item.Name ?? "") + "_" + (item.ProductionYear?.ToString() ?? "");
                         if (!tagMovieKeys.TryGetValue(tag, out var seen))
                             tagMovieKeys[tag] = seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                         seen.Add(movieKey);
                     }
                     if (!tagTypes.TryGetValue(tag, out var typeSet))
                         tagTypes[tag] = typeSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    typeSet.Add(typeKey);
+                    typeSet.Add(GetItemTypeKey(item));
                 }
             }
-            var tagItems = _libraryManager.GetItemList(new InternalItemsQuery
-            {
-                IncludeItemTypes = new[] { "Tag" },
-                Recursive = true
-            });
-            var tagIdMap = tagItems.ToDictionary(
-                t => t.Name ?? "",
-                t => t.Id.ToString("N"),
-                StringComparer.OrdinalIgnoreCase);
 
             // Tags that show top-lists put on series are internal: never offer them as tags.
             var showListTags = new HashSet<string>(
@@ -2381,7 +2385,7 @@ public class HomeScreenCompanionService : IService
                     config.TopLists.Add(tl);
                 }
                 tl.HomeSectionUserIds = userIds;
-                tl.MaxItems = ShowTopList.MaxRanks;
+                tl.MaxItems = request.MaxItems > 0 ? Math.Min(request.MaxItems, ShowTopList.MaxRanks) : ShowTopList.MaxRanks;
                 tl.ShowSourceTag = sourceTag;
 
                 var settings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -2394,7 +2398,7 @@ public class HomeScreenCompanionService : IService
                 settings["CustomName"] = string.IsNullOrWhiteSpace(request.CustomName) ? listName : request.CustomName.Trim();
                 settings["DisplayMode"] = request.DisplayMode ?? "";
                 settings["ImageType"] = request.ImageType ?? "";
-                settings["BadgeStyle"] = "top10";
+                settings["BadgeStyle"] = string.IsNullOrWhiteSpace(request.BadgeStyle) ? "top10" : request.BadgeStyle.Trim();
                 tl.HomeSectionSettings = _jsonSerializer.SerializeToString(settings);
 
                 var log = NewShowTopList().Apply(config, tl, series);
@@ -2406,7 +2410,7 @@ public class HomeScreenCompanionService : IService
                     Success = true,
                     Message = sourceTag.Length > 0 && series.Count == 0
                         ? $"Saved. No shows carry the tag '{sourceTag}' yet — the list fills on the next sync."
-                        : $"{tl.ShowEntries.Count} of {Math.Min(series.Count, ShowTopList.MaxRanks)} show(s) ranked.",
+                        : $"{tl.ShowEntries.Count} of {Math.Min(series.Count, tl.MaxItems)} show(s) ranked.",
                     Log = log
                 };
             }
@@ -2436,13 +2440,13 @@ public class HomeScreenCompanionService : IService
                 CustomName  = settings.TryGetValue("CustomName", out var cn) ? cn : "",
                 DisplayMode = settings.TryGetValue("DisplayMode", out var dm) ? dm : "",
                 ImageType   = settings.TryGetValue("ImageType", out var it) ? it : "",
-                BadgeStyle  = "top10",
+                BadgeStyle  = settings.TryGetValue("BadgeStyle", out var bs) && !string.IsNullOrWhiteSpace(bs) ? bs : "top10",
                 UserIds     = tl.HomeSectionUserIds ?? new List<string>()
             };
         }
 
         private ShowTopList NewShowTopList()
-            => new ShowTopList(_libraryManager, _userManager, _userDataManager, _httpClient, _jsonSerializer, _logger);
+            => new ShowTopList(_libraryManager, _userManager, _userDataManager, _httpClient, _jsonSerializer, _logger, _providerManager, _fileSystem);
 
         // Item ids from the web client are internal (numeric) ids; GUIDs are accepted too.
         private List<BaseItem> ResolveSeries(IEnumerable<string> ids)

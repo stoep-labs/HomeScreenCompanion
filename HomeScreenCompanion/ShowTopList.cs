@@ -1,6 +1,8 @@
 using MediaBrowser.Common.Net;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Providers;
+using MediaBrowser.Model.IO;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Logging;
 using MediaBrowser.Model.Serialization;
@@ -40,10 +42,15 @@ namespace HomeScreenCompanion
         private readonly IHttpClient _httpClient;
         private readonly IJsonSerializer _jsonSerializer;
         private readonly ILogger _logger;
+        private readonly IProviderManager _providerManager;
+        private readonly IFileSystem _fileSystem;
 
         public ShowTopList(ILibraryManager libraryManager, IUserManager userManager, IUserDataManager userDataManager,
-            IHttpClient httpClient, IJsonSerializer jsonSerializer, ILogger logger)
+            IHttpClient httpClient, IJsonSerializer jsonSerializer, ILogger logger,
+            IProviderManager providerManager, IFileSystem fileSystem)
         {
+            _providerManager = providerManager;
+            _fileSystem = fileSystem;
             _libraryManager = libraryManager;
             _userManager = userManager;
             _userDataManager = userDataManager;
@@ -119,6 +126,7 @@ namespace HomeScreenCompanion
         public List<string> Apply(PluginConfiguration config, TopListHomeSection tl, IList<BaseItem> rankedSeries)
         {
             var log = new List<string>();
+            var badgeStyle = BadgeStyleOf(tl);
             var folder = FolderFor(tl.TagName);
             var tempDir = Path.Combine(folder, "tmp");
             Directory.CreateDirectory(tempDir);
@@ -132,7 +140,7 @@ namespace HomeScreenCompanion
             var entries = new List<ShowTopListEntry>();
             int rank = 0;
 
-            foreach (var series in rankedSeries.Take(MaxRanks))
+            foreach (var series in rankedSeries.Take(tl.MaxItems > 0 ? Math.Min(tl.MaxItems, MaxRanks) : MaxRanks))
             {
                 rank++;
                 try
@@ -151,7 +159,7 @@ namespace HomeScreenCompanion
                         continue;
                     }
 
-                    ApplyArtAndDetails(tagItem, series, rank, folder, tempDir);
+                    ApplyArtAndDetails(tagItem, series, rank, folder, tempDir, badgeStyle);
                     SetFavourite(users, tagItem, true);
                     entries.Add(new ShowTopListEntry { SeriesId = series.Id.ToString("N"), TagName = tagName });
                     log.Add($"✔ #{rank} {series.Name}");
@@ -231,28 +239,46 @@ namespace HomeScreenCompanion
             return null;
         }
 
-        private void ApplyArtAndDetails(BaseItem tagItem, BaseItem series, int rank, string folder, string tempDir)
+        // The list's image style, set like a movie top-list's (HomeSectionSettings.BadgeStyle).
+        private string BadgeStyleOf(TopListHomeSection tl)
         {
-            var posterSource = HomeScreenCompanionService.EnsureLocalImagePath(_httpClient,
-                (series.ImageInfos ?? Array.Empty<ItemImageInfo>()).FirstOrDefault(i => i.Type == ImageType.Primary)?.Path!, tempDir);
+            try
+            {
+                var settings = _jsonSerializer.DeserializeFromString<Dictionary<string, string>>(tl.HomeSectionSettings ?? "{}");
+                if (settings != null && settings.TryGetValue("BadgeStyle", out var bs) && !string.IsNullOrWhiteSpace(bs)) return bs;
+            }
+            catch { }
+            return "top10";
+        }
+
+        // Ranked art is drawn exactly as for movie top-lists (same styles, same code); the tag
+        // item shows it as its Primary and Thumb image.
+        private void ApplyArtAndDetails(BaseItem tagItem, BaseItem series, int rank, string folder, string tempDir, string badgeStyle)
+        {
+            var outputBase = Path.Combine(folder, $"{rank:00}");
+            var posterPath = outputBase + ".jpg";
+            var thumbPath = outputBase + "-thumb.jpg";
+            foreach (var old in new[] { posterPath, thumbPath })
+                try { if (File.Exists(old)) File.Delete(old); } catch { }
+            HomeScreenCompanionService.WriteRankedImages(series, rank, outputBase, badgeStyle, tempDir,
+                _httpClient, _providerManager, _libraryManager, _fileSystem, m => _logger.Warn(m));
 
             var images = (tagItem.ImageInfos ?? Array.Empty<ItemImageInfo>()).ToList();
-            if (posterSource != null)
+            if (File.Exists(posterPath))
             {
-                var posterPath = Path.Combine(folder, $"{rank:00}.jpg");
-                var thumbPath = Path.Combine(folder, $"{rank:00}-thumb.jpg");
-                TopTenTileRenderer.RenderPoster(posterSource, rank, posterPath);
-                TopTenTileRenderer.Render(posterSource, rank, thumbPath);
-
-                images.RemoveAll(i => i.Type == ImageType.Primary || i.Type == ImageType.Thumb);
+                images.RemoveAll(i => i.Type == ImageType.Primary);
                 images.Add(new ItemImageInfo { Path = posterPath, Type = ImageType.Primary, DateModified = File.GetLastWriteTimeUtc(posterPath) });
-                images.Add(new ItemImageInfo { Path = thumbPath, Type = ImageType.Thumb, DateModified = File.GetLastWriteTimeUtc(thumbPath) });
-                tagItem.ImageInfos = images.ToArray();
             }
             else
             {
                 _logger.Warn($"Show top-list: no poster for '{series.Name}', tag keeps its previous image");
             }
+            if (File.Exists(thumbPath))
+            {
+                images.RemoveAll(i => i.Type == ImageType.Thumb);
+                images.Add(new ItemImageInfo { Path = thumbPath, Type = ImageType.Thumb, DateModified = File.GetLastWriteTimeUtc(thumbPath) });
+            }
+            tagItem.ImageInfos = images.ToArray();
 
             tagItem.SortName = rank.ToString("00");
             tagItem.Overview = series.Overview;
