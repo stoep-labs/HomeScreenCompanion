@@ -720,20 +720,56 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }, { offset: Number.NEGATIVE_INFINITY }).element;
     }
 
+    // The source card's current (unsaved) settings, as the TagConfig the server would save.
+    function sourceConfigOfRow(view, row) {
+        var label = row.querySelector('.txtEntryLabel').value;
+        var tag = row.querySelector('.txtTagName').value || label;
+        var st = row.querySelector('.selSourceType').value;
+        var same = function (r) {
+            return r.querySelector('.selSourceType').value === st
+                && r.querySelector('.txtEntryLabel').value === label
+                && (r.querySelector('.txtTagName').value || r.querySelector('.txtEntryLabel').value) === tag;
+        };
+        var cands = getUiConfig(view, true).Tags.filter(function (t) { return t.SourceType === st && t.Name === label && t.Tag === tag; });
+        return cands[Array.from(view.querySelectorAll('.tag-row')).filter(same).indexOf(row)] || cands[0];
+    }
+
+    // Preview art: draws the collection poster/background from the source's current (unsaved)
+    // settings on the server and shows them in the preview dialog. Nothing is saved.
+    function showCollectionArtPreview(row, btn) {
+        var view = document.querySelector('#HomeScreenCompanionConfigPage');
+        var source = sourceConfigOfRow(view, row);
+        if (!source) return;
+        var overlay = document.getElementById('miPreviewModalOverlay');
+        var body = overlay.querySelector('.mi-preview-body');
+        overlay.querySelector('.mi-preview-subtitle').textContent = (source.CollectionName || source.Name || source.Tag || 'Collection') + ' — collection art';
+        body.innerHTML = '<div style="padding:20px 0; text-align:center; opacity:0.8;">Drawing the art…</div>';
+        overlay.classList.add('modal-visible');
+        btn.disabled = true;
+        fetch(window.ApiClient.getUrl('HomeScreenCompanion/PreviewCollectionArt'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
+            body: JSON.stringify({ Source: source })
+        }).then(function (r) { return r.json(); })
+        .then(function (res) {
+            if (!res.Success) { body.innerHTML = '<div style="padding:12px 0;">' + escapeHtml(res.Message || 'Preview failed.') + '</div>'; return; }
+            var html = '<div style="display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap;">';
+            if (res.Poster) html += '<div><div class="fieldDescription" style="margin-bottom:6px;">Poster</div><img src="' + res.Poster + '" style="width:180px; border-radius:4px; display:block;" /></div>';
+            if (res.Background) html += '<div style="flex:1; min-width:260px;"><div class="fieldDescription" style="margin-bottom:6px;">Background</div><img src="' + res.Background + '" style="width:100%; border-radius:4px; display:block;" /></div>';
+            html += '</div>';
+            body.innerHTML = html;
+        }).catch(function (err) {
+            body.innerHTML = '<div style="padding:12px 0;">Preview failed: ' + escapeHtml(err.message) + '</div>';
+        }).finally(function () { btn.disabled = false; });
+    }
+
     // Preview: runs this source's current (unsaved) filters on the server without tagging
     // anything, and lists what it would tag.
     function showSourcePreview(row, btn) {
         var view = document.querySelector('#HomeScreenCompanionConfigPage');
         var label = row.querySelector('.txtEntryLabel').value;
         var tag = row.querySelector('.txtTagName').value || label;
-        var rows = Array.from(view.querySelectorAll('.tag-row'));
-        var source = getUiConfig(view, true).Tags.filter(function (t) {
-            return t.SourceType === 'MediaInfo' && t.Name === label && t.Tag === tag;
-        })[rows.filter(function (r) {
-            return r.querySelector('.selSourceType').value === 'MediaInfo'
-                && r.querySelector('.txtEntryLabel').value === label
-                && (r.querySelector('.txtTagName').value || r.querySelector('.txtEntryLabel').value) === tag;
-        }).indexOf(row)];
+        var source = sourceConfigOfRow(view, row);
         if (!source) return;
 
         var overlay = document.getElementById('miPreviewModalOverlay');
@@ -779,6 +815,66 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }).catch(function (err) {
             body.innerHTML = '<div style="padding:12px 0;">Preview failed: ' + escapeHtml(err.message) + '</div>';
         }).finally(function () { btn.disabled = false; });
+    }
+
+    // Emby's own toast (bottom notification); falls back to nothing if it can't be loaded.
+    function showToast(text) {
+        try {
+            require(['toast'], function (toast) { (toast && toast.default ? toast.default : toast)(text); });
+        } catch (e) { }
+    }
+
+    // Collection art settings of a source card (generated poster / background, top of Collections).
+    function readCollectionArt(row) {
+        var poster = row.querySelector('.coll-style-picker[data-kind="poster"] input:checked');
+        var bg = row.querySelector('.coll-style-picker[data-kind="background"] input:checked');
+        return {
+            CollectionPosterStyle: poster ? poster.value : '',
+            CollectionBackgroundStyle: bg ? bg.value : '',
+            CollectionBackgroundPath: (row.querySelector('.hiddenBgPath') || {}).value || '',
+            CollectionSortToTop: !!(row.querySelector('.chkCollSortToTop') || {}).checked,
+            CollectionArtTitle: ((row.querySelector('.txtCollArtTitle') || {}).value || '').trim()
+        };
+    }
+
+    // Collection art style picker (cards like the top-list badge picker). '' = Custom (upload).
+    var COLLECTION_ART_STYLES = [['', 'Custom'], ['collage', 'Collage'], ['grid', 'Grid'], ['fan', 'Fan'], ['wall', 'Wall'],
+                                 ['hero_strip', 'Hero strip'], ['spotlight', 'Spotlight split'], ['ranked', 'Ranked (Top 10)']];
+    var _collPickerSeq = 0;
+    function buildCollStylePickerHtml(kind, selected) {
+        var sel = selected || '';
+        var name = 'collStyle_' + kind + '_' + (++_collPickerSeq);
+        var cardBase = 'cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 12px;border-radius:6px;border:2px solid transparent;transition:border-color 0.15s;';
+        var thumb = kind === 'poster' ? 'width:60px;height:90px;' : 'width:120px;height:68px;';
+        return '<div class="coll-style-picker" data-kind="' + kind + '" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">' +
+            COLLECTION_ART_STYLES.map(function (o) {
+                var active = o[0] === sel;
+                return '<label class="coll-style-opt" style="' + cardBase + 'border-color:' + (active ? '#52B54B' : 'var(--line-color,rgba(255,255,255,0.12))') + ';">' +
+                    '<input type="radio" name="' + name + '" value="' + o[0] + '" style="position:absolute;opacity:0;pointer-events:none;"' + (active ? ' checked' : '') + '>' +
+                    (o[0]
+                        ? '<img class="coll-style-thumb" data-kind="' + kind + '" data-style="' + o[0] + '" alt="" style="' + thumb + 'border-radius:4px;object-fit:cover;background:rgba(128,128,128,0.15);display:block;" />'
+                        : '<div style="' + thumb + 'border-radius:4px;border:1px dashed rgba(128,128,128,0.5);display:flex;align-items:center;justify-content:center;"><i class="md-icon" style="font-size:1.6em;opacity:0.7;">upload</i></div>') +
+                    '<span style="font-size:0.78em;opacity:0.8;white-space:nowrap;">' + o[1] + '</span>' +
+                    '</label>';
+            }).join('') +
+            '</div>';
+    }
+
+    var _artSamplesPromise = null;
+    function fillCollStyleThumbs() {
+        var imgs = document.querySelectorAll('img.coll-style-thumb:not([src])');
+        if (!imgs.length) return;
+        if (!_artSamplesPromise)
+            _artSamplesPromise = window.ApiClient.getJSON(window.ApiClient.getUrl('HomeScreenCompanion/ArtStyleSamples'))
+                .catch(function () { _artSamplesPromise = null; return null; });
+        _artSamplesPromise.then(function (samples) {
+            if (!samples) return;
+            document.querySelectorAll('img.coll-style-thumb:not([src])').forEach(function (img) {
+                var set = img.dataset.kind === 'poster' ? samples.Poster : samples.Background;
+                var url = set && set[img.dataset.style];
+                if (url) img.src = url;
+            });
+        });
     }
 
     function readRowAsConfig(row) {
@@ -907,6 +1003,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             Name: entryLabel, Tag: tagName, Active: active, Blacklist: bl, ActiveIntervals: intervals,
             EnableTag: enableTag, EnableCollection: enableColl, CollectionName: collName,
             CollectionDescription: collDesc, CollectionPosterPath: collPoster,
+            CollectionPosterStyle: readCollectionArt(row).CollectionPosterStyle,
+            CollectionBackgroundStyle: readCollectionArt(row).CollectionBackgroundStyle,
+            CollectionBackgroundPath: readCollectionArt(row).CollectionBackgroundPath,
+            CollectionSortToTop: readCollectionArt(row).CollectionSortToTop,
+            CollectionArtTitle: readCollectionArt(row).CollectionArtTitle,
             OverrideWhenActive: overrideWhenActive, SourceType: st,
             Urls: urls, LocalSources: localSources, Limit: miLimit,
             MediaInfoFilters: miFilters, MediaInfoConditions: [],
@@ -1812,6 +1913,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                         <div style="margin-top:15px;">
                             <p style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Collection Poster</p>
+                            ${buildCollStylePickerHtml('poster', tagConfig.CollectionPosterStyle)}
+                            <div class="coll-poster-upload" style="display:${tagConfig.CollectionPosterStyle ? 'none' : 'block'};">
                             <div class="poster-preview-container" style="margin-bottom:8px; display:${collPosterPath ? 'block' : 'none'};">
                                 <span class="poster-filename" style="font-size:0.85em; opacity:0.7;">${collPosterPath ? collPosterPath.split(/[\\\\/]/).pop() : ''}</span>
                                 <button type="button" class="btnRemovePoster" style="margin-left:10px; font-size:0.8em; background:transparent; border:none; color:#e55; cursor:pointer; vertical-align:middle;">✕ Remove</button>
@@ -1831,6 +1934,52 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                 <input class="txtPosterUrl" is="emby-input" type="url" placeholder="https://example.com/poster.jpg" style="flex:1;" />
                                 <button type="button" is="emby-button" class="btnLoadPosterUrl raised btn-neutral">Load</button>
                             </div>
+                            </div>
+                            <div class="fieldDescription coll-poster-gen-note" style="display:${tagConfig.CollectionPosterStyle ? 'block' : 'none'};">Drawn from the posters of the first titles in the collection, with the collection name. It is redrawn when the titles change.</div>
+                        </div>
+
+                        <div style="margin-top:15px;">
+                            <p style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Collection Background</p>
+                            ${buildCollStylePickerHtml('background', tagConfig.CollectionBackgroundStyle)}
+                            <div class="coll-bg-upload" style="display:${tagConfig.CollectionBackgroundStyle ? 'none' : 'block'};">
+                            <div class="bg-preview-container" style="margin-bottom:8px; display:${tagConfig.CollectionBackgroundPath ? 'block' : 'none'};">
+                                <span class="bg-filename" style="font-size:0.85em; opacity:0.7;">${tagConfig.CollectionBackgroundPath ? tagConfig.CollectionBackgroundPath.split(/[\\\\/]/).pop() : ''}</span>
+                                <button type="button" class="btnRemoveBg" style="margin-left:10px; font-size:0.8em; background:transparent; border:none; color:#e55; cursor:pointer; vertical-align:middle;">✕ Remove</button>
+                            </div>
+                            <img class="bg-preview-img" src="" alt="" style="max-width:240px; max-height:135px; border-radius:4px; display:none; margin-bottom:8px;" />
+                            <input type="file" class="inputBgFile" accept="image/*" style="display:none;" />
+                            <input type="hidden" class="hiddenBgPath" value="${tagConfig.CollectionBackgroundPath || ''}" />
+                            <button type="button" is="emby-button" class="btnChooseBg raised" style="width:100%; background:transparent; border:2px dashed rgba(128,128,128,0.4); color:var(--theme-text-secondary);">
+                                <i class="md-icon" style="margin-right:5px;">image</i>Choose Background Image
+                            </button>
+                            <div style="display:flex; align-items:center; gap:6px; margin-top:8px; opacity:0.45;">
+                                <div style="flex:1; height:1px; background:currentColor;"></div>
+                                <span style="font-size:0.75em;">or</span>
+                                <div style="flex:1; height:1px; background:currentColor;"></div>
+                            </div>
+                            <div style="display:flex; gap:6px; margin-top:6px;">
+                                <input class="txtBgUrl" is="emby-input" type="url" placeholder="https://example.com/background.jpg" style="flex:1;" />
+                                <button type="button" is="emby-button" class="btnLoadBgUrl raised btn-neutral">Load</button>
+                            </div>
+                            <div class="fieldDescription">Leave empty to keep Emby's own background.</div>
+                            </div>
+                        </div>
+
+                        <div class="inputContainer coll-art-title-row" style="margin-top:15px; display:${tagConfig.CollectionPosterStyle || tagConfig.CollectionBackgroundStyle ? 'block' : 'none'};">
+                            <input is="emby-input" type="text" class="txtCollArtTitle" label="Title on the art" value="${(tagConfig.CollectionArtTitle || '').replace(/"/g, '&quot;')}" placeholder="{name}" />
+                            <div class="fieldDescription">Leave empty to use the collection name. <b>{name}</b> = collection name, <b>{week}</b> = this week's number, e.g. <i>{name} {week}</i> → "Top Movies for the Week 41".</div>
+                        </div>
+
+                        <div class="coll-art-preview-row" style="margin-top:10px; display:${tagConfig.CollectionPosterStyle || tagConfig.CollectionBackgroundStyle ? 'block' : 'none'};">
+                            <button type="button" is="emby-button" class="btnCollArtPreview raised" style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">visibility</i><span>Preview art</span></button>
+                        </div>
+
+                        <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top:15px;">
+                            <label>
+                                <input is="emby-checkbox" type="checkbox" class="chkCollSortToTop" ${tagConfig.CollectionSortToTop ? 'checked' : ''} />
+                                <span>Show at the top of Collections</span>
+                            </label>
+                            <div class="fieldDescription">Sorts this collection before the others in Emby's Collections view.</div>
                         </div>
                     </div>
                     </div>
@@ -2397,10 +2546,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var _saveBtn = row.closest('#HomeScreenCompanionConfigPage') ? row.closest('#HomeScreenCompanionConfigPage').querySelector('.btn-save') : document.querySelector('.btn-save');
                 var isDirty = _saveBtn && !_saveBtn.disabled;
                 if (isDirty) {
-                    if (confirm('You have unsaved changes. Save and run?')) {
-                        _saveBtn.click();
-                        setTimeout(doRun, 800);
-                    }
+                    // Unsaved changes are saved first, then the group runs.
+                    showToast('Saving settings…');
+                    _saveBtn.click();
+                    setTimeout(doRun, 800);
                 } else {
                     doRun();
                 }
@@ -2572,6 +2721,90 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             setTimeout(() => { row.classList.remove('just-moved'); }, 2000);
 
             setTimeout(checkFormState, 0);
+        });
+
+        row.querySelectorAll('.coll-style-picker').forEach(function (picker) {
+            var opts = Array.from(picker.querySelectorAll('.coll-style-opt'));
+            opts.forEach(function (label) {
+                label.addEventListener('click', function () {
+                    opts.forEach(function (l) { l.style.borderColor = 'var(--line-color,rgba(255,255,255,0.12))'; });
+                    label.style.borderColor = '#52B54B';
+                });
+            });
+            picker.addEventListener('change', syncCollArt);
+        });
+        setTimeout(fillCollStyleThumbs, 0);
+        function syncCollArt() {
+            var art = readCollectionArt(row);
+            row.querySelector('.coll-poster-upload').style.display = art.CollectionPosterStyle ? 'none' : 'block';
+            row.querySelector('.coll-poster-gen-note').style.display = art.CollectionPosterStyle ? 'block' : 'none';
+            row.querySelector('.coll-bg-upload').style.display = art.CollectionBackgroundStyle ? 'none' : 'block';
+            row.querySelector('.coll-art-preview-row').style.display = art.CollectionPosterStyle || art.CollectionBackgroundStyle ? 'block' : 'none';
+            row.querySelector('.coll-art-title-row').style.display = art.CollectionPosterStyle || art.CollectionBackgroundStyle ? 'block' : 'none';
+        }
+
+        // Background upload (Custom): same endpoints as the poster upload.
+        function bgUploaded(filePath, name, previewSrc) {
+            row.querySelector('.hiddenBgPath').value = filePath;
+            row.querySelector('.bg-filename').textContent = name;
+            row.querySelector('.bg-preview-container').style.display = 'block';
+            var img = row.querySelector('.bg-preview-img');
+            img.src = previewSrc;
+            img.style.display = 'block';
+            row.querySelector('.hiddenBgPath').dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        function bgHeaders() {
+            var headers = { 'Content-Type': 'application/json' };
+            var token = window.ApiClient.accessToken();
+            if (token) headers['X-Emby-Token'] = token;
+            return headers;
+        }
+        row.querySelector('.btnChooseBg').addEventListener('click', function () {
+            row.querySelector('.inputBgFile').click();
+        });
+        row.querySelector('.inputBgFile').addEventListener('change', function () {
+            var file = this.files[0];
+            if (!file) return;
+            var reader = new FileReader();
+            reader.onload = function (e) {
+                var dataUrl = e.target.result;
+                fetch(window.ApiClient.getUrl('HomeScreenCompanion/UploadCollectionImage'), {
+                    method: 'POST',
+                    headers: bgHeaders(),
+                    body: JSON.stringify({ FileName: file.name, Base64Data: dataUrl.split(',')[1], OldFilePath: row.querySelector('.hiddenBgPath').value })
+                }).then(function (r) { return r.json(); })
+                .then(function (result) {
+                    if (result.Success) bgUploaded(result.FilePath, file.name, dataUrl);
+                    else window.Dashboard.alert('Upload failed: ' + (result.Message || 'Unknown error'));
+                }).catch(function () { window.Dashboard.alert('Upload error. Check server logs.'); });
+            };
+            reader.readAsDataURL(file);
+        });
+        row.querySelector('.btnRemoveBg').addEventListener('click', function () {
+            row.querySelector('.hiddenBgPath').value = '';
+            row.querySelector('.bg-filename').textContent = '';
+            row.querySelector('.bg-preview-container').style.display = 'none';
+            row.querySelector('.bg-preview-img').style.display = 'none';
+            row.querySelector('.inputBgFile').value = '';
+            row.querySelector('.hiddenBgPath').dispatchEvent(new Event('change', { bubbles: true }));
+        });
+        row.querySelector('.btnLoadBgUrl').addEventListener('click', function () {
+            var url = row.querySelector('.txtBgUrl').value.trim();
+            if (!url) return;
+            fetch(window.ApiClient.getUrl('HomeScreenCompanion/FetchCollectionImageFromUrl'), {
+                method: 'POST',
+                headers: bgHeaders(),
+                body: JSON.stringify({ Url: url, OldFilePath: row.querySelector('.hiddenBgPath').value })
+            }).then(function (r) { return r.json(); })
+            .then(function (result) {
+                if (result.Success) {
+                    bgUploaded(result.FilePath, url.split('/').pop().split('?')[0], url);
+                    row.querySelector('.txtBgUrl').value = '';
+                } else window.Dashboard.alert('Failed to load image: ' + (result.Message || 'Unknown error'));
+            }).catch(function () { window.Dashboard.alert('Error fetching image. Check the URL and server logs.'); });
+        });
+        row.querySelector('.btnCollArtPreview').addEventListener('click', function () {
+            showCollectionArtPreview(row, this);
         });
 
         row.querySelector('.btnChoosePoster').addEventListener('click', function () {
@@ -3437,6 +3670,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var baseTag = {
                 Name: entryLabel, Tag: name, Active: active, Blacklist: bl, ActiveIntervals: intervals,
                 EnableTag: enableTagChk, EnableCollection: enableColl, CollectionName: collName, CollectionDescription: collDescription, CollectionPosterPath: collPoster, OnlyCollection: false, OverrideWhenActive: overrideWhenActive, LastModified: currentLastMod,
+                CollectionPosterStyle: readCollectionArt(row).CollectionPosterStyle,
+                CollectionBackgroundStyle: readCollectionArt(row).CollectionBackgroundStyle,
+                CollectionBackgroundPath: readCollectionArt(row).CollectionBackgroundPath,
+                CollectionSortToTop: readCollectionArt(row).CollectionSortToTop,
+                CollectionArtTitle: readCollectionArt(row).CollectionArtTitle,
                 SourceType: st, MediaInfoFilters: miFilters, MediaInfoConditions: [],
                 TagTargetEpisode:        !!(row.querySelector('.chkTagTargetEpisode')  || {}).checked,
                 TagTargetSeason:         !!(row.querySelector('.chkTagTargetSeason')   || {}).checked,
@@ -3705,7 +3943,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             if (!grouped[key]) {
                 grouped[key] = {
                     Tag: t.Tag, Name: t.Name || '', Urls: [], LocalSources: [], Active: t.Active !== false, Blacklist: t.Blacklist, ActiveIntervals: t.ActiveIntervals,
-                    EnableTag: t.EnableTag !== false, EnableCollection: t.EnableCollection, CollectionName: t.CollectionName, CollectionDescription: t.CollectionDescription || '', CollectionPosterPath: t.CollectionPosterPath || '', OnlyCollection: t.OnlyCollection, OverrideWhenActive: t.OverrideWhenActive || false, LastModified: t.LastModified,
+                    EnableTag: t.EnableTag !== false, EnableCollection: t.EnableCollection, CollectionName: t.CollectionName, CollectionDescription: t.CollectionDescription || '', CollectionPosterPath: t.CollectionPosterPath || '',
+                    CollectionPosterStyle: t.CollectionPosterStyle || '', CollectionBackgroundStyle: t.CollectionBackgroundStyle || '',
+                    CollectionBackgroundPath: t.CollectionBackgroundPath || '', CollectionSortToTop: !!t.CollectionSortToTop,
+                    CollectionArtTitle: t.CollectionArtTitle || '',
+                    OnlyCollection: t.OnlyCollection, OverrideWhenActive: t.OverrideWhenActive || false, LastModified: t.LastModified,
                     SourceType: t.SourceType || "External", MediaInfoConditions: t.MediaInfoConditions || [], MediaInfoFilters: t.MediaInfoFilters || [],
                     Limit: t.Limit || 0,
                     EnableHomeSection: t.EnableHomeSection || false, HomeSectionLibraryId: t.HomeSectionLibraryId || 'auto',
@@ -4126,6 +4368,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '<option value="count-asc">Fewest items</option>' +
                 '<option value="managed">Managed first</option>' +
                 '</select>' +
+                '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:0.9em;white-space:nowrap;opacity:0.8;">' +
+                '<input type="checkbox" id="cbTcOnlyManaged" style="cursor:pointer;margin:0;">' +
+                '<span>Only managed by HSC</span>' +
+                '</label>' +
                 '</div>' +
                 '<div id="tcSectionsWrap" style="display:flex;gap:40px;align-items:flex-start;">' +
                 renderSection('Tags', tagsData.Tags || [], true, typeFilterDropdownHtml + extrasCheckboxHtml) +
@@ -4163,6 +4409,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var sort = container.querySelector('#tcSort').value;
                 var selectedGroups = getSelectedTypeGroups();
                 var includeExtras = !!(container.querySelector('#cbIncludeExtras') || {}).checked;
+                var onlyManaged = !!(container.querySelector('#cbTcOnlyManaged') || {}).checked;
 
                 ['tcTagSection', 'tcCollSection'].forEach(function (sectionId) {
                     var section = container.querySelector('#' + sectionId);
@@ -4178,7 +4425,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             var types = (row.dataset.types || '').split(',').filter(Boolean);
                             return types.length === 0 || !types.every(function (t) { return tcExtraTypes.indexOf(t) !== -1; });
                         })();
-                        row.style.display = (nameMatch && typeMatch && extrasOk) ? '' : 'none';
+                        var managedOk = !onlyManaged || row.dataset.managed === '1';
+                        row.style.display = (nameMatch && typeMatch && extrasOk && managedOk) ? '' : 'none';
                     });
 
                     var list = section.querySelector('.tc-manage-list');
@@ -4206,6 +4454,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             container.querySelector('#tcSort').addEventListener('change', applySearchSort);
             var cbIncludeExtras = container.querySelector('#cbIncludeExtras');
             if (cbIncludeExtras) cbIncludeExtras.addEventListener('change', applySearchSort);
+            // "Only managed by HSC" is remembered in this browser.
+            var cbOnlyManaged = container.querySelector('#cbTcOnlyManaged');
+            try { cbOnlyManaged.checked = localStorage.getItem('HomeScreenCompanion_CleanupOnlyManaged') === '1'; } catch (e) {}
+            cbOnlyManaged.addEventListener('change', function () {
+                try { localStorage.setItem('HomeScreenCompanion_CleanupOnlyManaged', this.checked ? '1' : '0'); } catch (e) {}
+                applySearchSort();
+            });
+            if (cbOnlyManaged.checked) applySearchSort();
 
             var typeFilterBtn = container.querySelector('#tcTypeFilterBtn');
             var typeFilterDropdown = container.querySelector('#tcTypeFilterDropdown');

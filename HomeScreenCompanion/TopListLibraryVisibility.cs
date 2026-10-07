@@ -11,17 +11,22 @@ namespace HomeScreenCompanion
 {
     /// <summary>
     /// Keeps movie top-list libraries out of sight (setting "Hide top-list libraries", on by
-    /// default): for every user they are excluded from "My Media" tiles and from the "Latest"
-    /// rows, both in Emby's default home screen (user configuration) and in saved home rows
-    /// (each row's own excluded folders). Emby's sidebar always lists every library a user can
-    /// access, so a top-list library still appears there for users who can see it.
+    /// default): for every user they are excluded from "My Media" (which is also what Emby's
+    /// sidebar lists) and from the "Latest" rows, both in the user configuration and in saved
+    /// home rows (each row's own excluded folders). Users keep access, so the top-list row
+    /// still shows and plays the items.
+    ///
+    /// The user configuration matches libraries by GUID (UserViewManager compares
+    /// MyMediaExcludes/LatestItemsExcludes with BaseItem.IdString); saved rows' ExcludedFolders
+    /// use the internal id. Earlier versions wrote internal ids into the user configuration,
+    /// which Emby ignored; those are removed here.
     ///
     /// Runs on every top-list section sync, so new users and new top-lists are covered.
     /// Turning the setting off removes the exclusions again.
     /// </summary>
     internal static class TopListLibraryVisibility
     {
-        public static int Apply(PluginConfiguration config, IUserManager userManager, Action<string>? log = null)
+        public static int Apply(PluginConfiguration config, IUserManager userManager, ILibraryManager libraryManager, Action<string>? log = null)
         {
             var libIds = (config.TopLists ?? new List<TopListHomeSection>())
                 .Where(t => !ShowTopList.IsShowList(t)
@@ -30,6 +35,12 @@ namespace HomeScreenCompanion
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
             if (libIds.Count == 0) return 0;
+
+            var libGuids = libIds
+                .Select(id => long.TryParse(id, out var n) ? libraryManager.GetItemById(n)?.Id.ToString("N") : null)
+                .Where(g => !string.IsNullOrEmpty(g)).Select(g => g!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
 
             bool hide = config.HideTopListLibraries;
             int changedUsers = 0;
@@ -41,8 +52,11 @@ namespace HomeScreenCompanion
                     bool changed = false;
 
                     var cfg = userManager.GetUserConfiguration(user);
-                    var myMedia = Merge(cfg.MyMediaExcludes, libIds, hide);
-                    var latest = Merge(cfg.LatestItemsExcludes, libIds, hide);
+                    // GUIDs in when hiding; the old internal ids always out.
+                    var myMedia = Merge(Merge(cfg.MyMediaExcludes, libIds, false) ?? cfg.MyMediaExcludes, libGuids, hide)
+                                  ?? Merge(cfg.MyMediaExcludes, libIds, false);
+                    var latest = Merge(Merge(cfg.LatestItemsExcludes, libIds, false) ?? cfg.LatestItemsExcludes, libGuids, hide)
+                                 ?? Merge(cfg.LatestItemsExcludes, libIds, false);
                     if (myMedia != null || latest != null)
                     {
                         if (myMedia != null) cfg.MyMediaExcludes = myMedia;

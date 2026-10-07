@@ -83,6 +83,16 @@ namespace HomeScreenCompanion
         public string CollectionName { get; set; } = "";
         public string CollectionDescription { get; set; } = "";
         public string CollectionPosterPath { get; set; } = "";
+        // Generated collection art ("" = none / the uploaded poster). See CollectionArtRenderer.
+        public string CollectionPosterStyle { get; set; } = "";
+        public string CollectionBackgroundStyle { get; set; } = "";
+        // Text drawn on the generated art; "" = the collection name. {name} and {week} (ISO week
+        // number) are filled in, e.g. "{name} {week}" → "Top Movies for the Week 41".
+        public string CollectionArtTitle { get; set; } = "";
+        // Uploaded background (used when CollectionBackgroundStyle is "", i.e. Custom).
+        public string CollectionBackgroundPath { get; set; } = "";
+        // Puts the collection at the top of the Collections view (sort name "!!! <name>").
+        public bool CollectionSortToTop { get; set; } = false;
         public bool OnlyCollection { get; set; } = false;
 
         // Legacy fields — kept for backwards compat, never written by new code

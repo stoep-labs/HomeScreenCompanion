@@ -22,6 +22,8 @@
 	  <None Remove="thumb.png" />
 	  <None Remove="LemonMilk.otf" />
 	  <None Remove="Fonts\Anton.ttf" />
+	  <None Remove="Fonts\BebasNeue.ttf" />
+	  <None Remove="Fonts\Roboto-Bold.ttf" />
 	</ItemGroup>
 
 	<ItemGroup>
@@ -30,6 +32,8 @@
 	  <EmbeddedResource Include="thumb.png" />
 	  <EmbeddedResource Include="LemonMilk.otf" />
 	  <EmbeddedResource Include="Fonts\Anton.ttf" />
+	  <EmbeddedResource Include="Fonts\BebasNeue.ttf" />
+	  <EmbeddedResource Include="Fonts\Roboto-Bold.ttf" />
 	</ItemGroup>
 
 	<ItemGroup>

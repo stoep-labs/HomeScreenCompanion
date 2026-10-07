@@ -223,6 +223,7 @@ namespace HomeScreenCompanion
                 var desiredCollectionsMap = new Dictionary<string, HashSet<long>>(StringComparer.OrdinalIgnoreCase);
                 var collectionDescriptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 var collectionPosters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var collectionSources = new Dictionary<string, TagConfig>(StringComparer.OrdinalIgnoreCase);
                 var managedTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var activeCollections = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var failedFetches = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -572,6 +573,7 @@ namespace HomeScreenCompanion
                             collectionDescriptions[cName] = tagConfig.CollectionDescription;
                         if (!string.IsNullOrWhiteSpace(tagConfig.CollectionPosterPath) && File.Exists(tagConfig.CollectionPosterPath))
                             collectionPosters[cName] = tagConfig.CollectionPosterPath;
+                        collectionSources[cName] = tagConfig;
                     }
 
                     var groupTimer = System.Diagnostics.Stopwatch.StartNew();
@@ -1259,7 +1261,8 @@ namespace HomeScreenCompanion
                 foreach (var kvp in desiredCollectionsMap)
                 {
                     string cName = kvp.Key;
-                    var desiredIds = kvp.Value;
+                    var _extraVersions = ExtraVersionIds(OrderedItems(allItems, kvp.Value));
+                    var desiredIds = kvp.Value.Where(id => !_extraVersions.Contains(id)).ToHashSet();
                     if (desiredIds.Count == 0) continue;
 
                     try
@@ -1278,6 +1281,8 @@ namespace HomeScreenCompanion
                                 _log.Debug($"  {cName}  →  created ({desiredIds.Count} items)");
                                 if (collectionDescriptions.ContainsKey(cName) || collectionPosters.ContainsKey(cName))
                                     ApplyCollectionMeta(createdRef, cName, collectionDescriptions, collectionPosters, debug);
+                                if (collectionSources.TryGetValue(cName, out var _artSrc))
+                                    ApplyCollectionArt(createdRef, cName, _artSrc, OrderedItems(allItems, desiredIds));
                             }
                         }
                         else
@@ -1315,6 +1320,8 @@ namespace HomeScreenCompanion
                             }
                             if (!dryRun && (collectionDescriptions.ContainsKey(cName) || collectionPosters.ContainsKey(cName)))
                                 ApplyCollectionMeta(existingColl, cName, collectionDescriptions, collectionPosters, debug);
+                            if (!dryRun && collectionSources.TryGetValue(cName, out var _artSrc2))
+                                ApplyCollectionArt(existingColl, cName, _artSrc2, OrderedItems(allItems, desiredIds));
                         }
                     }
                     catch (Exception ex)
@@ -2402,7 +2409,8 @@ namespace HomeScreenCompanion
             {
                 try
                 {
-                    var desiredIds = collectionOutputItems.Select(i => i.InternalId).ToHashSet();
+                    var _extraVersions = ExtraVersionIds(collectionOutputItems);
+                    var desiredIds = collectionOutputItems.Select(i => i.InternalId).Where(id => !_extraVersions.Contains(id)).ToHashSet();
                     var existingColl = _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "BoxSet" }, Name = cName, Recursive = true }).FirstOrDefault();
                     if (existingColl == null)
                     {
@@ -2434,6 +2442,8 @@ namespace HomeScreenCompanion
                             foreach (var id in toRemove) _log.Debug($"    - {CollLabel(id)}");
                         }
                     }
+                    var _artColl = _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "BoxSet" }, Name = cName, Recursive = true }).FirstOrDefault();
+                    if (_artColl != null) ApplyCollectionArt(_artColl, cName, tagConfig, collectionOutputItems);
                     gs.CollectionCreated = _collCreated;
                     gs.CollectionItemsAdded = _collItemsAdded;
                     gs.CollectionItemsRemoved = _collItemsRemoved;
@@ -4893,6 +4903,131 @@ namespace HomeScreenCompanion
         private void SaveFileHistory(string filename, List<string> data)
         {
             try { var path = Path.Combine(Plugin.Instance.DataFolderPath, filename); Directory.CreateDirectory(Path.GetDirectoryName(path)); File.WriteAllLines(path, data); } catch { }
+        }
+
+        // A film's versions (e.g. 2160p and 1080p files) are separate items that Emby shows as one
+        // movie. A collection gets one of them, the first (lowest id), like Emby's own grouping;
+        // this returns the ids of the other versions. Anything that is not a movie is kept.
+        private static HashSet<long> ExtraVersionIds(IEnumerable<BaseItem> items)
+        {
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var extra = new HashSet<long>();
+            foreach (var item in items.Where(i => i is MediaBrowser.Controller.Entities.Movies.Movie).OrderBy(i => i.InternalId))
+            {
+                var imdb = item.GetProviderId("Imdb");
+                var key = !string.IsNullOrEmpty(imdb) ? "imdb:" + imdb
+                    : !string.IsNullOrEmpty(item.PresentationUniqueKey) ? "puk:" + item.PresentationUniqueKey : null;
+                if (key != null && !seen.Add(key)) extra.Add(item.InternalId);
+            }
+            return extra;
+        }
+
+        private static List<BaseItem> OrderedItems(List<BaseItem> allItems, IEnumerable<long> ids)
+        {
+            var byId = new Dictionary<long, BaseItem>();
+            foreach (var i in allItems) byId[i.InternalId] = i;
+            return ids.Select(id => byId.TryGetValue(id, out var it) ? it : null).Where(i => i != null).Select(i => i!).ToList();
+        }
+
+        // Generated poster / background (CollectionArtRenderer) and "top of Collections" for a
+        // source's collection. Art is drawn from the first titles in list order and only redrawn
+        // when the titles, style or name change.
+        private void ApplyCollectionArt(BaseItem coll, string cName, TagConfig tc, IList<BaseItem> items)
+        {
+            try
+            {
+                bool changed = false;
+                foreach (var (style, background) in new[] { (tc.CollectionPosterStyle, false), (tc.CollectionBackgroundStyle, true) })
+                {
+                    string? path;
+                    if (CollectionArtRenderer.IsStyle(style)) path = RenderCollectionArt(cName, CollectionArtRenderer.ArtTitle(tc.CollectionArtTitle, cName), style, background, items);
+                    else if (background && !string.IsNullOrWhiteSpace(tc.CollectionBackgroundPath) && File.Exists(tc.CollectionBackgroundPath))
+                        path = tc.CollectionBackgroundPath;   // Custom: the uploaded background
+                    else continue;
+                    if (path == null) continue;
+                    var type = background ? ImageType.Backdrop : ImageType.Primary;
+                    var images = (coll.ImageInfos ?? Array.Empty<ItemImageInfo>()).Where(i => i.Type != type).ToList();
+                    images.Add(new ItemImageInfo { Path = path, Type = type, DateModified = File.GetLastWriteTimeUtc(path) });
+                    var current = (coll.ImageInfos ?? Array.Empty<ItemImageInfo>()).FirstOrDefault(i => i.Type == type);
+                    if (current == null || !string.Equals(current.Path, path, StringComparison.OrdinalIgnoreCase)
+                        || current.DateModified != File.GetLastWriteTimeUtc(path))
+                    {
+                        coll.ImageInfos = images.ToArray();
+                        changed = true;
+                    }
+                }
+                if (changed)
+                {
+                    _libraryManager.UpdateItem(coll, coll.Parent, ItemUpdateType.ImageUpdate, null);
+                    _log.Debug($"  {cName}  →  collection art applied");
+                }
+                ApplySortToTop(coll, tc.CollectionSortToTop);
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Collection art for \"{cName}\" failed: {ex.Message}");
+            }
+        }
+
+        private const string SortToTopPrefix = "!!! ";
+
+        private void ApplySortToTop(BaseItem coll, bool toTop)
+        {
+            var name = coll.Name ?? "";
+            var locked = (coll.LockedFields ?? Array.Empty<MetadataFields>()).ToList();
+            bool isTop = (coll.SortName ?? "").StartsWith(SortToTopPrefix, StringComparison.Ordinal);
+            if (toTop && !isTop)
+            {
+                coll.SortName = SortToTopPrefix + name;
+                if (!locked.Contains(MetadataFields.SortName)) locked.Add(MetadataFields.SortName);
+            }
+            else if (!toTop && isTop)
+            {
+                coll.SortName = name;
+                locked.Remove(MetadataFields.SortName);
+            }
+            else return;
+            coll.LockedFields = locked.ToArray();
+            _libraryManager.UpdateItem(coll, coll.Parent, ItemUpdateType.MetadataEdit, null);
+        }
+
+        // Draws the art into <plugin data>/collection_art/<collection>/ and returns its path, or
+        // the existing file when nothing changed. Null when no poster could be found.
+        private string? RenderCollectionArt(string cName, string title, string style, bool background, IList<BaseItem> items)
+        {
+            var invalid = Path.GetInvalidFileNameChars();
+            var safe = new string(cName.Select(ch => Array.IndexOf(invalid, ch) >= 0 ? '_' : ch).ToArray()).Trim().Trim('.');
+            if (string.IsNullOrEmpty(safe)) safe = "collection";
+            var dir = Path.Combine(Plugin.Instance!.DataFolderPath, "collection_art", safe);
+            Directory.CreateDirectory(dir);
+            var kind = background ? "background" : "poster";
+            var output = Path.Combine(dir, kind + ".jpg");
+            var keyFile = Path.Combine(dir, kind + ".key");
+
+            var picks = CollectionArtRenderer.DistinctTitles(items).Take(CollectionArtRenderer.PostersFor(style, background)).ToList();
+            var key = style + "|" + title + "|" + string.Join(",", picks.Select(i => i.Id.ToString("N")));
+            if (File.Exists(output) && File.Exists(keyFile) && File.ReadAllText(keyFile) == key) return output;
+
+            var tempDir = Path.Combine(dir, "tmp");
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var posters = new List<string>();
+                foreach (var item in picks)
+                {
+                    var (poster, _) = HomeScreenCompanionService.FetchImageSources(item, _httpClient, tempDir,
+                        _providerManager, _libraryManager, _fileSystem, m => _log.Debug("  " + m));
+                    if (poster != null) posters.Add(poster);
+                }
+                if (posters.Count == 0) { _log.Warn($"Collection art for \"{cName}\": no posters found"); return null; }
+                CollectionArtRenderer.Render(style, posters, title, background, output);
+                File.WriteAllText(keyFile, key);
+                return output;
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
         }
 
         private void ApplyCollectionMeta(BaseItem item, string cName,

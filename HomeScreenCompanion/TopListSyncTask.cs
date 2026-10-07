@@ -446,7 +446,7 @@ namespace HomeScreenCompanion
 
             GrantTopListLibraryAccess(topLists, userManager, libraryManager, logger);
 
-            var hiddenFor = TopListLibraryVisibility.Apply(config, userManager, m => _log.Warn(m));
+            var hiddenFor = TopListLibraryVisibility.Apply(config, userManager, libraryManager, m => _log.Warn(m));
             if (hiddenFor > 0)
                 _log.Info($"    Top-list libraries {(config.HideTopListLibraries ? "hidden from" : "shown again in")} My Media and Latest for {RunLog.Plural(hiddenFor, "user")}");
 

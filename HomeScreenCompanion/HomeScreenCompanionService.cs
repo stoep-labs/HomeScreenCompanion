@@ -96,6 +96,34 @@ namespace HomeScreenCompanion
         public string Message { get; set; } = "";
     }
 
+    // Small examples of each collection art style for the style picker (drawn from stand-in posters).
+    [Route("/HomeScreenCompanion/ArtStyleSamples", "GET")]
+    [Authenticated(Roles = "Admin")]
+    public class ArtStyleSamplesRequest : IReturn<ArtStyleSamplesResponse> { }
+
+    public class ArtStyleSamplesResponse
+    {
+        public Dictionary<string, string> Poster { get; set; } = new Dictionary<string, string>();
+        public Dictionary<string, string> Background { get; set; } = new Dictionary<string, string>();
+    }
+
+    // The collection art a source would get, from its unsaved settings. Changes nothing.
+    [Route("/HomeScreenCompanion/PreviewCollectionArt", "POST")]
+    [Authenticated(Roles = "Admin")]
+    public class PreviewCollectionArtRequest : IReturn<PreviewCollectionArtResponse>
+    {
+        public TagConfig Source { get; set; } = new TagConfig();
+    }
+
+    public class PreviewCollectionArtResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = "";
+        public string Poster { get; set; } = "";       // data: URL, empty when not generated
+        public string Background { get; set; } = "";
+        public int Titles { get; set; }
+    }
+
     // What a Local Media Information source would tag, from its unsaved settings. Changes nothing.
     [Route("/HomeScreenCompanion/PreviewSource", "POST")]
     [Authenticated(Roles = "Admin")]
@@ -696,6 +724,102 @@ public class HomeScreenCompanionService : IService
         }
 
         private const int PreviewMaxItems = 250;
+
+        public object Get(ArtStyleSamplesRequest request)
+        {
+            var dir = Path.Combine(Plugin.Instance!.DataFolderPath, "collection_art", "_samples");
+            var res = new ArtStyleSamplesResponse();
+            foreach (var style in CollectionArtRenderer.Styles)
+            {
+                try { res.Poster[style] = CollectionArtRenderer.Sample(style, false, dir); } catch (Exception ex) { _logger.Warn($"Art sample '{style}' poster failed: {ex.Message}"); }
+                try { res.Background[style] = CollectionArtRenderer.Sample(style, true, dir); } catch (Exception ex) { _logger.Warn($"Art sample '{style}' background failed: {ex.Message}"); }
+            }
+            return res;
+        }
+
+        public async Task<object> Post(PreviewCollectionArtRequest request)
+        {
+            var result = await PreviewCollectionArt(request.Source ?? new TagConfig());
+            var src = request.Source ?? new TagConfig();
+            _logger.Info($"Collection art preview: '{src.Name}' [{src.SourceType}] tag '{src.Tag}' poster '{src.CollectionPosterStyle}' background '{src.CollectionBackgroundStyle}' -> "
+                + (result.Success ? $"drawn from {result.Titles} title(s)" : result.Message));
+            return result;
+        }
+
+        private async Task<PreviewCollectionArtResponse> PreviewCollectionArt(TagConfig source)
+        {
+            bool poster = CollectionArtRenderer.IsStyle(source.CollectionPosterStyle);
+            bool background = CollectionArtRenderer.IsStyle(source.CollectionBackgroundStyle);
+            if (!poster && !background)
+                return new PreviewCollectionArtResponse { Message = "Choose \"Generate from the titles\" for the poster or the background first." };
+
+            // The titles: a Smart Playlist is matched now (like its Preview); other sources use the
+            // titles that carry the tag since the last run.
+            List<BaseItem> items;
+            if (source.SourceType == "MediaInfo")
+            {
+                var task = HomeScreenCompanionTask.Instance;
+                if (task == null) return new PreviewCollectionArtResponse { Message = "Task not initialized" };
+                var probe = _jsonSerializer.DeserializeFromString<TagConfig>(_jsonSerializer.SerializeToString(source));
+                if (string.IsNullOrWhiteSpace(probe.Tag)) probe.Tag = string.IsNullOrWhiteSpace(probe.Name) ? "preview" : probe.Name;
+                if (string.IsNullOrWhiteSpace(probe.Name)) probe.Name = probe.Tag;
+                var preview = await task.PreviewEntryAsync(probe, CancellationToken.None);
+                if (!preview.Done) return new PreviewCollectionArtResponse { Message = preview.Message };
+                items = preview.Items;
+            }
+            else
+            {
+                var tag = (source.Tag ?? "").Trim();
+                items = tag.Length == 0 ? new List<BaseItem>() : _libraryManager.GetItemList(new InternalItemsQuery
+                {
+                    Recursive = true, IsVirtualItem = false, Tags = new[] { tag },
+                    IncludeItemTypes = new[] { "Movie", "Series" }
+                }).ToList();
+            }
+            if (items.Count == 0)
+                return new PreviewCollectionArtResponse { Message = source.SourceType == "MediaInfo"
+                    ? "No titles match this source, so there is nothing to draw."
+                    : "No titles carry this tag yet. Run the source once, then preview again." };
+
+            var name = !string.IsNullOrWhiteSpace(source.CollectionName) ? source.CollectionName.Trim()
+                : !string.IsNullOrWhiteSpace(source.Name) ? source.Name.Trim() : (source.Tag ?? "").Trim();
+            var title = CollectionArtRenderer.ArtTitle(source.CollectionArtTitle, name);
+            var tempDir = Path.Combine(Path.GetTempPath(), "hsc_art_" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(tempDir);
+            try
+            {
+                var cache = new Dictionary<Guid, string?>();
+                string? PosterOf(BaseItem item)
+                {
+                    if (!cache.TryGetValue(item.Id, out var path))
+                        cache[item.Id] = path = FetchImageSources(item, _httpClient, tempDir, _providerManager, _libraryManager, _fileSystem).Poster;
+                    return path;
+                }
+                string Draw(string style, bool bg)
+                {
+                    var posters = CollectionArtRenderer.DistinctTitles(items).Take(CollectionArtRenderer.PostersFor(style, bg)).Select(PosterOf).Where(p => p != null).Select(p => p!).ToList();
+                    if (posters.Count == 0) return "";
+                    var output = Path.Combine(tempDir, bg ? "background.jpg" : "poster.jpg");
+                    CollectionArtRenderer.Render(style, posters, title, bg, output);
+                    return "data:image/jpeg;base64," + Convert.ToBase64String(File.ReadAllBytes(output));
+                }
+                return new PreviewCollectionArtResponse
+                {
+                    Success = true,
+                    Titles = items.Count,
+                    Poster = poster ? Draw(source.CollectionPosterStyle, false) : "",
+                    Background = background ? Draw(source.CollectionBackgroundStyle, true) : ""
+                };
+            }
+            catch (Exception ex)
+            {
+                return new PreviewCollectionArtResponse { Message = "Preview failed: " + ex.Message };
+            }
+            finally
+            {
+                try { Directory.Delete(tempDir, true); } catch { }
+            }
+        }
 
         public async Task<object> Post(PreviewSourceRequest request)
         {
@@ -3215,6 +3339,10 @@ public class HomeScreenCompanionService : IService
             t.HomeSectionTracked  ??= new List<HomeSectionTracking>();
             t.PlaylistUserIds     ??= new List<string>();
             t.PlaylistMappings    ??= new List<PlaylistMapping>();
+            t.CollectionPosterStyle     ??= "";
+            t.CollectionArtTitle        ??= "";
+            t.CollectionBackgroundStyle ??= "";
+            t.CollectionBackgroundPath  ??= "";
             if (string.IsNullOrEmpty(t.HomeSectionLibraryId)) t.HomeSectionLibraryId = "auto";
             if (string.IsNullOrEmpty(t.HomeSectionSettings)) t.HomeSectionSettings = "{}";
             foreach (var m in t.PlaylistMappings) m.LastSyncedItemIds ??= new List<long>();
