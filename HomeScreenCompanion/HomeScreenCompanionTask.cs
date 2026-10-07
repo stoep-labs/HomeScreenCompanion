@@ -369,7 +369,7 @@ namespace HomeScreenCompanion
                 }
 
                 var mediaInfoCache = new Dictionary<long, CachedMediaInfo>();
-                if (config.Tags.Any(t => t.Active && (t.MediaInfoFilters?.Count > 0 || t.MediaInfoConditions?.Count > 0)))
+                if (config.Tags.Any(t => t.Active && NeedsMediaDetails(t)))
                 {
                     foreach (var item in allItems)
                     {
@@ -381,7 +381,7 @@ namespace HomeScreenCompanion
 
                 var userDataCache = new Dictionary<(Guid, long), (bool Played, DateTimeOffset? LastPlayedDate, int PlayCount)>();
                 var seriesLastPlayedCache = new Dictionary<(Guid, long), DateTimeOffset?>();
-                var popularityCounter = new PopularityCounter(_libraryManager, _userManager, _userDataManager); // reads each user's watch data once per run
+                StartPopularity(allItems);
                 var preloadedUsers = _userManager.GetUserList(new UserQuery { IsDisabled = false });
 
                 var activeTagOverrides = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -783,10 +783,10 @@ namespace HomeScreenCompanion
                                 if (ItemMatchesMediaInfo(item, tagConfig, debug, seriesEpisodeCache, personCache, userDataCache, ci, preloadedUsers, seriesLastPlayedCache, collectionMembershipCache, seriesEpisodeNamesCache))
                                 {
                                     matchedLocalItems.Add(item);
-                                    if (!SourceSort.IsSorted(tagConfig) && effectiveLimit < 10000 && matchedLocalItems.Count >= effectiveLimit) break;
+                                    if (PopularRuleDays(tagConfig) == null && effectiveLimit < 10000 && matchedLocalItems.Count >= effectiveLimit) break;
                                 }
                             }
-                            ApplySourceSort(tagConfig, matchedLocalItems, effectiveLimit, popularityCounter);
+                            OrderByPopularity(tagConfig, matchedLocalItems, effectiveLimit);
                             gs.ListCount = itemsToScan.Count;
                             if (TagConfigTargetsEpisodes(tagConfig))
                             {
@@ -1620,6 +1620,7 @@ namespace HomeScreenCompanion
                 Recursive = true,
                 IsVirtualItem = false
             }).ToList();
+            StartPopularity(allItems);
 
             int _movieCount = allItems.Count(i => i.GetType().Name.Contains("Movie"));
             int _seriesCount = allItems.Count(i => i.GetType().Name.Contains("Series"));
@@ -1741,11 +1742,14 @@ namespace HomeScreenCompanion
                         }
                     }
                 }
-                foreach (var item in allItems)
+                if (NeedsMediaDetails(tagConfig))
                 {
-                    if (item.LocationType != LocationType.FileSystem) continue;
-                    var resolved = ResolveItemForMediaInfo(item, seriesEpisodeCache);
-                    mediaInfoCache[item.InternalId] = ExtractMediaInfo(resolved);
+                    foreach (var item in allItems)
+                    {
+                        if (item.LocationType != LocationType.FileSystem) continue;
+                        var resolved = ResolveItemForMediaInfo(item, seriesEpisodeCache);
+                        mediaInfoCache[item.InternalId] = ExtractMediaInfo(resolved);
+                    }
                 }
                 var singleTagCollPlCriteria = GetAllCriteria(tagConfig)
                     .Select(c => c.Length > 0 && c[0] == '!' ? c.Substring(1) : c)
@@ -2024,14 +2028,15 @@ namespace HomeScreenCompanion
                         if (ItemMatchesMediaInfo(item, tagConfig, debug, seriesEpisodeCache, personCache, userDataCache, ci, preloadedUsers, seriesLastPlayedCache, collectionMembershipCache, seriesEpisodeNamesCache))
                         {
                             matchedLocalItems.Add(item);
-                            if (!SourceSort.IsSorted(tagConfig) && effectiveLimit < 10000 && matchedLocalItems.Count >= effectiveLimit) break;
+                            if (PopularRuleDays(tagConfig) == null && effectiveLimit < 10000 && matchedLocalItems.Count >= effectiveLimit) break;
                         }
                     }
-                    var _popularity = new PopularityCounter(_libraryManager, _userManager, _userDataManager);
-                    ApplySourceSort(tagConfig, matchedLocalItems, effectiveLimit, _popularity);
+                    OrderByPopularity(tagConfig, matchedLocalItems, effectiveLimit);
                     if (_preview != null)
                     {
-                        _preview.Complete(matchedLocalItems, _itemsToScan.Count, _popularity.LastViewers);
+                        var _popDays = PopularRuleDays(tagConfig);
+                        _preview.Complete(matchedLocalItems, _itemsToScan.Count,
+                            _popDays.HasValue ? matchedLocalItems.ToDictionary(i => i.Id, i => ViewersOf(i, _popDays.Value)) : null);
                         return (true, "");
                     }
                     if (debug)
@@ -2538,17 +2543,60 @@ namespace HomeScreenCompanion
             return !string.IsNullOrEmpty(imdb) ? imdb : item.Id.ToString("N");
         }
 
-        // Sorted Smart Playlist sources match everything, then keep the top N in sort order.
-        // Sorting in place keeps tagOutputItems/collectionOutputItems (same list) in step.
-        private void ApplySourceSort(TagConfig tagConfig, List<BaseItem> matched, int limit, PopularityCounter popularity)
+        // ── "Popular on this server" rule (criterion Popular:<days>:<op>:<viewers>) ───────────
+        // Viewers = different users who watched a title in the last <days> days (0 = all time);
+        // anyone who watched an episode counts for the show. Counted once per run per window
+        // (PopularityCounter reads each user's watch data once).
+        private PopularityCounter? _popularity;
+        private List<BaseItem> _popularityScope = new List<BaseItem>();
+        private readonly Dictionary<int, Dictionary<Guid, int>> _viewersByDays = new Dictionary<int, Dictionary<Guid, int>>();
+
+        private void StartPopularity(List<BaseItem> scope)
         {
-            if (!SourceSort.IsSorted(tagConfig)) return;
-            var sorted = SourceSort.Sort(matched, tagConfig, popularity, m => _log.Info("  " + m));
-            if (limit < 10000 && sorted.Count > limit) sorted = sorted.Take(limit).ToList();
+            _popularity = new PopularityCounter(_libraryManager, _userManager, _userDataManager);
+            _popularityScope = scope;
+            _viewersByDays.Clear();
+        }
+
+        private int ViewersOf(BaseItem item, int days)
+        {
+            if (!_viewersByDays.TryGetValue(days, out var counts))
+            {
+                _popularity ??= new PopularityCounter(_libraryManager, _userManager, _userDataManager);
+                _viewersByDays[days] = counts = _popularity.CountViewers(_popularityScope, days, m => _log.Debug("  " + m));
+            }
+            return counts.TryGetValue(item.Id, out var n) ? n : 0;
+        }
+
+        // The time window of the source's first (not negated) Popular rule, or null without one.
+        private static int? PopularRuleDays(TagConfig tagConfig)
+        {
+            foreach (var c in GetAllCriteria(tagConfig))
+            {
+                var p = c.Split(':');
+                if (p.Length == 4 && p[0] == "Popular")
+                    return int.TryParse(p[1], out var d) && d > 0 ? d : 0;
+            }
+            return null;
+        }
+
+        // A source with a Popular rule lists its matches most viewed first, so Max items keeps the
+        // most popular and a top-list built from the tag follows that order. Sorting in place keeps
+        // tagOutputItems/collectionOutputItems (same list) in step.
+        private void OrderByPopularity(TagConfig tagConfig, List<BaseItem> matched, int limit)
+        {
+            var days = PopularRuleDays(tagConfig);
+            if (days == null) return;
+            var ordered = matched
+                .OrderByDescending(i => ViewersOf(i, days.Value))
+                .ThenByDescending(i => i.CommunityRating ?? 0)
+                .ThenBy(i => i.SortName, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (limit < 10000 && ordered.Count > limit) ordered = ordered.Take(limit).ToList();
             matched.Clear();
-            matched.AddRange(sorted);
-            _log.Info($"  Sorted by {tagConfig.MiSortBy}{(tagConfig.MiSortBy == "Random" ? "" : string.Equals(tagConfig.MiSortOrder, "Ascending", StringComparison.OrdinalIgnoreCase) ? " (lowest first)" : " (highest first)")}: {matched.Count} kept"
-                + (matched.Count > 0 ? " — " + string.Join(", ", matched.Take(10).Select((i, n) => $"{n + 1}. {i.Name}")) : ""));
+            matched.AddRange(ordered);
+            _log.Info($"  Most viewed first ({(days.Value > 0 ? $"last {days.Value} days" : "all time")}): {matched.Count} kept"
+                + (matched.Count > 0 ? " — " + string.Join(", ", matched.Take(10).Select((i, n) => $"{n + 1}. {i.Name} ({ViewersOf(i, days.Value)})")) : ""));
         }
 
         // Writes tag_ranks/<tag>.json — the IMDb ids of a tag's matched items in source order,
@@ -3773,6 +3821,9 @@ namespace HomeScreenCompanion
             double? cachedDateModifiedDays, cachedFileSizeMb;
             double? cachedBitRate, cachedSampleRate, cachedBitsPerSample, cachedTrackNumber, cachedDiscNumber;
 
+            if (!cachedInfo.HasValue && !NeedsMediaDetails(tagConfig))
+                cachedInfo = new CachedMediaInfo { AudioLanguages = new HashSet<string>(StringComparer.OrdinalIgnoreCase) };
+
             if (cachedInfo.HasValue)
             {
                 itemToCheck = item; // metadata (Studios, Genres etc.) from original item
@@ -3947,6 +3998,13 @@ namespace HomeScreenCompanion
             if (parts.Length == 4)
             {
                 var prop4 = parts[0]; var userId4 = parts[1]; var op4 = parts[2]; var valStr4 = parts[3];
+                if (prop4 == "Popular")
+                {
+                    int popDays = int.TryParse(userId4, out var pd) && pd > 0 ? pd : 0;
+                    return double.TryParse(valStr4, System.Globalization.NumberStyles.Any,
+                                           System.Globalization.CultureInfo.InvariantCulture, out var minViewers)
+                        && ApplyNumericOp(ViewersOf(item, popDays), op4, minViewers);
+                }
                 if (userId4 == "__any__" || userId4 == "__all__")
                 {
                     bool matchAll = userId4 == "__all__";
@@ -4161,6 +4219,22 @@ namespace HomeScreenCompanion
             }
             return item.Name;
         }
+
+        // Criteria that read a file's video/audio details (ExtractMediaInfo): the bare flags
+        // ("4K", "HEVC", "Atmos", "5.1", …) and these properties. Reading the details costs a
+        // lookup per title (and per show), so it is skipped when no criterion needs them.
+        private static readonly HashSet<string> MediaDetailProperties = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "AudioLanguage", "DateModified", "FileSize", "BitRate", "SampleRate", "BitsPerSample", "TrackNumber", "DiscNumber"
+        };
+
+        private static bool NeedsMediaDetails(TagConfig tagConfig)
+            => GetAllCriteria(tagConfig).Any(c =>
+            {
+                var crit = c.TrimStart('!');
+                int colon = crit.IndexOf(':');
+                return colon < 0 ? crit.Length > 0 : MediaDetailProperties.Contains(crit.Substring(0, colon));
+            });
 
         private static IEnumerable<string> GetAllCriteria(TagConfig tagConfig)
         {

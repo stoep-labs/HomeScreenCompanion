@@ -3,6 +3,9 @@
      data-controller="__plugin/HomeScreenCompanionJS">
 
     <style>
+        /* API keys are plain text fields shown masked: a type="password" field makes the browser
+           offer to save a password every time the settings are saved. "Show" unmasks them. */
+        .api-key-field:not(.api-key-shown) { -webkit-text-security: disc; text-security: disc; }
         .tag-row {
             background: var(--theme-background-level2);
             margin-bottom: 15px;
@@ -1019,7 +1022,7 @@
                             </div>
                             <div class="settings-panel-body" style="display:none; padding: 0 14px 14px;">
                                 <div class="inputContainer">
-                                    <input is="emby-input" type="password" id="txtTraktClientId" label="Trakt Client ID" />
+                                    <input is="emby-input" type="text" class="api-key-field" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore id="txtTraktClientId" label="Trakt Client ID" />
                                     <label style="display:inline-flex; align-items:center; gap:5px; font-size:0.85em; opacity:0.75; margin-top:4px; cursor:pointer;">
                                         <input type="checkbox" class="chkShowApiKey" data-target="txtTraktClientId" style="margin:0;" /> Show
                                     </label>
@@ -1039,7 +1042,7 @@
                             </div>
                             <div class="settings-panel-body" style="display:none; padding: 0 14px 14px;">
                                 <div class="inputContainer">
-                                    <input is="emby-input" type="password" id="txtMdblistApiKey" label="MDBList API Key" />
+                                    <input is="emby-input" type="text" class="api-key-field" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore id="txtMdblistApiKey" label="MDBList API Key" />
                                     <label style="display:inline-flex; align-items:center; gap:5px; font-size:0.85em; opacity:0.75; margin-top:4px; cursor:pointer;">
                                         <input type="checkbox" class="chkShowApiKey" data-target="txtMdblistApiKey" style="margin:0;" /> Show
                                     </label>
@@ -1059,7 +1062,7 @@
                             </div>
                             <div class="settings-panel-body" style="display:none; padding: 0 14px 14px;">
                                 <div class="inputContainer">
-                                    <input is="emby-input" type="password" id="txtTmdbApiKey" label="TMDb API Read Access Token" />
+                                    <input is="emby-input" type="text" class="api-key-field" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore id="txtTmdbApiKey" label="TMDb API Read Access Token" />
                                     <label style="display:inline-flex; align-items:center; gap:5px; font-size:0.85em; opacity:0.75; margin-top:4px; cursor:pointer;">
                                         <input type="checkbox" class="chkShowApiKey" data-target="txtTmdbApiKey" style="margin:0;" /> Show
                                     </label>
@@ -1092,7 +1095,7 @@
                             </div>
                             <div class="settings-panel-body" style="display:none; padding: 0 14px 14px;">
                                 <div class="inputContainer">
-                                    <input is="emby-input" type="password" id="txtGeminiApiKey" label="API Key" />
+                                    <input is="emby-input" type="text" class="api-key-field" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore id="txtGeminiApiKey" label="API Key" />
                                     <label style="display:inline-flex; align-items:center; gap:5px; font-size:0.85em; opacity:0.75; margin-top:4px; cursor:pointer;">
                                         <input type="checkbox" class="chkShowApiKey" data-target="txtGeminiApiKey" style="margin:0;" /> Show
                                     </label>
@@ -1118,7 +1121,7 @@
                             </div>
                             <div class="settings-panel-body" style="display:none; padding: 0 14px 14px;">
                                 <div class="inputContainer">
-                                    <input is="emby-input" type="password" id="txtOpenAiApiKey" label="API Key" />
+                                    <input is="emby-input" type="text" class="api-key-field" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore id="txtOpenAiApiKey" label="API Key" />
                                     <label style="display:inline-flex; align-items:center; gap:5px; font-size:0.85em; opacity:0.75; margin-top:4px; cursor:pointer;">
                                         <input type="checkbox" class="chkShowApiKey" data-target="txtOpenAiApiKey" style="margin:0;" /> Show
                                     </label>
@@ -1144,7 +1147,7 @@
                             </div>
                             <div class="settings-panel-body" style="display:none; padding: 0 14px 14px;">
                                 <div class="inputContainer">
-                                    <input is="emby-input" type="password" id="txtClaudeApiKey" label="API Key" />
+                                    <input is="emby-input" type="text" class="api-key-field" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore id="txtClaudeApiKey" label="API Key" />
                                     <label style="display:inline-flex; align-items:center; gap:5px; font-size:0.85em; opacity:0.75; margin-top:4px; cursor:pointer;">
                                         <input type="checkbox" class="chkShowApiKey" data-target="txtClaudeApiKey" style="margin:0;" /> Show
                                     </label>

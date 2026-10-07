@@ -85,14 +85,6 @@ namespace HomeScreenCompanion
         public string CollectionPosterPath { get; set; } = "";
         public bool OnlyCollection { get; set; } = false;
 
-        // Smart Playlist sort (empty = keep the first matches, as before). Values: Popularity,
-        // DateAdded, PremiereDate, CommunityRating, Name, Random. See SourceSort.
-        public string MiSortBy { get; set; } = "";
-        public string MiSortOrder { get; set; } = "Descending";
-        public int PopularityDays { get; set; } = 30;          // 0 = all time
-        public int PopularityMinViewers { get; set; } = 1;
-        public bool PopularityCountPartial { get; set; } = false;
-        public List<string> PopularityExcludeUserIds { get; set; } = new List<string>();
         // Legacy fields — kept for backwards compat, never written by new code
         public bool MediaInfoSeasonMode { get; set; } = false;
         public string MediaInfoTargetType { get; set; } = "";

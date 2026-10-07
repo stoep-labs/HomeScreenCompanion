@@ -3,6 +3,20 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
     var pluginId = "7c10708f-43e4-4d69-923c-77d01802315b";
     var statusInterval = null;
+
+    // One status timer at most, for the page on screen. Starting a new one always stops the old
+    // one, and a tick stops it once the page has left the DOM, so leaving the page (even without
+    // a viewhide event) never leaves a timer polling in the background.
+    function stopStatusPolling() {
+        if (statusInterval) { clearInterval(statusInterval); statusInterval = null; }
+    }
+    function startStatusPolling(view) {
+        stopStatusPolling();
+        statusInterval = setInterval(function () {
+            if (!document.body.contains(view)) { stopStatusPolling(); return; }
+            refreshStatus(view);
+        }, 5000);
+    }
     // Live log modal: latest status per task and the tab the user picked (null = automatic)
     var _lastStatus = { sync: null, hsc: null, tl: null };
     var _logTab = null;
@@ -706,30 +720,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }, { offset: Number.NEGATIVE_INFINITY }).element;
     }
 
-    // Smart Playlist "Pick the top N by" settings of a source card (see SourceSort on the server).
-    function readMiSort(row) {
-        var sel = row.querySelector('.selMiSortBy');
-        if (!sel) return {};
-        var usersEl = row.querySelector('.mi-pop-users');
-        var exclude;
-        if (usersEl && usersEl.dataset.pending === '1') {
-            try { exclude = JSON.parse(decodeURIComponent(usersEl.dataset.userids || '%5B%5D')); } catch (e) { exclude = []; }
-        } else {
-            exclude = Array.from(row.querySelectorAll('.chkPopExclude:checked')).map(function (c) { return c.value; });
-        }
-        var days = parseInt((row.querySelector('.txtPopDays') || {}).value, 10);
-        return {
-            MiSortBy: sel.value || '',
-            MiSortOrder: (row.querySelector('.selMiSortOrder') || {}).value || 'Descending',
-            PopularityDays: isNaN(days) || days < 0 ? 30 : days,
-            PopularityMinViewers: Math.max(1, parseInt((row.querySelector('.txtPopMinViewers') || {}).value, 10) || 1),
-            PopularityCountPartial: !!(row.querySelector('.chkPopPartial') || {}).checked,
-            PopularityExcludeUserIds: exclude
-        };
-    }
-
-    // Preview: runs this source's current (unsaved) filters and "Pick the top N by" on the
-    // server without tagging anything, and lists what it would tag.
+    // Preview: runs this source's current (unsaved) filters on the server without tagging
+    // anything, and lists what it would tag.
     function showSourcePreview(row, btn) {
         var view = document.querySelector('#HomeScreenCompanionConfigPage');
         var label = row.querySelector('.txtEntryLabel').value;
@@ -762,15 +754,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 return;
             }
             var items = res.Items || [];
-            var summary = items.length + ' title' + (items.length === 1 ? '' : 's') + ' would get the tag'
-                + ' (' + res.Scanned.toLocaleString() + ' checked).';
+            var total = res.Total || items.length;
+            var summary = total.toLocaleString() + ' title' + (total === 1 ? '' : 's') + ' would get the tag'
+                + ' (' + res.Scanned.toLocaleString() + ' checked)'
+                + (total > items.length ? ' — showing the first ' + items.length + '.' : '.');
             if (!items.length) {
                 summary = 'Nothing matches, so nothing would be tagged.';
-                if (res.ShowViewers) {
-                    var days = source.PopularityDays;
-                    summary += ' No matching title was watched by at least ' + (source.PopularityMinViewers || 1) + ' user(s) '
-                        + (days > 0 ? 'in the last ' + days + ' days.' : 'ever.');
-                }
             }
             var html = '<div style="margin-bottom:12px; opacity:0.85;">' + escapeHtml(summary) + '</div>';
             items.forEach(function (it, n) {
@@ -786,38 +775,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     + '<div style="min-width:0;"><div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escapeHtml(it.Name) + '</div>'
                     + '<div style="font-size:0.85em; opacity:0.7;">' + escapeHtml(meta) + '</div></div>' + viewers + '</div>';
             });
-            if (items.length && source.MiSortBy) {
-                html += '<div class="fieldDescription" style="margin-top:12px;">Numbered in ranking order. A home row shows them in its own Sort By order.</div>';
-            }
             body.innerHTML = html;
         }).catch(function (err) {
             body.innerHTML = '<div style="padding:12px 0;">Preview failed: ' + escapeHtml(err.message) + '</div>';
         }).finally(function () { btn.disabled = false; });
     }
-
-    function fillPopularityUsers() {
-        var pending = document.querySelectorAll('.mi-pop-users[data-pending="1"]');
-        if (!pending.length) return;
-        getHseUsers().then(function (users) {
-            pending.forEach(function (el) {
-                var ids = [];
-                try { ids = JSON.parse(decodeURIComponent(el.dataset.userids || '%5B%5D')); } catch (e) {}
-                el.innerHTML = buildUserMultiSelectHtml(users, ids, 'chkPopExclude');
-                el.style.opacity = '';
-                el.dataset.pending = '0';
-                wireUserMultiSelect(el);
-            });
-        });
-    }
-
-    document.addEventListener('change', function (e) {
-        if (!e.target || !e.target.classList || !e.target.classList.contains('selMiSortBy')) return;
-        var opts = e.target.closest('.mi-sort-row') && e.target.closest('.mi-sort-row').querySelector('.mi-pop-opts');
-        if (opts) opts.style.display = e.target.value === 'Popularity' ? 'block' : 'none';
-        // Most-watched always wins; Random has no direction.
-        var order = e.target.closest('.mi-sort-row') && e.target.closest('.mi-sort-row').querySelector('.mi-sort-order');
-        if (order) order.style.display = e.target.value === 'Popularity' || e.target.value === 'Random' ? 'none' : '';
-    });
 
     function readRowAsConfig(row) {
         var entryLabel = row.querySelector('.txtEntryLabel').value;
@@ -947,9 +909,6 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             CollectionDescription: collDesc, CollectionPosterPath: collPoster,
             OverrideWhenActive: overrideWhenActive, SourceType: st,
             Urls: urls, LocalSources: localSources, Limit: miLimit,
-            MiSortBy: readMiSort(row).MiSortBy || '', MiSortOrder: readMiSort(row).MiSortOrder || 'Descending',
-            PopularityDays: readMiSort(row).PopularityDays, PopularityMinViewers: readMiSort(row).PopularityMinViewers,
-            PopularityCountPartial: !!readMiSort(row).PopularityCountPartial, PopularityExcludeUserIds: readMiSort(row).PopularityExcludeUserIds || [],
             MediaInfoFilters: miFilters, MediaInfoConditions: [],
             EnableHomeSection: enableHse, HomeSectionLibraryId: hseLibraryId,
             HomeSectionUserIds: hseUserIds, HomeSectionSettings: JSON.stringify(hseSettings),
@@ -1044,8 +1003,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         MediaType: [['Movie', 'Movie'], ['Series', 'Show / Series'], ['Episode', 'Episode'], ['Audio', 'Music Track (Audio)'], ['MusicVideo', 'Music Video'], ['MusicAlbum', 'Music Album'], ['MusicArtist', 'Music Artist']],
         IsPlayed: [['Watched', 'Watched'], ['Unwatched', 'Unwatched']]
     };
-    var MI_NUMERIC_PROPS = ['CommunityRating', 'Year', 'Runtime', 'DateAdded', 'DateModified', 'FileSize', 'LastPlayed', 'PlayCount', 'BitRate', 'SampleRate', 'BitsPerSample', 'TrackNumber', 'DiscNumber', 'WatchedByCount'];
-    var MI_UNIT_LABELS = { DateAdded: 'days ago', DateModified: 'days ago', LastPlayed: 'days ago', FileSize: 'MB', PlayCount: 'plays', BitRate: 'kbps', SampleRate: 'Hz', BitsPerSample: 'bits', WatchedByCount: 'users' };
+    var MI_NUMERIC_PROPS = ['CommunityRating', 'Year', 'Runtime', 'DateAdded', 'DateModified', 'FileSize', 'LastPlayed', 'PlayCount', 'BitRate', 'SampleRate', 'BitsPerSample', 'TrackNumber', 'DiscNumber', 'WatchedByCount', 'Popular'];
+    var MI_UNIT_LABELS = { DateAdded: 'days ago', DateModified: 'days ago', LastPlayed: 'days ago', FileSize: 'MB', PlayCount: 'plays', BitRate: 'kbps', SampleRate: 'Hz', BitsPerSample: 'bits', WatchedByCount: 'users', Popular: 'users' };
     var MI_USER_PROPS = ['IsPlayed', 'LastPlayed', 'PlayCount'];
     var MI_TEXT_MATCH_PROPS = ['Tag', 'Title', 'EpisodeTitle', 'Overview', 'Studio', 'Genre', 'Actor', 'Director', 'Writer', 'ContentRating', 'AudioLanguage', 'Artist', 'Album', 'FolderPath', 'Country'];
     var MI_TEXT_MATCH_DEFAULT = {
@@ -1123,7 +1082,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             { label: 'Content', props: [['MediaType','Media Type'], ['Tag','Tag'], ['Title','Title'], ['EpisodeTitle','Title (Episode)'], ['Overview','Overview'], ['Studio','Studio'], ['Genre','Genre'], ['Actor','Actor / Cast'], ['Director','Director'], ['Writer','Writer'], ['ContentRating','Content Rating'], ['ImdbId','IMDB ID'], ['TvdbId','TVDB ID'], ['Country','Country'], ['Collection','In Collection'], ['Playlist','In Playlist']] },
             { label: 'Music', props: [['Artist','Artist'], ['Album','Album'], ['BitRate','Bit Rate (kbps)'], ['SampleRate','Sample Rate (Hz)'], ['BitsPerSample','Bit Depth'], ['TrackNumber','Track Number'], ['DiscNumber','Disc Number']] },
             { label: 'Metrics', props: [['CommunityRating','Community Rating'], ['Year','Year'], ['Runtime','Runtime (minutes)'], ['DateAdded','Date Added'], ['DateModified','Date Modified'], ['FileSize','File Size (MB)'], ['FolderPath','Folder Path']] },
-            { label: 'Activity', props: [['IsPlayed','Watched / Unwatched'], ['LastPlayed','Last Played'], ['PlayCount','Play Count'], ['WatchedByCount','Watched by (user count)']] }
+            { label: 'Activity', props: [['IsPlayed','Watched / Unwatched'], ['LastPlayed','Last Played'], ['PlayCount','Play Count'], ['WatchedByCount','Watched by (user count)'], ['Popular','Popular on this server (viewers)']] }
         ];
         return groups.map(function (g) {
             return '<optgroup label="' + g.label + '">' +
@@ -1144,6 +1103,17 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 return '<option value="' + u.Id + '"' + (u.Id === savedUserId ? ' selected' : '') + '>' + u.Name + '</option>';
             }).join('');
             userHtml = '<select class="selMiUser" is="emby-select" style="flex:0 0 auto;min-width:110px;">' + uOpts + '</select>';
+        }
+        if (prop === 'Popular') {
+            // The time window sits where the user picker sits for other Activity rules, so the
+            // criterion is stored the same way: Popular:<days>:<op>:<viewers> (0 days = all time).
+            var days = savedUserId || '30';
+            var dayOpts = [['7', 'Last 7 days'], ['14', 'Last 14 days'], ['30', 'Last 30 days'], ['60', 'Last 60 days'],
+                           ['90', 'Last 90 days'], ['180', 'Last 6 months'], ['365', 'Last year'], ['0', 'All time']];
+            if (!dayOpts.some(function (d) { return d[0] === days; })) dayOpts.push([days, 'Last ' + days + ' days']);
+            userHtml = '<select class="selMiUser" is="emby-select" style="flex:0 0 auto;min-width:120px;">' + dayOpts.map(function (d) {
+                return '<option value="' + d[0] + '"' + (d[0] === days ? ' selected' : '') + '>' + d[1] + '</option>';
+            }).join('') + '</select>';
         }
         var unitLabel = MI_UNIT_LABELS[prop] ? '<span style="margin-left:4px;opacity:.7;white-space:nowrap;">' + MI_UNIT_LABELS[prop] + '</span>' : '';
         if (prop === 'Collection' || prop === 'Playlist') {
@@ -1190,7 +1160,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }
         if (MI_NUMERIC_PROPS.indexOf(prop) >= 0) {
             var ops = ['=', '>', '>=', '<', '<='];
-            var defaultOp = (prop === 'PlayCount') ? '>=' : '<=';
+            var defaultOp = (prop === 'PlayCount' || prop === 'Popular') ? '>=' : '<=';
             var opOpts = ops.map(function (o) {
                 return '<option value="' + o + '"' + (o === (savedOp || defaultOp) ? ' selected' : '') + '>' + o + '</option>';
             }).join('');
@@ -1204,11 +1174,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '<tr><td>&lt;</td><td>Less than</td></tr>' +
                 '<tr><td>&lt;=</td><td>Less than or equal</td></tr>' +
                 '</table></div></div>';
-            var numStep = (prop === 'PlayCount') ? '1' : '0.01';
+            var numStep = (prop === 'PlayCount' || prop === 'Popular') ? '1' : '0.01';
             return userHtml +
                 '<select class="selMiOp" is="emby-select" style="flex:0 0 64px;">' + opOpts + '</select>' +
                 infoTooltip +
-                '<input class="txtMiNum" is="emby-input" type="number" step="' + numStep + '" value="' + (savedVal || '') + '" style="flex:1;" />' +
+                '<input class="txtMiNum" is="emby-input" type="number" step="' + numStep + '" value="' + (savedVal || (prop === 'Popular' ? '3' : '')) + '" style="flex:1;" />' +
                 unitLabel;
         }
         if (MI_TEXT_MATCH_PROPS.indexOf(prop) >= 0) {
@@ -1228,6 +1198,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     }
 
     function getMiHintHtml(prop) {
+        if (prop === 'Popular') return '<div class="mi-rule-hint" style="font-size:0.75em; opacity:0.5; margin-top:2px; padding-right:32px; text-align:right;">Different users who watched it in that time &mdash; anyone who watched an episode counts for the show. Matches are listed most viewed first, so Max items keeps the most popular.</div>';
         if (MI_TEXT_MATCH_PROPS.indexOf(prop) < 0 && prop !== 'ImdbId' && prop !== 'TvdbId') return '<div class="mi-rule-hint"></div>';
         return '<div class="mi-rule-hint" style="font-size:0.75em; opacity:0.5; margin-top:2px; padding-right:32px; text-align:right;">One value per line &mdash; matches if <em>any</em> line matches (OR)</div>';
     }
@@ -1489,16 +1460,6 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         if (localSources.length === 0) localSources = [{ id: "", limit: 0 }];
 
         var mediaInfoLimit = tagConfig.Limit || 0;
-        var miSortBy = tagConfig.MiSortBy || '';
-        var miSortOrder = tagConfig.MiSortOrder || 'Descending';
-        var popDays = (tagConfig.PopularityDays === 0 || tagConfig.PopularityDays) ? tagConfig.PopularityDays : 30;
-        var popMin = tagConfig.PopularityMinViewers || 1;
-        var popPartial = !!tagConfig.PopularityCountPartial;
-        var popExclude = encodeURIComponent(JSON.stringify(tagConfig.PopularityExcludeUserIds || []));
-        var miSortOptions = [['', 'First matches (no ranking)'], ['Popularity', 'Popularity on this server'], ['DateAdded', 'Date added'],
-                             ['PremiereDate', 'Release date'], ['CommunityRating', 'Rating'], ['Name', 'Name'], ['Random', 'Random']]
-            .map(function (o) { return '<option value="' + o[0] + '"' + (o[0] === miSortBy ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('');
-        setTimeout(fillPopularityUsers, 0);
         var aiLimit = tagConfig.Limit || 0;
         // Backwards compat: legacy single-target → derive separate tag + collection targets
         var _legacyTarget = tagConfig.MediaInfoTargetType || (tagConfig.MediaInfoSeasonMode ? 'Season' : '');
@@ -1711,32 +1672,6 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             <input is="emby-input" class="txtMediaInfoLimit" type="number" value="${mediaInfoLimit}" min="0" style="width:90px;" />
                             <button type="button" is="emby-button" class="btnMiPreview raised" style="margin-left:auto; background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">visibility</i><span>Preview</span></button>
                             <button type="button" is="emby-button" class="btnMiHelp raised" style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">help_outline</i><span>How to (filter guide)</span></button>
-                        </div>
-                        <div class="mi-sort-row" style="display:${sourceType === 'MediaInfo' ? 'block' : 'none'}; margin-bottom:14px;">
-                            <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-                                <label style="font-size:0.9em; white-space:nowrap; margin:0;">Pick the top "Max items" by</label>
-                                <select is="emby-select" class="selMiSortBy" style="width:auto; min-width:220px;">${miSortOptions}</select>
-                                <span class="mi-sort-order" style="display:${miSortBy === 'Popularity' || miSortBy === 'Random' ? 'none' : ''};"><select is="emby-select" class="selMiSortOrder" style="width:auto;">
-                                    <option value="Descending" ${miSortOrder !== 'Ascending' ? 'selected' : ''}>Highest / newest first</option>
-                                    <option value="Ascending" ${miSortOrder === 'Ascending' ? 'selected' : ''}>Lowest / oldest first</option>
-                                </select></span>
-                            </div>
-                            <div class="fieldDescription" style="margin-top:6px;">This decides which titles get the tag: all matches are ranked and the top "Max items" kept. It does not set the order a home row shows them in — that is the row's own Sort By (e.g. Random). Only a Top 10 / top-list built from this tag follows this ranking.</div>
-                            <div class="mi-pop-opts" style="display:${miSortBy === 'Popularity' ? 'block' : 'none'}; margin-top:12px; padding:12px; border:1px solid var(--line-color); border-radius:4px;">
-                                <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
-                                    <label style="font-size:0.9em; margin:0;">Watched in the last</label>
-                                    <input is="emby-input" class="txtPopDays" type="number" min="0" value="${popDays}" style="width:80px;" />
-                                    <label style="font-size:0.9em; margin:0;">days (0 = all time)</label>
-                                    <label style="font-size:0.9em; margin:0 0 0 12px;">Minimum viewers</label>
-                                    <input is="emby-input" class="txtPopMinViewers" type="number" min="1" value="${popMin}" style="width:70px;" />
-                                </div>
-                                <label style="display:flex; align-items:center; gap:6px; font-size:0.9em; margin-bottom:10px;">
-                                    <input type="checkbox" class="chkPopPartial" ${popPartial ? 'checked' : ''} /> Count started but unfinished
-                                </label>
-                                <div style="font-size:0.9em; margin-bottom:6px;">Don't count these users</div>
-                                <div class="mi-pop-users" data-pending="1" data-userids="${popExclude}" style="font-size:0.9em; opacity:0.8;">Loading users…</div>
-                                <div class="fieldDescription" style="margin-top:8px;">Popularity = how many different users watched it. A show counts once per viewer, however many episodes they watched. Titles marked watched without a date only count with 0 (all time).</div>
-                            </div>
                         </div>
                         <div class="mi-toggle-row" style="display:${sourceType === 'MediaInfo' || mediaFilters.length > 0 ? 'none' : 'block'}; padding-top:14px; border-top:1px solid var(--line-color);">
                             <button type="button" is="emby-button" class="btnToggleAdditionalFilters raised" style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.85em;"><i class="md-icon" style="font-size:1em; margin-right:4px;">filter_list</i><span>Add filters (optional)</span></button>
@@ -2101,8 +2036,6 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var miPresetsSection = row.querySelector('.mi-presets-section');
                 if (miPresetsSection) miPresetsSection.style.display = isMi ? 'block' : 'none';
                 if (miLimitRow) miLimitRow.style.display = isMi ? 'flex' : 'none';
-                var miSortRow = row.querySelector('.mi-sort-row');
-                if (miSortRow) miSortRow.style.display = isMi ? 'block' : 'none';
                 if (miHelpBtnRow) miHelpBtnRow.style.display = isMi ? 'none' : 'flex';
                 if (isMi) {
                     if (miToggleRow)  miToggleRow.style.display  = 'none';
@@ -3533,7 +3466,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 }));
             } else {
                 var miLimitVal = parseInt((row.querySelector('.txtMediaInfoLimit') || {}).value, 10) || 0;
-                flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: miLimitVal, LocalSourceId: "" }, readMiSort(row)));
+                flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: miLimitVal, LocalSourceId: "" }));
             }
         });
 
@@ -3771,12 +3704,6 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     PlaylistName:     t.PlaylistName     || '',
                     PlaylistUserIds:  t.PlaylistUserIds  || [],
                     PlaylistMappings: t.PlaylistMappings || [],
-                    MiSortBy: t.MiSortBy || '',
-                    MiSortOrder: t.MiSortOrder || 'Descending',
-                    PopularityDays: (t.PopularityDays === 0 || t.PopularityDays) ? t.PopularityDays : 30,
-                    PopularityMinViewers: t.PopularityMinViewers || 1,
-                    PopularityCountPartial: t.PopularityCountPartial || false,
-                    PopularityExcludeUserIds: t.PopularityExcludeUserIds || [],
                 };
             }
             if (t.SourceType === 'External' && t.Url) grouped[key].Urls.push({ url: t.Url, limit: t.Limit });
@@ -7260,7 +7187,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
             checkForUpdates(view);
             refreshStatus(view);
-            statusInterval = setInterval(() => refreshStatus(view), 5000);
+            startStatusPolling(view);
             getHseUsers().then(function(users) { _miUsers = users; });
 
             Promise.all([
@@ -7276,7 +7203,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             });
         });
 
-        view.addEventListener('viewhide', () => { if (statusInterval) clearInterval(statusInterval); });
+        view.addEventListener('viewhide', stopStatusPolling);
 
         view.querySelector('.HomeScreenCompanionForm').addEventListener('submit', e => {
             e.preventDefault();
@@ -7614,7 +7541,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var cb = e.target.closest('.chkShowApiKey');
             if (!cb) return;
             var input = view.querySelector('#' + cb.dataset.target);
-            if (input) input.type = cb.checked ? 'text' : 'password';
+            if (input) input.classList.toggle('api-key-shown', cb.checked);
         });
 
         view.addEventListener('click', function (e) {
@@ -7657,10 +7584,6 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         });
 
 
-        var origStatusInterval = statusInterval;
-        if (origStatusInterval) clearInterval(origStatusInterval);
-        statusInterval = setInterval(function () {
-            refreshStatus(view);
-        }, 5000);
+        startStatusPolling(view);
     };
 });

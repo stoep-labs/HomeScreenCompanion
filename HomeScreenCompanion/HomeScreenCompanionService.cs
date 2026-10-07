@@ -110,8 +110,10 @@ namespace HomeScreenCompanion
         public string Message { get; set; } = "";
         public int Scanned { get; set; }
         public bool ShowViewers { get; set; }
+        public int Total { get; set; }                 // titles that would be tagged; Items holds at most PreviewMaxItems
         public List<PreviewSourceItem> Items { get; set; } = new List<PreviewSourceItem>();
     }
+
 
     public class PreviewSourceItem
     {
@@ -691,6 +693,8 @@ public class HomeScreenCompanionService : IService
             return new RunEntryResponse { Success = success, Message = message };
         }
 
+        private const int PreviewMaxItems = 250;
+
         public async Task<object> Post(PreviewSourceRequest request)
         {
             var task = HomeScreenCompanionTask.Instance;
@@ -704,13 +708,15 @@ public class HomeScreenCompanionService : IService
             var preview = await task.PreviewEntryAsync(source, CancellationToken.None);
             if (!preview.Done)
                 return new PreviewSourceResponse { Message = preview.Message };
-            bool showViewers = string.Equals(source.MiSortBy, "Popularity", StringComparison.OrdinalIgnoreCase);
+            bool showViewers = preview.Viewers.Count > 0;
             return new PreviewSourceResponse
             {
                 Success = true,
                 Scanned = preview.Scanned,
                 ShowViewers = showViewers,
-                Items = preview.Items.Select(i => new PreviewSourceItem
+                Total = preview.Items.Count,
+                // The dialog loads a poster per row; thousands of rows swamp Emby's image server.
+                Items = preview.Items.Take(PreviewMaxItems).Select(i => new PreviewSourceItem
                 {
                     Id = i.Id.ToString("N"),
                     Name = i.Name ?? "",
@@ -3205,9 +3211,6 @@ public class HomeScreenCompanionService : IService
             t.HomeSectionTracked  ??= new List<HomeSectionTracking>();
             t.PlaylistUserIds     ??= new List<string>();
             t.PlaylistMappings    ??= new List<PlaylistMapping>();
-            t.PopularityExcludeUserIds ??= new List<string>();
-            t.MiSortBy            ??= "";
-            t.MiSortOrder         ??= "Descending";
             if (string.IsNullOrEmpty(t.HomeSectionLibraryId)) t.HomeSectionLibraryId = "auto";
             if (string.IsNullOrEmpty(t.HomeSectionSettings)) t.HomeSectionSettings = "{}";
             foreach (var m in t.PlaylistMappings) m.LastSyncedItemIds ??= new List<long>();
