@@ -132,6 +132,15 @@ namespace HomeScreenCompanion
         public string PlaylistName { get; set; } = "";
         public List<string> PlaylistUserIds { get; set; } = new List<string>();
         public List<PlaylistMapping> PlaylistMappings { get; set; } = new List<PlaylistMapping>();
+        // The look of every playlist this source makes (same for all its users, also Your Next
+        // Watch): Overview, and a Primary / Backdrop image, generated in a CollectionArtRenderer
+        // style or uploaded (style "" = the uploaded image; none = Emby's own). Title as CollectionArtTitle.
+        public string PlaylistDescription { get; set; } = "";
+        public string PlaylistPosterPath { get; set; } = "";
+        public string PlaylistPosterStyle { get; set; } = "";
+        public string PlaylistBackgroundStyle { get; set; } = "";
+        public string PlaylistBackgroundPath { get; set; } = "";
+        public string PlaylistArtTitle { get; set; } = "";
 
         public DateTime LastModified { get; set; } = DateTime.MinValue;
     }

@@ -767,6 +767,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var view = row.closest('#HomeScreenCompanionConfigPage') || activeView();
         var source = sourceConfigOfRow(view, row);
         if (!source) return;
+        var forPlaylist = forTag === 'playlist';
+        if (forPlaylist) { forTag = false; source = Object.assign({}, source, {
+            CollectionName: source.PlaylistName || source.Name || source.Tag, CollectionPosterStyle: source.PlaylistPosterStyle,
+            CollectionBackgroundStyle: source.PlaylistBackgroundStyle, CollectionArtTitle: source.PlaylistArtTitle,
+            CollectionBackgroundPath: source.PlaylistBackgroundPath
+        }); }
         if (forTag) source = Object.assign({}, source, {
             CollectionName: source.Tag, CollectionPosterStyle: source.TagPosterStyle, CollectionBackgroundStyle: source.TagBackgroundStyle,
             CollectionArtTitle: source.TagArtTitle, CollectionBackgroundPath: source.TagBackgroundPath
@@ -775,7 +781,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var body = overlay.querySelector('.mi-preview-body');
         overlay.querySelector('.mi-preview-subtitle').textContent = forTag
             ? (source.Tag || source.Name || 'Tag') + ' — tag art'
-            : (source.CollectionName || source.Name || source.Tag || 'Collection') + ' — collection art';
+            : (source.CollectionName || source.Name || source.Tag || 'Collection') + (forPlaylist ? ' — playlist art' : ' — collection art');
         body.innerHTML = '<div style="padding:20px 0; text-align:center; opacity:0.8;">Drawing the art…</div>';
         overlay.classList.add('modal-visible');
         btn.disabled = true;
@@ -934,6 +940,23 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         };
     }
 
+    // Playlist look of a source card: poster / background (generated style or upload) and
+    // description, put on every playlist the source makes (also each Your Next Watch playlist).
+    function readPlaylistLook(row) {
+        var box = row.querySelector('.playlist-tab .pl-look');
+        if (!box) return { PlaylistDescription: '', PlaylistPosterPath: '', PlaylistPosterStyle: '', PlaylistBackgroundStyle: '', PlaylistBackgroundPath: '', PlaylistArtTitle: '' };
+        var poster = box.querySelector('.coll-style-picker[data-kind="poster"] input:checked');
+        var bg = box.querySelector('.coll-style-picker[data-kind="background"] input:checked');
+        return {
+            PlaylistDescription: (box.querySelector('.txtPlaylistDescription') || {}).value || '',
+            PlaylistPosterPath: (box.querySelector('.hiddenPosterPath') || {}).value || '',
+            PlaylistPosterStyle: poster ? poster.value : '',
+            PlaylistBackgroundStyle: bg ? bg.value : '',
+            PlaylistBackgroundPath: (box.querySelector('.hiddenBgPath') || {}).value || '',
+            PlaylistArtTitle: ((box.querySelector('.txtPlArtTitle') || {}).value || '').trim()
+        };
+    }
+
     // Tag art settings of a source card (generated poster / background on the tag's own page).
     function readTagArt(row) {
         var poster = row.querySelector('.tagname-tab .coll-style-picker[data-kind="poster"] input:checked');
@@ -944,6 +967,75 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             TagBackgroundPath: (row.querySelector('.tagname-tab .hiddenBgPath') || {}).value || '',
             TagArtTitle: ((row.querySelector('.txtTagArtTitle') || {}).value || '').trim()
         };
+    }
+
+    // The "Playlist look" block of the Playlist tab: the same pickers / upload boxes as the
+    // collection art, scoped to .pl-look (style pickers with scope 'playlist').
+    function buildPlaylistLookHtml(tc) {
+        var esc = function (v) { return (v || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); };
+        var file = function (p) { return p ? esc(p.split(/[\\/]/).pop()) : ''; };
+        var gen = !!(tc.PlaylistPosterStyle || tc.PlaylistBackgroundStyle);
+        var orRow = '<div style="display:flex; align-items:center; gap:6px; margin-top:8px; opacity:0.45;"><div style="flex:1; height:1px; background:currentColor;"></div><span style="font-size:0.75em;">or</span><div style="flex:1; height:1px; background:currentColor;"></div></div>';
+        var btnStyle = 'width:100%; background:transparent; border:2px dashed rgba(128,128,128,0.4); color:var(--theme-text-secondary);';
+        return `
+                        <div class="pl-look" style="margin-top:18px;">
+                            <p style="margin:0 0 4px 0; font-size:0.95em; font-weight:bold;">Playlist look</p>
+                            <div class="fieldDescription" style="margin-bottom:10px;">Every playlist this source makes gets the same poster, background and description instead of Emby's automatic collage of four posters. They are put back on every sync; a playlist is only touched when something changed.</div>
+                            <div class="inputContainer">
+                                <textarea is="emby-textarea" class="txtPlaylistDescription" rows="3" label="Description"
+                                    placeholder="Optional description shown on the playlist's page..."
+                                    style="width:100%; resize:vertical; box-sizing:border-box;">${esc(tc.PlaylistDescription)}</textarea>
+                                <div class="fieldDescription pl-desc-note">Leave empty for no description.</div>
+                            </div>
+                            <div style="margin-top:15px;">
+                                <p style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Playlist Poster</p>
+                                ${buildCollStylePickerHtml('poster', tc.PlaylistPosterStyle, 'playlist')}
+                                <div class="pl-poster-upload" style="display:${tc.PlaylistPosterStyle ? 'none' : 'block'};">
+                                    <div class="poster-preview-container" style="margin-bottom:8px; display:${tc.PlaylistPosterPath ? 'block' : 'none'};">
+                                        <span class="poster-filename" style="font-size:0.85em; opacity:0.7;">${file(tc.PlaylistPosterPath)}</span>
+                                        <button type="button" class="btnRemovePoster" style="margin-left:10px; font-size:0.8em; background:transparent; border:none; color:#e55; cursor:pointer; vertical-align:middle;">✕ Remove</button>
+                                    </div>
+                                    <img class="poster-preview-img" src="" alt="" style="max-width:120px; max-height:180px; border-radius:4px; display:none; margin-bottom:8px;" />
+                                    <input type="file" class="inputPosterFile" accept="image/*" style="display:none;" />
+                                    <input type="hidden" class="hiddenPosterPath" value="${esc(tc.PlaylistPosterPath)}" />
+                                    <button type="button" is="emby-button" class="btnChoosePoster raised" style="${btnStyle}"><i class="md-icon" style="margin-right:5px;">image</i>Choose Poster Image</button>
+                                    ${orRow}
+                                    <div style="display:flex; gap:6px; margin-top:6px;">
+                                        <input class="txtPosterUrl" is="emby-input" type="url" placeholder="https://example.com/poster.jpg" style="flex:1;" />
+                                        <button type="button" is="emby-button" class="btnLoadPosterUrl raised btn-neutral">Load</button>
+                                    </div>
+                                    <div class="fieldDescription">An image that never changes. Leave empty to keep Emby's own collage.</div>
+                                </div>
+                                <div class="fieldDescription pl-poster-gen-note" style="display:${tc.PlaylistPosterStyle ? 'block' : 'none'};">Drawn from the posters of the first titles in the list (Your Next Watch: the titles picked for the most users), with the playlist name. It is redrawn when the titles change; choose Custom and an image for a poster that never changes.</div>
+                            </div>
+                            <div style="margin-top:15px;">
+                                <p style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Playlist Background</p>
+                                ${buildCollStylePickerHtml('background', tc.PlaylistBackgroundStyle, 'playlist')}
+                                <div class="pl-bg-upload" style="display:${tc.PlaylistBackgroundStyle ? 'none' : 'block'};">
+                                    <div class="bg-preview-container" style="margin-bottom:8px; display:${tc.PlaylistBackgroundPath ? 'block' : 'none'};">
+                                        <span class="bg-filename" style="font-size:0.85em; opacity:0.7;">${file(tc.PlaylistBackgroundPath)}</span>
+                                        <button type="button" class="btnRemoveBg" style="margin-left:10px; font-size:0.8em; background:transparent; border:none; color:#e55; cursor:pointer; vertical-align:middle;">✕ Remove</button>
+                                    </div>
+                                    <img class="bg-preview-img" src="" alt="" style="max-width:240px; max-height:135px; border-radius:4px; display:none; margin-bottom:8px;" />
+                                    <input type="file" class="inputBgFile" accept="image/*" style="display:none;" />
+                                    <input type="hidden" class="hiddenBgPath" value="${esc(tc.PlaylistBackgroundPath)}" />
+                                    <button type="button" is="emby-button" class="btnChooseBg raised" style="${btnStyle}"><i class="md-icon" style="margin-right:5px;">image</i>Choose Background Image</button>
+                                    ${orRow}
+                                    <div style="display:flex; gap:6px; margin-top:6px;">
+                                        <input class="txtBgUrl" is="emby-input" type="url" placeholder="https://example.com/background.jpg" style="flex:1;" />
+                                        <button type="button" is="emby-button" class="btnLoadBgUrl raised btn-neutral">Load</button>
+                                    </div>
+                                    <div class="fieldDescription">Leave empty for no background.</div>
+                                </div>
+                            </div>
+                            <div class="inputContainer pl-art-title-row" style="margin-top:15px; display:${gen ? 'block' : 'none'};">
+                                <input is="emby-input" type="text" class="txtPlArtTitle" label="Title on the art" value="${esc(tc.PlaylistArtTitle)}" placeholder="{name}" />
+                                <div class="fieldDescription">Leave empty to use the playlist name. <b>{name}</b> = playlist name, <b>{week}</b> = this week's number.</div>
+                            </div>
+                            <div class="pl-art-preview-row" style="margin-top:10px; display:${gen ? 'block' : 'none'};">
+                                <button type="button" is="emby-button" class="btnPlArtPreview raised" style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">visibility</i><span>Preview art</span></button>
+                            </div>
+                        </div>`;
     }
 
     // Collection art style picker (cards like the top-list badge picker). '' = Custom (upload);
@@ -1003,7 +1095,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             : (function() { try { return JSON.parse(decodeURIComponent((_plTab && _plTab.dataset.plUserids) || '%5B%5D')); } catch { return []; } })();
         var collName = row.querySelector('.txtCollectionName').value;
         var collDesc = row.querySelector('.txtCollectionDescription') ? row.querySelector('.txtCollectionDescription').value : '';
-        var collPoster = row.querySelector('.hiddenPosterPath') ? row.querySelector('.hiddenPosterPath').value : '';
+        var collPoster = (row.querySelector('.collection-tab .hiddenPosterPath') || { value: '' }).value;
         var st = row.querySelector('.selSourceType').value;
 
         var intervals = readIntervalsFromRow(row);
@@ -1124,6 +1216,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             CollectionTargetSeries:  !!(row.querySelector('.chkCollTargetSeries')  || {}).checked,
             EnablePlaylist:   st === 'NextWatch' || !!(row.querySelector('.chkEnablePlaylist') || {}).checked,
             PlaylistName:     (row.querySelector('.txtPlaylistName') || { value: '' }).value,
+            PlaylistDescription: readPlaylistLook(row).PlaylistDescription, PlaylistPosterPath: readPlaylistLook(row).PlaylistPosterPath,
+            PlaylistPosterStyle: readPlaylistLook(row).PlaylistPosterStyle, PlaylistBackgroundStyle: readPlaylistLook(row).PlaylistBackgroundStyle,
+            PlaylistBackgroundPath: readPlaylistLook(row).PlaylistBackgroundPath, PlaylistArtTitle: readPlaylistLook(row).PlaylistArtTitle,
             PlaylistUserIds:  st === 'NextWatch' ? [] : _plUserIds,
             PlaylistMappings: (function() { try { return JSON.parse(decodeURIComponent((_plTab && _plTab.dataset.plMappings) || '%5B%5D')); } catch { return []; } })(),
             MediaInfoTargetEpisode: false, MediaInfoTargetSeason: false, MediaInfoTargetSeries: false,
@@ -1774,6 +1869,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         });
     }
 
+    // Must match HomeScreenCompanionTask.DefaultNextWatchDescription (used when the description is empty).
+    var NEXT_WATCH_DEFAULT_DESCRIPTION = 'Picked just for you from what you\'ve been watching — fresh recommendations every day.';
     var NEXT_WATCH_HINT = 'Tick users on the Home Screen tab — HSC creates and updates each person\'s playlist automatically. Each one gets their own picks: titles like the ones they watched lately (local scoring, no AI), shown as a row on their home screen. Tags and collections are shared by all users, so this type does not make them.';
 
     // "Your Next Watch" has one user list: the Home Screen tab's. Every user ticked there gets
@@ -1788,17 +1885,18 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     }
 
     // "Your Next Watch" has no tag or collection (they are global; its output is per user):
-    // hide those tabs, keep their checkboxes off, and show Max items + Preview.
+    // hide the Tag and Playlist tabs, keep their checkboxes off, and show Max items + Preview.
+    // Its Playlist tab shows only the playlist look (poster, background, description): the
+    // playlists themselves follow the Home Screen tab's users.
     function applyNextWatchUi(row) {
         var isNw = row.querySelector('.selSourceType').value === 'NextWatch';
         var hidTabActive = false;
-        ['tag', 'collection', 'playlist'].forEach(function (t) {
+        ['tag', 'collection'].forEach(function (t) {
             var tab = row.querySelector('.tag-tab[data-tab="' + t + '"]');
             if (!tab) return;
             if (isNw && tab.style.opacity === '1') hidTabActive = true;
             tab.style.display = isNw ? 'none' : '';
         });
-        // The playlist is made from the Home Screen tab's users, so its tab is hidden.
         if (hidTabActive) { var hsTabBtn = row.querySelector('.tag-tab[data-tab="homescreen"]'); if (hsTabBtn) hsTabBtn.click(); }
         if (isNw) {
             var plChk = row.querySelector('.chkEnablePlaylist');
@@ -1816,6 +1914,33 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var plHint = row.querySelector('.pl-nextwatch-hint');
         if (plHint) plHint.style.display = isNw ? 'block' : 'none';
         if (!isNw) { try { updateHseSectionAvailability(row); } catch (e) { } }
+        applyPlaylistLookUi(row, isNw);
+    }
+
+
+    // Your Next Watch: its playlists follow the Home Screen tab's users and are always on, so its
+    // Playlist tab shows only the playlist look (no Create Playlist box, name or user list). An
+    // empty description there means NEXT_WATCH_DEFAULT_DESCRIPTION.
+    function applyPlaylistLookUi(row, isNw) {
+        var tab = row.querySelector('.playlist-tab');
+        if (!tab) return;
+        var show = function (el, on) { if (el) el.style.display = on ? '' : 'none'; };
+        var chk = tab.querySelector('.chkEnablePlaylist');
+        show(chk && chk.closest('label'), !isNw);
+        show(tab.querySelector('.pl-enable-desc'), !isNw);
+        show(tab.querySelector('.pl-name-box'), !isNw);
+        show(tab.querySelector('.pl-users-box'), !isNw);
+        var settings = tab.querySelector('.playlist-settings');
+        if (settings) {
+            settings.style.display = isNw || (chk && chk.checked) ? 'block' : 'none';
+            settings.style.marginLeft = isNw ? '0' : '20px';
+            settings.style.paddingLeft = isNw ? '0' : '15px';
+            settings.style.borderLeft = isNw ? 'none' : '2px solid var(--line-color)';
+        }
+        var desc = tab.querySelector('.txtPlaylistDescription');
+        if (desc) desc.setAttribute('placeholder', isNw ? NEXT_WATCH_DEFAULT_DESCRIPTION : "Optional description shown on the playlist's page...");
+        var note = tab.querySelector('.pl-desc-note');
+        if (note) note.textContent = isNw ? 'Leave empty to use the text shown in the box.' : 'Leave empty for no description.';
     }
 
     function getSourceBadgeHtml(st) {
@@ -2277,7 +2402,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         </div>
 
                         <div style="margin-top:15px;">
-                            <p style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Collection Poster</p>
+                            <p class="coll-poster-heading" style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Collection Poster</p>
                             ${buildCollStylePickerHtml('poster', tagConfig.CollectionPosterStyle)}
                             <div class="coll-poster-upload" style="display:${tagConfig.CollectionPosterStyle ? 'none' : 'block'};">
                             <div class="poster-preview-container" style="margin-bottom:8px; display:${collPosterPath ? 'block' : 'none'};">
@@ -2304,7 +2429,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         </div>
 
                         <div style="margin-top:15px;">
-                            <p style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Collection Background</p>
+                            <p class="coll-bg-heading" style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Collection Background</p>
                             ${buildCollStylePickerHtml('background', tagConfig.CollectionBackgroundStyle)}
                             <div class="coll-bg-upload" style="display:${tagConfig.CollectionBackgroundStyle ? 'none' : 'block'};">
                             <div class="bg-preview-container" style="margin-bottom:8px; display:${tagConfig.CollectionBackgroundPath ? 'block' : 'none'};">
@@ -2332,7 +2457,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                         <div class="inputContainer coll-art-title-row" style="margin-top:15px; display:${tagConfig.CollectionPosterStyle || tagConfig.CollectionBackgroundStyle ? 'block' : 'none'};">
                             <input is="emby-input" type="text" class="txtCollArtTitle" label="Title on the art" value="${(tagConfig.CollectionArtTitle || '').replace(/"/g, '&quot;')}" placeholder="{name}" />
-                            <div class="fieldDescription">Leave empty to use the collection name. <b>{name}</b> = collection name, <b>{week}</b> = this week's number, e.g. <i>{name} {week}</i> → "Top Movies for the Week 41".</div>
+                            <div class="fieldDescription coll-art-title-note">Leave empty to use the collection name. <b>{name}</b> = collection name, <b>{week}</b> = this week's number, e.g. <i>{name} {week}</i> → "Top Movies for the Week 41".</div>
                         </div>
 
                         <div class="coll-art-preview-row" style="margin-top:10px; display:${tagConfig.CollectionPosterStyle || tagConfig.CollectionBackgroundStyle ? 'block' : 'none'};">
@@ -2359,18 +2484,19 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             <input is="emby-checkbox" type="checkbox" class="chkEnablePlaylist" ${enablePlaylist} />
                             <span>Create Playlist</span>
                         </label>
-                        <div class="fieldDescription">Automatically create and maintain an individual Emby Playlist for each selected user.</div>
+                        <div class="fieldDescription pl-enable-desc">Automatically create and maintain an individual Emby Playlist for each selected user.</div>
                         <div class="pl-nextwatch-hint fieldDescription" style="display:none; margin-top:6px;">Your Next Watch: each selected user gets their <strong>own</strong> picks (not the same list for everyone). Required — the home screen row shows this playlist. A show is added as its first episode (Emby playlists hold episodes, not shows); the home screen row still shows the show's poster.</div>
                     </div>
                     <div class="playlist-settings" style="margin-left: 20px; padding-left: 15px; border-left: 2px solid var(--line-color); margin-top: 10px; display: ${tagConfig.EnablePlaylist ? 'block' : 'none'};">
-                        <div class="inputContainer">
+                        <div class="inputContainer pl-name-box">
                             <input is="emby-input" type="text" class="txtPlaylistName" label="Playlist Name" value="${playlistName}" placeholder="${labelName}" />
                             <div class="fieldDescription">Leave empty to use Display Name.</div>
                         </div>
-                        <div style="margin-top:12px;">
+                        <div class="pl-users-box" style="margin-top:12px;">
                             <p style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Target Users</p>
                             <div class="playlist-user-list"><em style="opacity:0.5">Loading users...</em></div>
                         </div>
+                        ${buildPlaylistLookHtml(tagConfig)}
                     </div>
                 </div>
 
@@ -2516,7 +2642,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 row.querySelector('.homescreen-tab').style.display = target === 'homescreen' ? 'block' : 'none';
                 row.querySelector('.playlist-tab').style.display = target === 'playlist' ? 'block' : 'none';
                 if (target === 'homescreen') initHomeSectionTab(row);
-                if (target === 'playlist') initPlaylistTab(row);
+                if (target === 'playlist' && row.querySelector('.selSourceType').value !== 'NextWatch') initPlaylistTab(row);   // Next Watch: look only
                 var activeTabEl = row.querySelector('.' + target + '-tab');
                 if (activeTabEl) activeTabEl.querySelectorAll('textarea.txtMiValue, textarea.txtTagBlacklist').forEach(function(ta) {
                     ta.style.height = 'auto';
@@ -3104,7 +3230,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     label.style.borderColor = '#52B54B';
                 });
             });
-            picker.addEventListener('change', picker.dataset.scope === 'tag' ? syncTagArt : syncCollArt);
+            picker.addEventListener('change', picker.dataset.scope === 'tag' ? syncTagArt : picker.dataset.scope === 'playlist' ? syncPlArt : syncCollArt);
         });
         setTimeout(fillCollStyleThumbs, 0);
         function syncCollArt() {
@@ -3114,6 +3240,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             row.querySelector('.coll-bg-upload').style.display = art.CollectionBackgroundStyle ? 'none' : 'block';
             row.querySelector('.coll-art-preview-row').style.display = art.CollectionPosterStyle || art.CollectionBackgroundStyle ? 'block' : 'none';
             row.querySelector('.coll-art-title-row').style.display = art.CollectionPosterStyle || art.CollectionBackgroundStyle ? 'block' : 'none';
+        }
+        function syncPlArt() {
+            var look = readPlaylistLook(row), box = row.querySelector('.pl-look');
+            var gen = look.PlaylistPosterStyle || look.PlaylistBackgroundStyle;
+            box.querySelector('.pl-poster-upload').style.display = look.PlaylistPosterStyle ? 'none' : 'block';
+            box.querySelector('.pl-poster-gen-note').style.display = look.PlaylistPosterStyle ? 'block' : 'none';
+            box.querySelector('.pl-bg-upload').style.display = look.PlaylistBackgroundStyle ? 'none' : 'block';
+            box.querySelector('.pl-art-preview-row').style.display = gen ? 'block' : 'none';
+            box.querySelector('.pl-art-title-row').style.display = gen ? 'block' : 'none';
         }
         function syncTagArt() {
             var art = readTagArt(row);
@@ -3191,6 +3326,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }
         wireBgUpload(row.querySelector('.coll-bg-upload'));
         wireBgUpload(row.querySelector('.tag-bg-upload'));
+        wireBgUpload(row.querySelector('.pl-bg-upload'));
+        row.querySelector('.btnPlArtPreview').addEventListener('click', function () {
+            showCollectionArtPreview(row, this, 'playlist');
+        });
         row.querySelector('.btnTagArtPreview').addEventListener('click', function () {
             showCollectionArtPreview(row, this, true);
         });
@@ -3198,83 +3337,92 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             showCollectionArtPreview(row, this);
         });
 
-        row.querySelector('.btnChoosePoster').addEventListener('click', function () {
-            row.querySelector('.inputPosterFile').click();
-        });
+        // Poster upload (Custom): wired once for the collection poster and once for the playlist poster.
+        function wirePosterUpload(box) {
+            if (!box) return;
+            box.querySelector('.btnChoosePoster').addEventListener('click', function () {
+                box.querySelector('.inputPosterFile').click();
+            });
 
-        row.querySelector('.inputPosterFile').addEventListener('change', function () {
-            var file = this.files[0];
-            if (!file) return;
-            var reader = new FileReader();
-            reader.onload = function (e) {
-                var dataUrl = e.target.result;
-                var base64 = dataUrl.split(',')[1];
-                var img = row.querySelector('.poster-preview-img');
-                img.src = dataUrl;
-                img.style.display = 'block';
+            box.querySelector('.inputPosterFile').addEventListener('change', function () {
+                var file = this.files[0];
+                if (!file) return;
+                var reader = new FileReader();
+                reader.onload = function (e) {
+                    var dataUrl = e.target.result;
+                    var base64 = dataUrl.split(',')[1];
+                    var img = box.querySelector('.poster-preview-img');
+                    img.src = dataUrl;
+                    img.style.display = 'block';
+
+                    var headers = { 'Content-Type': 'application/json' };
+                    var token = window.ApiClient.accessToken();
+                    if (token) headers['X-Emby-Token'] = token;
+                    fetch(window.ApiClient.getUrl('HomeScreenCompanion/UploadCollectionImage'), {
+                        method: 'POST',
+                        headers: headers,
+                        body: JSON.stringify({ FileName: file.name, Base64Data: base64, OldFilePath: box.querySelector('.hiddenPosterPath').value })
+                    }).then(function (r) { return r.json(); })
+                    .then(function (result) {
+                        if (result.Success) {
+                            box.querySelector('.hiddenPosterPath').value = result.FilePath;
+                            box.querySelector('.poster-filename').textContent = file.name;
+                            box.querySelector('.poster-preview-container').style.display = 'block';
+                            box.querySelector('.hiddenPosterPath').dispatchEvent(new Event('change', { bubbles: true }));
+                        } else {
+                            window.Dashboard.alert('Upload failed: ' + (result.Message || 'Unknown error'));
+                            img.style.display = 'none';
+                        }
+                    }).catch(function () {
+                        window.Dashboard.alert('Upload error. Check server logs.');
+                        img.style.display = 'none';
+                    });
+                };
+                reader.readAsDataURL(file);
+            });
+
+            box.querySelector('.btnRemovePoster').addEventListener('click', function () {
+                box.querySelector('.hiddenPosterPath').value = '';
+                box.querySelector('.poster-filename').textContent = '';
+                box.querySelector('.poster-preview-container').style.display = 'none';
+                box.querySelector('.poster-preview-img').style.display = 'none';
+                box.querySelector('.inputPosterFile').value = '';
+                box.querySelector('.hiddenPosterPath').dispatchEvent(new Event('change', { bubbles: true }));
+            });
+
+            box.querySelector('.btnLoadPosterUrl').addEventListener('click', function () {
+                var url = box.querySelector('.txtPosterUrl').value.trim();
+                if (!url) return;
 
                 var headers = { 'Content-Type': 'application/json' };
                 var token = window.ApiClient.accessToken();
                 if (token) headers['X-Emby-Token'] = token;
-                fetch(window.ApiClient.getUrl('HomeScreenCompanion/UploadCollectionImage'), {
+
+                fetch(window.ApiClient.getUrl('HomeScreenCompanion/FetchCollectionImageFromUrl'), {
                     method: 'POST',
                     headers: headers,
-                    body: JSON.stringify({ FileName: file.name, Base64Data: base64, OldFilePath: row.querySelector('.hiddenPosterPath').value })
+                    body: JSON.stringify({ Url: url, OldFilePath: box.querySelector('.hiddenPosterPath').value })
                 }).then(function (r) { return r.json(); })
                 .then(function (result) {
                     if (result.Success) {
-                        row.querySelector('.hiddenPosterPath').value = result.FilePath;
-                        row.querySelector('.poster-filename').textContent = file.name;
-                        row.querySelector('.poster-preview-container').style.display = 'block';
+                        box.querySelector('.hiddenPosterPath').value = result.FilePath;
+                        box.querySelector('.poster-filename').textContent = url.split('/').pop().split('?')[0];
+                        box.querySelector('.poster-preview-container').style.display = 'block';
+                        var img = box.querySelector('.poster-preview-img');
+                        img.src = url;
+                        img.style.display = 'block';
+                        box.querySelector('.txtPosterUrl').value = '';
+                        box.querySelector('.hiddenPosterPath').dispatchEvent(new Event('change', { bubbles: true }));
                     } else {
-                        window.Dashboard.alert('Upload failed: ' + (result.Message || 'Unknown error'));
-                        img.style.display = 'none';
+                        window.Dashboard.alert('Failed to load image: ' + (result.Message || 'Unknown error'));
                     }
                 }).catch(function () {
-                    window.Dashboard.alert('Upload error. Check server logs.');
-                    img.style.display = 'none';
+                    window.Dashboard.alert('Error fetching image. Check the URL and server logs.');
                 });
-            };
-            reader.readAsDataURL(file);
-        });
-
-        row.querySelector('.btnRemovePoster').addEventListener('click', function () {
-            row.querySelector('.hiddenPosterPath').value = '';
-            row.querySelector('.poster-filename').textContent = '';
-            row.querySelector('.poster-preview-container').style.display = 'none';
-            row.querySelector('.poster-preview-img').style.display = 'none';
-            row.querySelector('.inputPosterFile').value = '';
-        });
-
-        row.querySelector('.btnLoadPosterUrl').addEventListener('click', function () {
-            var url = row.querySelector('.txtPosterUrl').value.trim();
-            if (!url) return;
-
-            var headers = { 'Content-Type': 'application/json' };
-            var token = window.ApiClient.accessToken();
-            if (token) headers['X-Emby-Token'] = token;
-
-            fetch(window.ApiClient.getUrl('HomeScreenCompanion/FetchCollectionImageFromUrl'), {
-                method: 'POST',
-                headers: headers,
-                body: JSON.stringify({ Url: url, OldFilePath: row.querySelector('.hiddenPosterPath').value })
-            }).then(function (r) { return r.json(); })
-            .then(function (result) {
-                if (result.Success) {
-                    row.querySelector('.hiddenPosterPath').value = result.FilePath;
-                    row.querySelector('.poster-filename').textContent = url.split('/').pop().split('?')[0];
-                    row.querySelector('.poster-preview-container').style.display = 'block';
-                    var img = row.querySelector('.poster-preview-img');
-                    img.src = url;
-                    img.style.display = 'block';
-                    row.querySelector('.txtPosterUrl').value = '';
-                } else {
-                    window.Dashboard.alert('Failed to load image: ' + (result.Message || 'Unknown error'));
-                }
-            }).catch(function () {
-                window.Dashboard.alert('Error fetching image. Check the URL and server logs.');
             });
-        });
+        }
+        wirePosterUpload(row.querySelector('.coll-poster-upload'));
+        wirePosterUpload(row.querySelector('.pl-poster-upload'));
 
         setTimeout(function () { updateHseSectionAvailability(row); }, 0);
     }
@@ -4019,7 +4167,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
             var collName = row.querySelector('.txtCollectionName').value;
             var collDescription = row.querySelector('.txtCollectionDescription') ? row.querySelector('.txtCollectionDescription').value : '';
-            var collPoster = row.querySelector('.hiddenPosterPath') ? row.querySelector('.hiddenPosterPath').value : '';
+            var collPoster = (row.querySelector('.collection-tab .hiddenPosterPath') || { value: '' }).value;
 
             var intervals = readIntervalsFromRow(row);
 
@@ -4120,6 +4268,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 HomeSectionTracked: hseTracked,
                 EnablePlaylist:   st === 'NextWatch' || !!(row.querySelector('.chkEnablePlaylist') || {}).checked,
                 PlaylistName:     (row.querySelector('.txtPlaylistName') || { value: '' }).value,
+                PlaylistDescription: readPlaylistLook(row).PlaylistDescription, PlaylistPosterPath: readPlaylistLook(row).PlaylistPosterPath,
+                PlaylistPosterStyle: readPlaylistLook(row).PlaylistPosterStyle, PlaylistBackgroundStyle: readPlaylistLook(row).PlaylistBackgroundStyle,
+                PlaylistBackgroundPath: readPlaylistLook(row).PlaylistBackgroundPath, PlaylistArtTitle: readPlaylistLook(row).PlaylistArtTitle,
                 PlaylistUserIds:  st === 'NextWatch' ? [] : plUserIds2,
                 PlaylistMappings: (function() { try { return JSON.parse(decodeURIComponent((plTab2 && plTab2.dataset.plMappings) || '%5B%5D')); } catch { return []; } })()
             };
@@ -4420,6 +4571,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     CollectionTargetSeries:  t.CollectionTargetSeries  || false,
                     EnablePlaylist:   t.EnablePlaylist   || false,
                     PlaylistName:     t.PlaylistName     || '',
+                    PlaylistDescription: t.PlaylistDescription || '', PlaylistPosterPath: t.PlaylistPosterPath || '',
+                    PlaylistPosterStyle: t.PlaylistPosterStyle || '', PlaylistBackgroundStyle: t.PlaylistBackgroundStyle || '',
+                    PlaylistBackgroundPath: t.PlaylistBackgroundPath || '', PlaylistArtTitle: t.PlaylistArtTitle || '',
                     PlaylistUserIds:  t.PlaylistUserIds  || [],
                     PlaylistMappings: t.PlaylistMappings || [],
                 };

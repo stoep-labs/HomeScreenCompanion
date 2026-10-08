@@ -2789,6 +2789,78 @@ namespace HomeScreenCompanion
             return pl != null && pl.GetType().Name.Contains("Playlist") ? pl.InternalId.ToString() : null;
         }
 
+        // The look of every playlist a source makes (any type; Your Next Watch too), the same for
+        // all its users: TagConfig.Playlist* — a generated or uploaded poster (Primary) and
+        // background (Backdrop), and PlaylistDescription as the Overview (Your Next Watch: empty =
+        // DefaultNextWatchDescription). Only what differs is written, so a sync over many
+        // playlists rewrites nothing when the look is unchanged; generated art is drawn once per
+        // source and run (RenderCollectionArt caches it by titles + style). A saved Primary that
+        // is a file outside the playlist's own metadata folder is never replaced by Emby's collage
+        // (BaseCollageImageProvider.HasChanged), so nothing needs locking.
+        internal const string DefaultNextWatchDescription = "Picked just for you from what you've been watching — fresh recommendations every day.";
+
+        private static bool HasPlaylistLook(TagConfig tc) =>
+            CollectionArtRenderer.IsStyle(tc.PlaylistPosterStyle) || CollectionArtRenderer.IsStyle(tc.PlaylistBackgroundStyle)
+            || !string.IsNullOrWhiteSpace(tc.PlaylistPosterPath) || !string.IsNullOrWhiteSpace(tc.PlaylistBackgroundPath)
+            || !string.IsNullOrWhiteSpace(PlaylistDescriptionOf(tc));
+
+        private static string PlaylistDescriptionOf(TagConfig tc) =>
+            !string.IsNullOrWhiteSpace(tc.PlaylistDescription) ? tc.PlaylistDescription.Trim()
+            : IsNextWatch(tc) ? DefaultNextWatchDescription : "";
+
+        // Titles for generated playlist art (shows instead of their episodes or seasons). One list:
+        // in list order. Several (Your Next Watch, one per user): the titles most users got first,
+        // so the art is the same for everyone.
+        private static List<BaseItem> PlaylistArtItems(IEnumerable<List<BaseItem>> lists)
+        {
+            var stats = new Dictionary<Guid, (BaseItem Item, int Users, int BestRank)>();
+            foreach (var list in lists)
+            {
+                int rank = 0;
+                foreach (var raw in list)
+                {
+                    var item = raw is MediaBrowser.Controller.Entities.TV.Episode ep ? ep.Series
+                             : raw is MediaBrowser.Controller.Entities.TV.Season se ? se.Series : raw;
+                    rank++;
+                    if (item == null) continue;
+                    stats[item.Id] = stats.TryGetValue(item.Id, out var s)
+                        ? (s.Item, s.Users + 1, Math.Min(s.BestRank, rank))
+                        : (item, 1, rank);
+                }
+            }
+            return stats.Values.OrderByDescending(s => s.Users).ThenBy(s => s.BestRank).ThenBy(s => s.Item.Id)
+                .Select(s => s.Item).ToList();
+        }
+
+        private void ApplyPlaylistLook(TagConfig tc, string plName, string userName, PlaylistMapping mapping, List<BaseItem> artItems)
+        {
+            try
+            {
+                if (!Guid.TryParse(mapping.PlaylistId, out var g)) return;
+                var pl = _libraryManager.GetItemById(g);
+                if (pl == null || !pl.GetType().Name.Contains("Playlist")) return;
+                // Art lives in playlist_art/<source>; the text on it is the playlist name.
+                if (SetGeneratedArt(pl, plName, "playlist_art", tc.PlaylistPosterStyle, tc.PlaylistBackgroundStyle,
+                        tc.PlaylistArtTitle, tc.PlaylistBackgroundPath, artItems, true, tc.PlaylistPosterPath, artKey: tc.Name + " - " + tc.Tag))
+                {
+                    _libraryManager.UpdateItem(pl, pl.GetParent(), ItemUpdateType.ImageUpdate, null);
+                    _log.Debug($"  {userName}: playlist poster / background updated");
+                }
+                var desc = PlaylistDescriptionOf(tc);
+                // An empty description leaves the Overview alone.
+                if (desc.Length > 0 && !string.Equals(pl.Overview ?? "", desc, StringComparison.Ordinal))
+                {
+                    pl.Overview = desc;
+                    _libraryManager.UpdateItem(pl, pl.GetParent(), ItemUpdateType.MetadataEdit, null);
+                    _log.Debug($"  {userName}: playlist description updated");
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Playlist \"{plName}\": look for {userName} could not be applied: {ex.Message}");
+            }
+        }
+
         // A NextWatch home row is Emby's "playlist" section type: the playlist's items in playlist
         // order (no sort, no item-type or library filter). Image type Primary (the default here;
         // only an explicit Thumb is kept) makes Emby's home screen draw a show's first episode with
@@ -2958,8 +3030,11 @@ namespace HomeScreenCompanion
                         return (list, set);
                     }
                     var shared = Desired(collectionOutputItems);
+                    var plName0 = string.IsNullOrWhiteSpace(tagConfig.PlaylistName) ? tagConfig.Name : tagConfig.PlaylistName;
                     var plUserIds = perUser == null ? tagConfig.PlaylistUserIds : NextWatchUserIds(tagConfig).Where(perUser.ContainsKey).ToList();
                     if (perUser == null) _log.Debug($"  {shared.List.Count} unique items for {tagConfig.PlaylistUserIds.Count} users");
+                    var lookItems = perUser == null ? PlaylistArtItems(new[] { collectionOutputItems }) : PlaylistArtItems(perUser.Values);
+                    var createdPlaylists = new List<(string UserName, PlaylistMapping Mapping)>();
                     bool plMappingChanged = false;
                     foreach (var userId in plUserIds)
                     {
@@ -3193,6 +3268,20 @@ namespace HomeScreenCompanion
                                 _log.Debug($"  {plUser.Name}: up to date ({currentOrder.Count} items)");
                             }
                         }
+                        if (mapping != null)
+                        {
+                            ApplyPlaylistLook(tagConfig, plName, plUser.Name, mapping, lookItems);
+                            if (existingPlaylist == null) createdPlaylists.Add((plUser.Name, mapping));
+                        }
+                    }
+                    // A new playlist gets a metadata refresh from Emby right after it is made, which
+                    // saves its own copy of the item and so drops the look set above. Put it back
+                    // once that refresh is done.
+                    if (createdPlaylists.Count > 0 && HasPlaylistLook(tagConfig))
+                    {
+                        await Task.Delay(3000);
+                        foreach (var (userName, m) in createdPlaylists)
+                            ApplyPlaylistLook(tagConfig, plName0, userName, m, lookItems);
                     }
                     if (plMappingChanged)
                         Plugin.Instance?.SaveConfiguration();
@@ -5365,20 +5454,23 @@ namespace HomeScreenCompanion
 
         private const string EmbyCollagePoster = "emby://playlistcollage";
 
-        // Images this plugin put on a tag item: generated art or an uploaded background.
+        // Images this plugin put on a tag item or a Your Next Watch playlist: generated art or an upload.
         private static bool IsPluginTagArt(string? path)
         {
             if (string.IsNullOrEmpty(path) || Plugin.Instance == null) return false;
             var data = Plugin.Instance.DataFolderPath;
             return path!.StartsWith(Path.Combine(data, "tag_art"), StringComparison.OrdinalIgnoreCase)
+                || path.StartsWith(Path.Combine(data, "playlist_art"), StringComparison.OrdinalIgnoreCase)
                 || path.StartsWith(Path.Combine(data, "collection_images"), StringComparison.OrdinalIgnoreCase);
         }
 
         // Puts the generated (or uploaded) poster and background on the item's ImageInfos. With
         // removeWhenNone, a kind with no style drops the plugin's earlier image (the poster goes
-        // back to Emby's own collage). True when the item's images changed.
+        // back to Emby's own collage). posterPath: an uploaded poster used when no poster style is
+        // set (playlists). artKey: the art's folder name when it differs from name. True when the
+        // item's images changed.
         private bool SetGeneratedArt(BaseItem target, string name, string artFolder, string posterStyle, string backgroundStyle,
-            string artTitle, string backgroundPath, IList<BaseItem> items, bool removeWhenNone)
+            string artTitle, string backgroundPath, IList<BaseItem> items, bool removeWhenNone, string? posterPath = null, string? artKey = null)
         {
             bool changed = false;
             foreach (var (style, background) in new[] { (posterStyle, false), (backgroundStyle, true) })
@@ -5386,9 +5478,11 @@ namespace HomeScreenCompanion
                 var type = background ? ImageType.Backdrop : ImageType.Primary;
                 var current = (target.ImageInfos ?? Array.Empty<ItemImageInfo>()).FirstOrDefault(i => i.Type == type);
                 string? path;
-                if (CollectionArtRenderer.IsStyle(style)) path = RenderCollectionArt(name, artFolder, CollectionArtRenderer.ArtTitle(artTitle, name), style, background, items);
+                if (CollectionArtRenderer.IsStyle(style)) path = RenderCollectionArt(artKey ?? name, artFolder, CollectionArtRenderer.ArtTitle(artTitle, name), style, background, items);
                 else if (background && !string.IsNullOrWhiteSpace(backgroundPath) && File.Exists(backgroundPath))
                     path = backgroundPath;   // Custom: the uploaded background
+                else if (!background && !string.IsNullOrWhiteSpace(posterPath) && File.Exists(posterPath))
+                    path = posterPath;       // Custom: the uploaded poster
                 else
                 {
                     if (removeWhenNone && current != null && IsPluginTagArt(current.Path))

@@ -902,10 +902,10 @@ public class HomeScreenCompanionService : IService
             if (!poster && !background)
                 return new PreviewCollectionArtResponse { Message = "Choose \"Generate from the titles\" for the poster or the background first." };
 
-            // The titles: a Smart Playlist is matched now (like its Preview); other sources use the
-            // titles that carry the tag since the last run.
+            // The titles: a Smart Playlist is matched now (like its Preview), Your Next Watch from the
+            // first selected user's picks; other sources use the titles that carry the tag since the last run.
             List<BaseItem> items;
-            if (source.SourceType == "MediaInfo")
+            if (source.SourceType == "MediaInfo" || source.SourceType == "NextWatch")
             {
                 var task = HomeScreenCompanionTask.Instance;
                 if (task == null) return new PreviewCollectionArtResponse { Message = "Task not initialized" };
@@ -915,6 +915,8 @@ public class HomeScreenCompanionService : IService
                 var preview = await task.PreviewEntryAsync(probe, CancellationToken.None);
                 if (!preview.Done) return new PreviewCollectionArtResponse { Message = preview.Message };
                 items = preview.Items;
+                if (source.SourceType == "NextWatch")   // a show's pick is its first episode: draw the show
+                    items = items.Select(i => i is MediaBrowser.Controller.Entities.TV.Episode ep && ep.Series != null ? ep.Series : i).ToList();
             }
             else
             {
@@ -926,7 +928,7 @@ public class HomeScreenCompanionService : IService
                 }).ToList();
             }
             if (items.Count == 0)
-                return new PreviewCollectionArtResponse { Message = source.SourceType == "MediaInfo"
+                return new PreviewCollectionArtResponse { Message = source.SourceType == "MediaInfo" || source.SourceType == "NextWatch"
                     ? "No titles match this source, so there is nothing to draw."
                     : "No titles carry this tag yet. Run the source once, then preview again." };
 
