@@ -1556,7 +1556,7 @@
                 <div class="src-cards">
                     <div class="src-card">
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">public</i> External</div>
-                        Paste a list URL from <strong>Trakt</strong>, <strong>MDBList</strong>, or <strong>TMDb</strong>. The plugin downloads the list and tags every matching title it finds in your library. You can add multiple URLs to the same source — they are combined into one list.
+                        Paste a list URL from <strong>Trakt</strong>, <strong>MDBList</strong>, or <strong>TMDb</strong>. The plugin downloads the list and tags every matching title it finds in your library. You can add multiple URLs to the same source — they are combined into one list. <em>Preview</em> shows which titles on the list are in your library and which are not.
                         <div style="margin-top:8px;padding-top:8px;border-top:1px dashed rgba(128,128,128,0.3);font-size:0.92em;">
                             <strong>TMDb</strong> can be used in two ways:
                             <ul style="margin:4px 0 0;padding-left:16px;line-height:1.8;">
@@ -1567,19 +1567,19 @@
                     </div>
                     <div class="src-card">
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">video_library</i> Local</div>
-                        Use an existing <strong>playlist</strong> or <strong>collection</strong> already in Emby as the source. Every item in that list gets the configured tag. You can also use this to show a collection as a home screen row — see <em>Home Section — Collections mode</em> below.
+                        Use an existing <strong>playlist</strong> or <strong>collection</strong> already in Emby as the source. Every item in that list gets the configured tag. You can also use this to show a collection as a home screen row — see <em>Home Section — Collections mode</em> below. <em>Preview</em> lists the titles that would get the tag.
                     </div>
                     <div class="src-card">
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">format_list_numbered</i> Manual List</div>
-                        Pick <strong>movies and shows</strong> by hand, right inside the plugin. Search to add a title, use <strong>▲ ▼</strong> to set the order and <strong>✕</strong> to remove it. Top-lists made from the tag follow your order. An Emby collection still shows Emby's own sort order. Titles deleted from the library are skipped.
+                        Pick <strong>movies and shows</strong> by hand, right inside the plugin. Search to add a title, use <strong>▲ ▼</strong> to set the order and <strong>✕</strong> to remove it. Top-lists made from the tag follow your order. An Emby collection still shows Emby's own sort order. Titles deleted from the library are skipped. <em>Preview</em> lists the titles that would get the tag, in your order.
                     </div>
                     <div class="src-card">
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">tune</i> MediaInfo (Smart Playlist)</div>
-                        Build a list based on the properties of your own files — for example "all 4K HDR movies" or "Action films I haven't watched yet". Filter by video quality, audio format, genre, actors, ratings, what is popular on your server, and more.
+                        Build a list based on the properties of your own files — for example "all 4K HDR movies" or "Action films I haven't watched yet". Filter by video quality, audio format, genre, actors, ratings, what is popular on your server, and more. <em>Preview</em> (next to <em>Max items</em>) lists what matches right now.
                     </div>
                     <div class="src-card">
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">auto_awesome</i> AI created lists</div>
-                        Describe what you want in plain language — for example <em>"Best sci-fi films from the 90s"</em> — and let <strong>OpenAI</strong> or <strong>Google Gemini</strong> generate the list. You can also have the AI take into account what a specific user has watched recently, to personalise the suggestions. Requires an API key in Settings.
+                        Describe what you want in plain language — for example <em>"Best sci-fi films from the 90s"</em> — and let <strong>OpenAI</strong> or <strong>Google Gemini</strong> generate the list. You can also have the AI take into account what a specific user has watched recently, to personalise the suggestions. Requires an API key in Settings. <em>Preview</em> asks the AI once and shows which of its titles are in your library and which are not; <em>Test AI Source</em> just shows the raw answer.
                     </div>
                 </div>
 
@@ -1775,7 +1775,7 @@
                 </div>
                 <div class="help-feature-row" style="margin-bottom:0;">
                     <i class="md-icon help-feat-icon">visibility</i>
-                    <div><strong>Preview</strong> — Click <em>Preview</em> next to <em>Max items</em> to see what the source would tag right now, using your current (unsaved) rules. It shows up to 250 titles plus the total. Nothing is written.</div>
+                    <div><strong>Preview</strong> — Every source type has a <em>Preview</em> button (here it is next to <em>Max items</em>). It shows what the source would tag right now, using your current (unsaved) settings, filters, blacklist and limit: up to 250 titles in list order plus the total. For an External or AI source it also lists the titles on the list that are <em>Not in your library</em> (title, year, IMDb id). Nothing is written — no tags, collections or settings change. An AI preview asks the AI once (one paid call), ignores <em>Refresh every</em>, and the next answer may differ.</div>
                 </div>
 
                 <!-- 7. HOME SCREEN -->

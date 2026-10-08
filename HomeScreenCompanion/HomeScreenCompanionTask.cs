@@ -1582,16 +1582,19 @@ namespace HomeScreenCompanion
         private SourcePreview? _preview;
 
         /// <summary>
-        /// What a Local Media Information source would tag right now, from its unsaved settings.
-        /// Runs the real single-entry matching code with nothing written (no tags, no log).
+        /// What a source would tag right now, from its unsaved settings (any source type; group =
+        /// every URL / collection / playlist of the card). Runs the real single-entry fetch and
+        /// matching code with nothing written (no tags, no tag cache, no log, no AiLastRunDate).
+        /// An AI source asks the provider once, ignoring the refresh interval.
         /// </summary>
-        internal async Task<SourcePreview> PreviewEntryAsync(TagConfig source, CancellationToken cancellationToken)
+        internal async Task<SourcePreview> PreviewEntryAsync(TagConfig source, CancellationToken cancellationToken, List<TagConfig>? group = null)
         {
-            var preview = new SourcePreview(source);
+            var preview = new SourcePreview(source, group);
             if (IsRunning) { preview.Message = "A sync is running — try again when it has finished."; return preview; }
             IsRunning = true;
             var savedLog = _log;
             var savedWrittenTags = _writtenTags;
+            var savedStatus = LastRunStatus;
             _preview = preview;
             try
             {
@@ -1604,6 +1607,7 @@ namespace HomeScreenCompanion
                 _preview = null;
                 _log = savedLog;
                 _writtenTags = savedWrittenTags;
+                LastRunStatus = savedStatus;
                 IsRunning = false;
             }
             return preview;
@@ -1624,7 +1628,7 @@ namespace HomeScreenCompanion
             // A group with several URLs / local sources is stored as one flat TagConfig per source
             // (same Name + Tag). tagConfig owns the shared settings; groupEntries supplies the sources.
             var groupEntryKey = GroupKey(tagConfig);
-            var groupEntries = _preview != null ? new List<TagConfig> { tagConfig } : config.Tags
+            var groupEntries = _preview != null ? _preview.Group : config.Tags
                 .Where(t => string.Equals(GroupKey(t), groupEntryKey, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
@@ -1636,10 +1640,7 @@ namespace HomeScreenCompanion
             bool logMissing = config.LogMissingItems;
             var startTime = DateTime.Now;
             _log = _preview != null ? new RunLog(new List<string>(), null, "", false) : new RunLog(ExecutionLog, _logger, "", debug);
-            if (_preview != null && tagConfig.SourceType != "MediaInfo")
-                return (false, "Preview is only available for Local Media Information sources.");
-
-            if (tagConfig.SourceType == "AI" && tagConfig.AiRefreshIntervalDays > 0 &&
+            if (_preview == null && tagConfig.SourceType == "AI" && tagConfig.AiRefreshIntervalDays > 0 &&
                 tagConfig.AiLastRunDate > DateTime.MinValue &&
                 (DateTime.UtcNow - tagConfig.AiLastRunDate).TotalDays < tagConfig.AiRefreshIntervalDays)
             {
@@ -1972,7 +1973,7 @@ namespace HomeScreenCompanion
                         {
                             if (string.IsNullOrEmpty(extItem.Imdb)) continue;
                             if (blacklist.Contains(extItem.Imdb)) { _srcBlacklisted++; _log.Debug($"    Blacklisted: {extItem.Name} ({extItem.Imdb})"); continue; }
-                            if (tagConfig.EnableTag && !tagConfig.OnlyCollection)
+                            if (_preview == null && tagConfig.EnableTag && !tagConfig.OnlyCollection)
                                 TagCacheManager.Instance.AddToCache($"imdb_{extItem.Imdb}", tagName);
                             if (imdbLookup.TryGetValue(extItem.Imdb, out var localItems))
                             {
@@ -1983,6 +1984,7 @@ namespace HomeScreenCompanion
                             else
                             {
                                 gs.MissingItems.Add($"{extItem.Name}  {extItem.Imdb}");
+                                _preview?.Missing.Add(new PreviewMissingTitle(extItem.Name, null, extItem.Imdb));
                             }
                         }
                         _log.Debug($"  {src.Url}  →  {items.Count} items in {fetchTimer.ElapsedMilliseconds} ms  ·  {_srcMatched} matched by IMDb id  ·  {gs.MissingItems.Count - _srcMissingBefore} not in library  ·  {_srcBlacklisted} blacklisted");
@@ -2154,7 +2156,7 @@ namespace HomeScreenCompanion
                         {
                             var imdbId = aiItem.imdb_id.Trim();
                             if (blacklist.Contains(imdbId)) { _aiBlacklisted++; _log.Debug($"    Blacklisted: {_aiLabel} ({imdbId})"); continue; }
-                            if (tagConfig.EnableTag && !tagConfig.OnlyCollection)
+                            if (_preview == null && tagConfig.EnableTag && !tagConfig.OnlyCollection)
                                 TagCacheManager.Instance.AddToCache($"imdb_{imdbId}", tagName);
                             if (imdbLookup.TryGetValue(imdbId, out var localItems))
                             {
@@ -2166,7 +2168,7 @@ namespace HomeScreenCompanion
                                 // IMDB ID not found in library — fall back to title+year match
                                 var titleMatches = FindByTitleAndYear(matchableItems, aiItem.title, aiItem.year);
                                 if (titleMatches.Count > 0) { _aiTitleMatched++; _log.Debug($"    {imdbId} not in library — matched '{_aiLabel}' by title"); }
-                                else gs.MissingItems.Add($"{_aiLabel}  {imdbId}");
+                                else { gs.MissingItems.Add($"{_aiLabel}  {imdbId}"); _preview?.Missing.Add(new PreviewMissingTitle(aiItem.title, aiItem.year, imdbId)); }
                                 foreach (var localItem in titleMatches)
                                 {
                                     var imdb = localItem.GetProviderId("Imdb");
@@ -2179,7 +2181,7 @@ namespace HomeScreenCompanion
                         {
                             var titleMatches = FindByTitleAndYear(matchableItems, aiItem.title, aiItem.year);
                             if (titleMatches.Count > 0) _aiTitleMatched++;
-                            else gs.MissingItems.Add($"{_aiLabel}  (no IMDb id from AI)");
+                            else { gs.MissingItems.Add($"{_aiLabel}  (no IMDb id from AI)"); _preview?.Missing.Add(new PreviewMissingTitle(aiItem.title, aiItem.year, "")); }
                             foreach (var localItem in titleMatches)
                             {
                                 var imdb = localItem.GetProviderId("Imdb");
@@ -2190,7 +2192,9 @@ namespace HomeScreenCompanion
                     }
                     _log.Debug($"  AI ({tagConfig.AiProvider}) returned {_listCount} items in {fetchTimer.ElapsedMilliseconds} ms  ·  {matchedLocalItems.Count} matched ({_aiTitleMatched} by title only)  ·  {gs.MissingItems.Count} not in library  ·  {_aiBlacklisted} blacklisted");
 
-                    if (tagConfig.AiRefreshIntervalDays > 0)
+                    if (_preview != null)
+                        _preview.Note = $"Asked {(string.IsNullOrWhiteSpace(tagConfig.AiProvider) ? "the AI" : tagConfig.AiProvider)} once; the result may differ next time.";
+                    else if (tagConfig.AiRefreshIntervalDays > 0)
                     {
                         tagConfig.AiLastRunDate = DateTime.UtcNow;
                         Plugin.Instance.SaveConfiguration();
@@ -2204,7 +2208,7 @@ namespace HomeScreenCompanion
                 WriteExceptionDebug(ex);
                 WriteFetchLine(gs);
                 WriteSingleRunFooter(gs, startTime, dryRun, logMissing);
-                LastRunStatus = $"Failed: {ex.Message}";
+                if (_preview == null) LastRunStatus = $"Failed: {ex.Message}";
                 return (false, $"Error: {ex.Message}");
             }
 
@@ -2219,6 +2223,13 @@ namespace HomeScreenCompanion
                     return ItemMatchesMediaInfo(item, tagConfig, debug, seriesEpisodeCache, personCache, userDataCache, ci, preloadedUsers, seriesLastPlayedCache, collectionMembershipCache, seriesEpisodeNamesCache);
                 }).ToList();
                 _log.Debug($"  Filter conditions: {beforeCount} → {matchedLocalItems.Count} items");
+            }
+
+            // Preview of a list source: the matches in list order plus what is not in the library.
+            if (_preview != null)
+            {
+                _preview.Complete(matchedLocalItems, _listCount, null, gs.Warnings);
+                return (true, "");
             }
 
             // For non-MediaInfo sources, apply output level selection (expand down from Series/Movie)

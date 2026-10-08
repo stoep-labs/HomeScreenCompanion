@@ -111,21 +111,40 @@ namespace HomeScreenCompanion
     /// <summary>Result of HomeScreenCompanionTask.PreviewEntryAsync.</summary>
     internal sealed class SourcePreview
     {
-        public SourcePreview(TagConfig source) { Source = source; }
+        public SourcePreview(TagConfig source, List<TagConfig>? group = null)
+        {
+            Source = source;
+            Group = group != null && group.Count > 0 ? group : new List<TagConfig> { source };
+        }
 
         public TagConfig Source { get; }
+        // Every URL / collection / playlist of the source card (one TagConfig each, as saved).
+        public List<TagConfig> Group { get; }
+        // Titles on the list that are not in the library, in list order (External / AI).
+        public List<PreviewMissingTitle> Missing { get; } = new List<PreviewMissingTitle>();
+        public List<string> Warnings { get; private set; } = new List<string>();
+        public string Note { get; set; } = "";
         public bool Done { get; private set; }
         public string Message { get; set; } = "";
         public int Scanned { get; private set; }
         public List<BaseItem> Items { get; private set; } = new List<BaseItem>();
         public Dictionary<Guid, int> Viewers { get; private set; } = new Dictionary<Guid, int>();
 
-        public void Complete(List<BaseItem> items, int scanned, Dictionary<Guid, int>? viewers)
+        public void Complete(List<BaseItem> items, int scanned, Dictionary<Guid, int>? viewers, List<string>? warnings = null)
         {
             Items = items.ToList();
             Scanned = scanned;
             Viewers = viewers ?? new Dictionary<Guid, int>();
+            Warnings = warnings?.ToList() ?? new List<string>();
             Done = true;
         }
+    }
+
+    internal sealed class PreviewMissingTitle
+    {
+        public PreviewMissingTitle(string title, int? year, string imdb) { Title = title ?? ""; Year = year; Imdb = imdb ?? ""; }
+        public string Title { get; }
+        public int? Year { get; }
+        public string Imdb { get; }
     }
 }

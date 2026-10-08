@@ -796,26 +796,35 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }).finally(function () { btn.disabled = false; });
     }
 
-    // Preview: runs this source's current (unsaved) filters on the server without tagging
-    // anything, and lists what it would tag.
+    // Preview: runs this source's current (unsaved) settings on the server without tagging
+    // anything, and lists what it would tag — for a list source (External, AI) also the titles
+    // on the list that are not in the library.
     function showSourcePreview(row, btn) {
         var view = row.closest('#HomeScreenCompanionConfigPage') || activeView();
         var label = row.querySelector('.txtEntryLabel').value;
         var tag = row.querySelector('.txtTagName').value || label;
-        var source = sourceConfigOfRow(view, row);
+        var sources = rowToFlatTags(row, false);
+        if (!sources.length) sources = rowToFlatTags(row, true); // no URL / collection picked yet
+        var source = sources[0];
         if (!source) return;
+        var st = source.SourceType || '';
+        var isMi = st === 'MediaInfo';
+        var isList = st === 'External' || st === 'AI' || st === '';
+        var aiName = { OpenAI: 'OpenAI', Gemini: 'Gemini', Claude: 'Claude', Ollama: 'Ollama' }[source.AiProvider] || 'the AI';
 
         var overlay = view.querySelector('#miPreviewModalOverlay');
         var body = overlay.querySelector('.mi-preview-body');
         overlay.querySelector('.mi-preview-subtitle').textContent = (label || tag || 'This source') + ' — what it would tag right now';
-        body.innerHTML = '<div style="padding:20px 0; text-align:center; opacity:0.8;">Checking your library…</div>';
+        body.innerHTML = '<div style="padding:20px 0; text-align:center; opacity:0.8;">'
+            + escapeHtml(st === 'AI' ? 'Asking ' + aiName + '… this can take a minute.' : st === 'External' ? 'Fetching the list and checking your library…' : 'Checking your library…')
+            + '</div>';
         overlay.classList.add('modal-visible');
         btn.disabled = true;
 
         fetch(window.ApiClient.getUrl('HomeScreenCompanion/PreviewSource'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
-            body: JSON.stringify({ Source: source })
+            body: JSON.stringify({ Source: source, Sources: sources })
         }).then(function (r) { return r.json(); })
         .then(function (res) {
             if (!res.Success) {
@@ -824,13 +833,22 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             }
             var items = res.Items || [];
             var total = res.Total || items.length;
+            var missing = res.Missing || [];
+            var missingTotal = res.MissingTotal || missing.length;
+            var checkedNote = isMi ? ' (' + (res.Scanned || 0).toLocaleString() + ' checked)'
+                : ' (' + (res.Scanned || 0).toLocaleString() + (st === 'Manual' ? ' picked' : isList ? ' on the list' : ' in the ' + (st === 'LocalPlaylist' ? 'playlist' : 'collection')) + ')';
             var summary = total.toLocaleString() + ' title' + (total === 1 ? '' : 's') + ' would get the tag'
-                + ' (' + res.Scanned.toLocaleString() + ' checked)'
+                + checkedNote
                 + (total > items.length ? ' — showing the first ' + items.length + '.' : '.');
             if (!items.length) {
                 summary = 'Nothing matches, so nothing would be tagged.';
             }
-            var html = '<div style="margin-bottom:12px; opacity:0.85;">' + escapeHtml(summary) + '</div>';
+            var html = '';
+            if (res.Note) html += '<div class="mi-preview-note" style="margin-bottom:10px; font-size:0.85em; opacity:0.75;"><i class="md-icon" style="font-size:1em; vertical-align:-2px; margin-right:4px;">info</i>' + escapeHtml(res.Note) + '</div>';
+            (res.Warnings || []).forEach(function (w) {
+                html += '<div style="margin-bottom:10px; font-size:0.9em; color:#e8a838;"><i class="md-icon" style="font-size:1em; vertical-align:-2px; margin-right:4px;">warning</i>' + escapeHtml(w) + '</div>';
+            });
+            html += '<div style="margin-bottom:12px; opacity:0.85;">' + escapeHtml(summary) + '</div>';
             items.forEach(function (it, n) {
                 var img = it.ImageTag
                     ? '<img src="' + window.ApiClient.getUrl('Items/' + it.Id + '/Images/Primary', { maxHeight: 90, tag: it.ImageTag }) + '" style="width:40px; height:60px; object-fit:cover; border-radius:3px;" loading="lazy" />'
@@ -844,6 +862,21 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     + '<div style="min-width:0;"><div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escapeHtml(it.Name) + '</div>'
                     + '<div style="font-size:0.85em; opacity:0.7;">' + escapeHtml(meta) + '</div></div>' + viewers + '</div>';
             });
+            if (missingTotal > 0) {
+                html += '<div class="mi-preview-missing" style="margin-top:18px;">'
+                    + '<div style="font-weight:600; margin-bottom:4px;">Not in your library (' + missingTotal.toLocaleString() + ')</div>'
+                    + '<div style="font-size:0.85em; opacity:0.7; margin-bottom:6px;">On the list, but no matching title in Emby'
+                    + (missingTotal > missing.length ? ' — showing the first ' + missing.length : '') + '.</div>';
+                missing.forEach(function (m) {
+                    var imdb = m.Imdb
+                        ? '<a href="https://www.imdb.com/title/' + encodeURIComponent(m.Imdb) + '/" target="_blank" rel="noopener" style="color:inherit; opacity:0.7; margin-left:auto; white-space:nowrap;">' + escapeHtml(m.Imdb) + '</a>'
+                        : '<span style="opacity:0.5; margin-left:auto; white-space:nowrap;">no IMDb id</span>';
+                    html += '<div style="display:flex; align-items:center; gap:12px; padding:4px 0; border-bottom:1px solid rgba(128,128,128,0.12);">'
+                        + '<div style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escapeHtml(m.Title || '(no title)')
+                        + (m.Year ? ' <span style="opacity:0.7;">(' + m.Year + ')</span>' : '') + '</div>' + imdb + '</div>';
+                });
+                html += '</div>';
+            }
             body.innerHTML = html;
         }).catch(function (err) {
             body.innerHTML = '<div style="padding:12px 0;">Preview failed: ' + escapeHtml(err.message) + '</div>';
@@ -1882,22 +1915,29 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     </div>
 
                     <div class="source-external-container" style="display: ${sourceType === 'External' ? 'block' : 'none'};">
-                        <div style="display:flex; align-items:baseline; gap:10px; margin:10px 0 10px 0;">
+                        <div style="display:flex; align-items:baseline; gap:10px; margin:10px 0 10px 0; flex-wrap:wrap;">
                             <p style="margin:0; font-size:0.9em; font-weight:bold; opacity:0.7;">Source URLs</p>
                             <span style="font-size:0.75em; opacity:0.5;">— Find lists: <a href="https://trakt.tv/discover" target="_blank" style="color:inherit; text-decoration:underline;">Trakt</a> &middot; <a href="https://mdblist.com/toplists/" target="_blank" style="color:inherit; text-decoration:underline;">MDBList</a> &middot; <a href="https://www.themoviedb.org/" target="_blank" style="color:inherit; text-decoration:underline;">TMDb</a> &middot; <a href="https://developer.themoviedb.org/reference/getting-started" target="_blank" style="color:inherit; text-decoration:underline;">TMDb API</a></span>
+                            <button type="button" is="emby-button" class="btnMiPreview raised" style="margin-left:auto; background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">visibility</i><span>Preview</span></button>
                         </div>
                         <div class="url-list-container">${urls.map(u => getUrlRowHtml(u.url, u.limit)).join('')}</div>
                         <div style="margin-top:10px;"><button is="emby-button" type="button" class="raised btnAddUrl" style="width:100%; background:transparent; border:2px dashed rgba(128,128,128,0.4); color:var(--theme-text-secondary);"><i class="md-icon" style="margin-right:5px;">add</i>Add another URL</button></div>
                     </div>
 
                     <div class="source-local-container" style="display: ${(sourceType === 'LocalCollection' || sourceType === 'LocalPlaylist') ? 'block' : 'none'};">
-                        <p style="margin:10px 0 10px 0; font-size:0.9em; font-weight:bold; opacity:0.7;" class="local-type-label">${sourceType === 'LocalPlaylist' ? 'Select Playlists' : 'Select Collections'}</p>
+                        <div style="display:flex; align-items:center; gap:10px; margin:10px 0 10px 0;">
+                            <p style="margin:0; font-size:0.9em; font-weight:bold; opacity:0.7;" class="local-type-label">${sourceType === 'LocalPlaylist' ? 'Select Playlists' : 'Select Collections'}</p>
+                            <button type="button" is="emby-button" class="btnMiPreview raised" style="margin-left:auto; background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">visibility</i><span>Preview</span></button>
+                        </div>
                         <div class="local-list-container">${localSources.map(ls => getLocalRowHtml(sourceType, ls.id, ls.limit)).join('')}</div>
                         <div style="margin-top:10px;"><button is="emby-button" type="button" class="raised btnAddLocal" style="width:100%; background:transparent; border:2px dashed rgba(128,128,128,0.4); color:var(--theme-text-secondary);"><i class="md-icon" style="margin-right:5px;">add</i>Add another</button></div>
                     </div>
 
                     <div class="source-manual-container" data-manual-ids="${encodeURIComponent(JSON.stringify(tagConfig.ManualItemIds || []))}" style="display: ${sourceType === 'Manual' ? 'block' : 'none'};">
-                        <p style="margin:10px 0 10px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Movies and Shows</p>
+                        <div style="display:flex; align-items:center; gap:10px; margin:10px 0 10px 0;">
+                            <p style="margin:0; font-size:0.9em; font-weight:bold; opacity:0.7;">Movies and Shows</p>
+                            <button type="button" is="emby-button" class="btnMiPreview raised" style="margin-left:auto; background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">visibility</i><span>Preview</span></button>
+                        </div>
                         <div style="position:relative; margin-bottom:10px;">
                             <input is="emby-input" type="text" class="txtManualSearch" autocomplete="off" label="Add a movie or show" placeholder="Type to search…" />
                             <div class="manualSearchResults" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:200;background:var(--plugin-popup-bg,#2a2a2a);border:1px solid var(--line-color);border-radius:4px;max-height:240px;overflow-y:auto;margin-top:2px;box-shadow:0 4px 12px rgba(0,0,0,0.45);"></div>
@@ -1963,11 +2003,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             <span style="font-size:0.8em; opacity:0.5;">days &nbsp;(0 = run on every full sync)</span>
                         </div>
 
-                        <div style="margin-top:0;">
+                        <div style="margin-top:0; display:flex; align-items:center; flex-wrap:wrap; gap:6px;">
                             <button type="button" is="emby-button" class="raised btnTestAiSource btn-neutral" style="background:transparent; border:1px solid rgba(128,128,128,0.4); color:var(--theme-text-secondary);">
                                 <i class="md-icon" style="margin-right:5px;">science</i>Test AI Source
                             </button>
                             <span class="ai-test-result" style="margin-left:10px; font-size:0.85em; opacity:0.7;"></span>
+                            <button type="button" is="emby-button" class="btnMiPreview raised" title="Ask the AI once and see which titles are in your library" style="margin-left:auto; background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">visibility</i><span>Preview</span></button>
                         </div>
                     </div>
 

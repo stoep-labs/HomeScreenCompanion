@@ -124,12 +124,14 @@ namespace HomeScreenCompanion
         public int Titles { get; set; }
     }
 
-    // What a Local Media Information source would tag, from its unsaved settings. Changes nothing.
+    // What a source (any type) would tag, from its unsaved settings. Changes nothing.
     [Route("/HomeScreenCompanion/PreviewSource", "POST")]
     [Authenticated(Roles = "Admin")]
     public class PreviewSourceRequest : IReturn<PreviewSourceResponse>
     {
         public TagConfig Source { get; set; } = new TagConfig();
+        // Every URL / collection / playlist of the card, one TagConfig each (as saved). Optional.
+        public List<TagConfig> Sources { get; set; } = new List<TagConfig>();
     }
 
     public class PreviewSourceResponse
@@ -140,6 +142,18 @@ namespace HomeScreenCompanion
         public bool ShowViewers { get; set; }
         public int Total { get; set; }                 // titles that would be tagged; Items holds at most PreviewMaxItems
         public List<PreviewSourceItem> Items { get; set; } = new List<PreviewSourceItem>();
+        public string SourceType { get; set; } = "";
+        public int MissingTotal { get; set; }          // list titles not in the library; Missing holds at most PreviewMaxItems
+        public List<PreviewMissingItem> Missing { get; set; } = new List<PreviewMissingItem>();
+        public List<string> Warnings { get; set; } = new List<string>();
+        public string Note { get; set; } = "";         // e.g. AI: asked the provider once
+    }
+
+    public class PreviewMissingItem
+    {
+        public string Title { get; set; } = "";
+        public int? Year { get; set; }
+        public string Imdb { get; set; } = "";
     }
 
 
@@ -959,20 +973,29 @@ public class HomeScreenCompanionService : IService
             if (task == null)
                 return new PreviewSourceResponse { Message = "Task not initialized" };
             var source = request.Source ?? new TagConfig();
-            source.SourceType = "MediaInfo";
             if (string.IsNullOrWhiteSpace(source.Tag)) source.Tag = string.IsNullOrWhiteSpace(source.Name) ? "preview" : source.Name;
             if (string.IsNullOrWhiteSpace(source.Name)) source.Name = source.Tag;
+            // The card's other URLs / collections / playlists; they share the card's name and tag.
+            var group = (request.Sources ?? new List<TagConfig>())
+                .Where(s => s != null && string.Equals(s.SourceType ?? "", source.SourceType ?? "", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            foreach (var g in group) { g.Name = source.Name; g.Tag = source.Tag; }
 
-            var preview = await task.PreviewEntryAsync(source, CancellationToken.None);
+            var preview = await task.PreviewEntryAsync(source, CancellationToken.None, group);
             if (!preview.Done)
-                return new PreviewSourceResponse { Message = preview.Message };
+                return new PreviewSourceResponse { Message = preview.Message, SourceType = source.SourceType ?? "" };
             bool showViewers = preview.Viewers.Count > 0;
             return new PreviewSourceResponse
             {
                 Success = true,
+                SourceType = source.SourceType ?? "",
                 Scanned = preview.Scanned,
                 ShowViewers = showViewers,
                 Total = preview.Items.Count,
+                MissingTotal = preview.Missing.Count,
+                Missing = preview.Missing.Take(PreviewMaxItems).Select(m => new PreviewMissingItem { Title = m.Title, Year = m.Year, Imdb = m.Imdb }).ToList(),
+                Warnings = preview.Warnings,
+                Note = preview.Note,
                 // The dialog loads a poster per row; thousands of rows swamp Emby's image server.
                 Items = preview.Items.Take(PreviewMaxItems).Select(i => new PreviewSourceItem
                 {
