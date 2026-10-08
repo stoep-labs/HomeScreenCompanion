@@ -1069,6 +1069,46 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
     var _formAc = null;
 
+    // Edits made while the config is still loading. loadConfig() rewrites every field, so these
+    // are put back afterwards instead of being lost (and Save is rechecked then).
+    function editPath(view, el) {
+        if (!el || !el.matches || !el.matches('input, select, textarea')) return null;
+        if (el.id) return '#' + el.id;
+        var row = el.closest('#tagListContainer .tag-row');
+        var cls = (el.getAttribute('class') || '').split(/\s+/).filter(Boolean)[0];
+        if (!row || !cls) return null;
+        var rows = Array.from(view.querySelectorAll('#tagListContainer .tag-row'));
+        return 'row:' + rows.indexOf(row) + ':' + cls + ':' + Array.from(row.querySelectorAll('.' + cls)).indexOf(el);
+    }
+
+    function findByEditPath(view, path) {
+        if (path.charAt(0) === '#') return view.querySelector(path);
+        var m = path.split(':');
+        var row = view.querySelectorAll('#tagListContainer .tag-row')[parseInt(m[1], 10)];
+        return row ? row.querySelectorAll('.' + m[2])[parseInt(m[3], 10)] : null;
+    }
+
+    function rememberLoadEdit(view, el) {
+        var path = editPath(view, el);
+        if (!path) return;
+        if (!view._loadEdits) view._loadEdits = {};
+        view._loadEdits[path] = (el.type === 'checkbox' || el.type === 'radio') ? { checked: el.checked } : { value: el.value };
+    }
+
+    function replayLoadEdits(view) {
+        var edits = view._loadEdits;
+        view._loadEdits = null;
+        if (!edits) return;
+        Object.keys(edits).forEach(function (path) {
+            var el = findByEditPath(view, path);
+            if (!el) return;
+            if ('checked' in edits[path]) el.checked = edits[path].checked;
+            else el.value = edits[path].value;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+    }
+
     var MI_CRITERION_MAP = {
         '4K': { prop: 'Resolution', val: '4K' }, '8K': { prop: 'Resolution', val: '8K' },
         '1080p': { prop: 'Resolution', val: '1080p' }, '720p': { prop: 'Resolution', val: '720p' },
@@ -3966,7 +4006,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     AiPrompt: (row.querySelector('.txtAiPrompt') || {}).value || '',
                     AiIncludeRecentlyWatched: !!(row.querySelector('.chkAiRecentlyWatched') || {}).checked,
                     AiRecentlyWatchedUserId: (row.querySelector('.selAiWatchedUser') || {}).value || '',
-                    AiRecentlyWatchedCount: parseInt(((row.querySelector('.txtAiWatchedCount') || {}).value || '20'), 10) || 20,
+                    // Compared as typed (so 0 or an empty box is a change); saved as 20 when empty, as the sync uses.
+                    AiRecentlyWatchedCount: forComparison
+                        ? ((row.querySelector('.txtAiWatchedCount') || {}).value || '')
+                        : (parseInt(((row.querySelector('.txtAiWatchedCount') || {}).value || '20'), 10) || 20),
                     AiRefreshIntervalDays: parseInt(((row.querySelector('.txtAiRefreshInterval') || {}).value || '0'), 10) || 0
                 }));
             } else {
@@ -3987,18 +4030,24 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var cwbEnabled      = view.querySelector('#chkCwbEnabled');
         var cwbMode         = view.querySelector('#selCwbMode');
         var cwbAllUsers     = view.querySelector('#chkCwbAllUsers');
+        // Compare what is in the field, so clearing one counts as a change; an empty field is
+        // saved as the default the AI call needs.
+        function fieldOr(id, def) {
+            var v = (view.querySelector(id) || {}).value || '';
+            return forComparison ? v : (v.trim() ? v : def);
+        }
 
         return {
             TraktClientId: view.querySelector('#txtTraktClientId').value,
             MdblistApiKey: view.querySelector('#txtMdblistApiKey').value,
             TmdbApiKey: view.querySelector('#txtTmdbApiKey').value,
             OpenAiApiKey: (view.querySelector('#txtOpenAiApiKey') || {}).value || '',
-            OpenAiModel: (view.querySelector('#txtOpenAiModel') || {}).value || 'gpt-4o-mini',
+            OpenAiModel: fieldOr('#txtOpenAiModel', 'gpt-4o-mini'),
             GeminiApiKey: (view.querySelector('#txtGeminiApiKey') || {}).value || '',
-            GeminiModel: (view.querySelector('#txtGeminiModel') || {}).value || 'gemini-2.5-flash-lite',
+            GeminiModel: fieldOr('#txtGeminiModel', 'gemini-2.5-flash-lite'),
             ClaudeApiKey: (view.querySelector('#txtClaudeApiKey') || {}).value || '',
-            ClaudeModel: (view.querySelector('#txtClaudeModel') || {}).value || 'claude-haiku-4-5-20251001',
-            OllamaBaseUrl: (view.querySelector('#txtOllamaBaseUrl') || {}).value || 'http://localhost:11434',
+            ClaudeModel: fieldOr('#txtClaudeModel', 'claude-haiku-4-5-20251001'),
+            OllamaBaseUrl: fieldOr('#txtOllamaBaseUrl', 'http://localhost:11434'),
             OllamaModel: (view.querySelector('#txtOllamaModel') || {}).value || '',
             AiSystemPrompt: (view.querySelector('#txtAiSystemPrompt') || {}).value || '',
             ExtendedConsoleOutput: view.querySelector('#chkExtendedConsoleOutput').checked,
@@ -7862,8 +7911,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             if (isFirstVisit) view.dataset.hscInit = '1';
 
             originalConfigState = null;
+            view._hscLoading = true;
 
-            var changeHandler = function() {
+            var changeHandler = function(e) {
+                if (view._hscLoading && e && e.target) rememberLoadEdit(view, e.target);
                 setTimeout(checkFormState, 0);
             };
             if (_formAc) _formAc.abort();
@@ -8133,9 +8184,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             startStatusPolling(view);
             getHseUsers().then(function(users) { _miUsers = users; });
 
+            // A failed lookup must not stop the settings from loading: carry on with an empty list.
             Promise.all([
-                window.ApiClient.getJSON(window.ApiClient.getUrl("Users/" + window.ApiClient.getCurrentUserId() + "/Items", { IncludeItemTypes: "BoxSet", Recursive: true })),
-                window.ApiClient.getJSON(window.ApiClient.getUrl("Items", { IncludeItemTypes: "Playlist", Recursive: true })),
+                window.ApiClient.getJSON(window.ApiClient.getUrl("Users/" + window.ApiClient.getCurrentUserId() + "/Items", { IncludeItemTypes: "BoxSet", Recursive: true })).catch(function () { return { Items: [] }; }),
+                window.ApiClient.getJSON(window.ApiClient.getUrl("Items", { IncludeItemTypes: "Playlist", Recursive: true })).catch(function () { return { Items: [] }; }),
                 window.ApiClient.getJSON(window.ApiClient.getUrl("Items/Filters2", { UserId: window.ApiClient.getCurrentUserId(), Recursive: true })).catch(function () { return { Tags: [] }; })
             ]).then(responses => {
                 cachedCollections = responses[0].Items || [];
@@ -8384,6 +8436,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         function loadConfig() {
             _hseLibraryCachePromise = null; // återställ cache så nya bibliotek (t.ex. ny top-list) hämtas
             preFetchLibraryData();          // starta hämtning direkt vid sidladdning
+            view._hscLoading = true;
             return window.ApiClient.getPluginConfiguration(pluginId).then(config => {
                 lastHscConfig = {
                     HomeSyncEnabled:       config.HomeSyncEnabled       || false,
@@ -8445,10 +8498,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     } catch (err) {
                         originalConfigState = null;
                     }
+                    view._hscLoading = false;
+                    replayLoadEdits(view);
                     checkFormState();
                     updateDryRunWarning();
                 });
-            });
+            }).catch(function () { view._hscLoading = false; });
         }
 
         function hasDirtyState() {
