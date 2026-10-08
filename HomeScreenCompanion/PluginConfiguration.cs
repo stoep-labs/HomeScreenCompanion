@@ -62,6 +62,8 @@ namespace HomeScreenCompanion
         public string SourceType { get; set; } = "External";
         public string LocalSourceId { get; set; } = "";
         public List<string> LocalSources { get; set; } = new List<string>();
+        // "Manual" source: Emby item ids (movies and series), in list order.
+        public List<string> ManualItemIds { get; set; } = new List<string>();
         public List<string> MediaInfoConditions { get; set; } = new List<string>();
         public List<MediaInfoFilter> MediaInfoFilters { get; set; } = new List<MediaInfoFilter>();
 
@@ -79,6 +81,14 @@ namespace HomeScreenCompanion
 
         public bool OverrideWhenActive { get; set; } = false;
         public bool EnableTag { get; set; } = true;
+        // Generated art on the tag's own page (the Emby Tag item), same styles as the collection
+        // art. "" = none: Emby's own collage poster and no background (or TagBackgroundPath).
+        public string TagPosterStyle { get; set; } = "";
+        public string TagBackgroundStyle { get; set; } = "";
+        // Text drawn on the tag art; "" = the tag name. {name} and {week} as for CollectionArtTitle.
+        public string TagArtTitle { get; set; } = "";
+        // Uploaded background (used when TagBackgroundStyle is "", i.e. Custom).
+        public string TagBackgroundPath { get; set; } = "";
         public bool EnableCollection { get; set; } = false;
         public string CollectionName { get; set; } = "";
         public string CollectionDescription { get; set; } = "";
@@ -183,5 +193,9 @@ namespace HomeScreenCompanion
         public DateTime? Start { get; set; }
         public DateTime? End { get; set; }
         public string DayOfWeek { get; set; } = "Friday";
+        // "TimeOfDay" only: active from FromTime to ToTime ("HH:mm", server time) on the days in
+        // DayOfWeek (empty = every day). A window past midnight (22:00 → 02:00) is allowed.
+        public string FromTime { get; set; } = "";
+        public string ToTime { get; set; } = "";
     }
 }

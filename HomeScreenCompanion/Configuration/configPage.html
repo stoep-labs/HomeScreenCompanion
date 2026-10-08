@@ -1272,7 +1272,7 @@
                                 <input is="emby-checkbox" type="checkbox" id="chkHideTopListLibraries" />
                                 <span>Hide top-list libraries</span>
                             </label>
-                            <div class="fieldDescription">Keeps the libraries of movie top-lists out of every user's "My Media" tiles and "Latest" rows; only the top-list row shows them. Emby's sidebar still lists every library a user can open. Show top-lists have no library.</div>
+                            <div class="fieldDescription">Keeps the libraries of movie top-lists out of every user's sidebar, "My Media" tiles and "Latest" rows; only the top-list row shows them. Show top-lists have no library.</div>
                         </div>
                     </div>
                 </div>
@@ -1336,7 +1336,7 @@
             </div>
 
             <div class="floating-actions">
-                <button is="emby-button" type="submit" form="homeScreenCompanionForm" class="raised button-submit fab-btn btn-save">
+                <button is="emby-button" type="submit" class="raised button-submit fab-btn btn-save">
                     <i class="md-icon" style="margin-right:5px;">save</i><span>Save Settings</span>
                 </button>
                 <div class="run-speed-dial" id="runSpeedDial">
@@ -1567,8 +1567,12 @@
                         Use an existing <strong>playlist</strong> or <strong>collection</strong> already in Emby as the source. Every item in that list gets the configured tag. You can also use this to show a collection as a home screen row — see <em>Home Section — Collections mode</em> below.
                     </div>
                     <div class="src-card">
-                        <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">tune</i> MediaInfo</div>
-                        Build a list based on the properties of your own files — for example "all 4K HDR movies" or "Action films I haven't watched yet". Filter by video quality, audio format, genre, actors, ratings, and more.
+                        <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">format_list_numbered</i> Manual List</div>
+                        Pick <strong>movies and shows</strong> by hand, right inside the plugin. Search to add a title, use <strong>▲ ▼</strong> to set the order and <strong>✕</strong> to remove it. Top-lists made from the tag follow your order. An Emby collection still shows Emby's own sort order. Titles deleted from the library are skipped.
+                    </div>
+                    <div class="src-card">
+                        <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">tune</i> MediaInfo (Smart Playlist)</div>
+                        Build a list based on the properties of your own files — for example "all 4K HDR movies" or "Action films I haven't watched yet". Filter by video quality, audio format, genre, actors, ratings, what is popular on your server, and more.
                     </div>
                     <div class="src-card">
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">auto_awesome</i> AI created lists</div>
@@ -1585,26 +1589,38 @@
                     <i class="md-icon help-feat-icon">toggle_on</i>
                     <div><strong>Active toggle</strong> — The checkbox at the top of each source card turns it on or off without deleting it. When turned off, the source is skipped during sync and its tag and collection are automatically removed from all items. Handy for temporarily pausing a source (e.g. a seasonal list).</div>
                 </div>
-                <div class="help-feature-row" style="margin-bottom:12px;">
+                <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">badge</i>
                     <div><strong>Display Name</strong> — A label for your own reference, shown in the source header. This is separate from the tag name — you can call it anything you like.</div>
+                </div>
+                <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">content_copy</i>
+                    <div><strong>Duplicate</strong> — Makes a copy of the source. The copy gets its own name, tag, collection and playlist names, ending in <em>(copy)</em>, so it never changes the original's items.</div>
+                </div>
+                <div class="help-feature-row" style="margin-bottom:12px;">
+                    <i class="md-icon help-feat-icon">play_arrow</i>
+                    <div><strong>Run Group</strong> — Syncs just this source. If you have unsaved changes, it first asks <em>You have unsaved changes. Save and run?</em> — choose OK to save them and run the group, or Cancel to do neither. If you renamed the tag, the run also removes the old tag from your items.</div>
                 </div>
                 <div class="src-cards" style="grid-template-columns: repeat(3, 1fr);">
                     <div class="src-card">
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">input</i> Source tab</div>
-                        Choose the source type and add URLs or local sources. Set the <strong>Max items</strong> limit to cap how many items are fetched (0 = no limit).
+                        Choose the source type and add URLs, local sources, or hand-picked titles. Set the <strong>Max items</strong> limit to cap how many items are fetched (0 = no limit).
                     </div>
                     <div class="src-card">
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">label</i> Tag tab</div>
-                        Enable or disable tagging and set the <strong>Tag Name</strong> — the invisible label applied to each matched item in Emby.
+                        Enable or disable tagging and set the <strong>Tag Name</strong> — the invisible label applied to each matched item in Emby. If you rename the tag, the old tag is removed from your items the next time the group runs. Optionally give the tag's own page a poster and background drawn in a style you pick, the same styles as a collection.
                     </div>
                     <div class="src-card">
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">collections_bookmark</i> Collection tab</div>
-                        Optionally group the matched items into an Emby collection with a custom name, description, and poster image. Enable <em>Only Collection</em> to skip tagging and only maintain the collection.
+                        Optionally group the matched items into an Emby collection with a custom name, description, poster and background. Upload your own art or let the plugin draw it in a style you pick. Enable <em>Only Collection</em> to skip tagging and only maintain the collection.
+                    </div>
+                    <div class="src-card">
+                        <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">queue_music</i> Playlist tab</div>
+                        Enable <em>Create Playlist</em> to keep an Emby playlist of the matched items, in the source's order, for each user you tick. Set a <strong>Playlist Name</strong> or leave it empty to use the Display Name. Each sync brings the playlists up to date; unticking a user, turning the option off or making the group inactive deletes those playlists on the next sync.
                     </div>
                     <div class="src-card">
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">calendar_month</i> Schedule tab</div>
-                        Limit when this source is active — for example only between certain dates or on specific recurring days. Add a <em>Priority Override</em> to make this source take over from other sources that share the same tag when it is active.
+                        Limit when this source is active — for example only between certain dates, on specific recurring days, or at a time of day. Add a <em>Priority Override</em> to make this source take over from other sources that share the same tag when it is active.
                     </div>
                     <div class="src-card">
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">block</i> Blacklist tab</div>
@@ -1612,7 +1628,7 @@
                     </div>
                     <div class="src-card">
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">tv</i> Home Screen tab</div>
-                        Make this source automatically show up as a row on the home screen for specific users, updated every time sync runs. Choose <em>Media Type: Collections</em> to show a collection row instead of individual items.
+                        Make this source automatically show up as a row on the home screen for specific users, updated every time sync runs. In the user list, <em>Select all</em> and <em>Clear</em> tick or untick everyone at once. Choose <em>Media Type: Collections</em> to show a collection row instead of individual items.
                     </div>
                 </div>
 
@@ -1630,7 +1646,7 @@
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">collections_bookmark</i>
-                    <div><strong>Collection</strong> — In addition to (or instead of) tagging, the plugin can maintain an Emby collection. Items are added and removed automatically on every sync, just like tags.</div>
+                    <div><strong>Collection</strong> — In addition to (or instead of) tagging, the plugin can maintain an Emby collection. Items are added and removed automatically on every sync, just like tags. When Emby stores several versions of a film (e.g. 4K and 1080p), the collection keeps just one of them.</div>
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">check_box_outline_blank</i>
@@ -1638,7 +1654,23 @@
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">image</i>
-                    <div><strong>Collection Poster</strong> — Upload a local image or paste an image URL to set a custom poster for the collection. The poster is stored on the server and re-applied on every sync so it is never overwritten by Emby.</div>
+                    <div><strong>Collection Poster</strong> — Pick a style. <em>Custom</em> lets you upload a local image or paste an image URL; it is stored on the server and re-applied on every sync so it is never overwritten by Emby. The other styles — <em>Collage</em>, <em>Grid</em>, <em>Fan</em>, <em>Wall</em>, <em>Hero strip</em>, <em>Spotlight split</em> and <em>Ranked (Top 10)</em> — draw the poster from the posters of the first titles in the collection, each film used once. It is redrawn when the titles change.</div>
+                </div>
+                <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">wallpaper</i>
+                    <div><strong>Collection Background</strong> — The same styles for the wide background image. With <em>Custom</em>, upload an image or paste a URL, or leave it empty to keep Emby's own background.</div>
+                </div>
+                <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">style</i>
+                    <div><strong>Tag Poster &amp; Tag Background</strong> — When you open a tag in Emby (for example by clicking it on a movie), it gets its own page. In the <em>Tag</em> tab you can give that page the same art as a collection: pick a style for the poster and for the background, and the plugin draws them from the first titles with the tag, each film used once, on every sync. <em>Emby's own</em> (the default) keeps Emby's collage poster; a background <em>Custom</em> lets you upload an image or paste a URL, or leave it empty for no background. <em>Title on the art</em> and <em>Preview art</em> work as for a collection, with <code>{name}</code> as the tag name. Switch a style back to <em>Emby's own</em> or empty and the plugin removes its art from the tag on the next sync.</div>
+                </div>
+                <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">title</i>
+                    <div><strong>Title on the art</strong> — The text drawn on the poster and background. Leave it empty to use the collection name. <code>{name}</code> is the collection name and <code>{week}</code> this week's number (ISO week), e.g. <em>{name} {week}</em> → "Top Movies for the Week 41". Click <em>Preview art</em> to see the poster and background with your current settings; nothing is saved.</div>
+                </div>
+                <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">vertical_align_top</i>
+                    <div><strong>Show at the top of Collections</strong> — Sorts this collection before the others in Emby's Collections view.</div>
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">tv</i>
@@ -1671,9 +1703,13 @@
                     <i class="md-icon help-feat-icon">repeat</i>
                     <div><strong>Recurring</strong> — Active on specific days every week, month, or year. You can stack multiple intervals on the same source — for example "every Friday" and "every Saturday".</div>
                 </div>
+                <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">schedule</i>
+                    <div><strong>Time of Day</strong> — Active between two times (server time), on the chosen days or every day. A window may run past midnight, e.g. 22:00 to 02:00; it belongs to the day it starts on, so Friday 22:00 to 02:00 is still active at 01:00 on Saturday. The <em>Schedule Switch</em> task checks every 15 minutes and runs the sync when a schedule starts or ends.</div>
+                </div>
                 <div class="help-feature-row" style="margin-bottom:0;">
                     <i class="md-icon help-feat-icon">workspace_premium</i>
-                    <div><strong>Priority Override</strong> — When this source is in-schedule, it takes over from any other sources that share the same tag. The other sources are temporarily suppressed. Example: a "Spotlight" source runs all year, but a "Spotlight Halloween" source with Priority Override takes over during October — the Halloween list replaces the regular one automatically.</div>
+                    <div><strong>Priority Override</strong> — When this source is in-schedule, it takes over from any other sources that share the same tag. The other sources are temporarily suppressed. Example: a "Spotlight" source runs all year, but a "Spotlight Halloween" source with Priority Override takes over during October — the Halloween list replaces the regular one automatically. When two priority sources for the same tag are active at once, the one higher in the list wins (if it finds no items, the next one is used).</div>
                 </div>
 
                 <!-- 6. MEDIAINFO FILTERS -->
@@ -1719,8 +1755,16 @@
                     </div>
                     <div class="mi-help-col">
                         <div class="mi-help-category">Activity</div>
-                        Watched / Unwatched, Last Played (days ago), Play Count, Watched By Count (how many users have finished it) — can be scoped to <em>any user</em>, <em>all users</em>, or a specific user
+                        Watched / Unwatched, Last Played (days ago), Play Count, Watched By Count (how many users have finished it) — can be scoped to <em>any user</em>, <em>all users</em>, or a specific user. <em>Popular on this server (viewers)</em> — how many different users watched it in the last 7, 14, 30, 60, 90 or 180 days, the last year, or all time (default ≥ 3)
                     </div>
+                </div>
+                <div class="help-feature-row" style="margin-top:12px;">
+                    <i class="md-icon help-feat-icon">trending_up</i>
+                    <div><strong>Popular on this server</strong> — Anyone who watched an episode counts as a viewer of the show. A source with this rule lists its matches most viewed first, so <strong>Max items</strong> keeps the most popular ones, and a top-list made from the tag follows that order.</div>
+                </div>
+                <div class="help-feature-row" style="margin-bottom:0;">
+                    <i class="md-icon help-feat-icon">visibility</i>
+                    <div><strong>Preview</strong> — Click <em>Preview</em> next to <em>Max items</em> to see what the source would tag right now, using your current (unsaved) rules. It shows up to 250 titles plus the total. Nothing is written.</div>
                 </div>
 
                 <!-- 7. HOME SCREEN -->
@@ -1752,15 +1796,27 @@
                     <span>Top-List</span>
                 </div>
                 <div class="step-text" style="margin-bottom:10px; font-size:0.92em;">
-                    A <strong>top-list</strong> is a ranked movie row on the home screen — like "My Top 10 Movies" — where each poster shows a numbered badge (1, 2, 3…) indicating its position. The plugin creates a separate Emby library containing shortcuts to the ranked movies (the actual files are not copied or moved), and shows that library as a dedicated home screen section. Found in the <strong>Top-Lists</strong> tab.
+                    A <strong>top-list</strong> is a ranked movie or show row on the home screen — like "My Top 10 Movies" — where each poster shows a numbered badge (1, 2, 3…) indicating its position. For movies, the plugin creates a separate Emby library containing shortcuts to the ranked movies (the actual files are not copied or moved), and shows that library as a dedicated home screen section. Show top-lists use tags instead and have no library. Found in the <strong>Top-Lists</strong> tab.
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">create_new_folder</i>
-                    <div><strong>Create top-list from a tag</strong> — Pick a tag managed by the plugin (movies only) and click <em>Create top-list</em>. The plugin builds the ranked library and sets up a home screen section for the users you choose. The order follows the original list order from the source (e.g. the order on a Trakt list). The list updates automatically whenever the plugin syncs that tag.</div>
+                    <div><strong>Create top-list from a tag</strong> — Pick a tag managed by the plugin and click <em>Create top-list</em>. The plugin builds the ranked list and sets up a home screen section for the users you choose. The order follows the original list order from the source (e.g. the order on a Trakt list). The list updates automatically whenever the plugin syncs that tag. A tag on shows makes a show top-list. A tag on both movies and shows gets a <em>Movies | Shows</em> switch; the show list is saved as "<em>tag</em> (Shows)".</div>
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">edit_note</i>
-                    <div><strong>Manual top-list</strong> — Click <em>Create manual top-list</em> to hand-pick and order movies yourself, without needing an existing tag. Search your library, drag items into the order you want, and save.</div>
+                    <div><strong>Manual top-list</strong> — Click <em>Create manual top-list</em> to hand-pick and order movies yourself, without needing an existing tag. Search your library, put the items in the order you want with the ▲ ▼ buttons, and save. Use the <em>Movies | Shows</em> switch to rank shows instead.</div>
+                </div>
+                <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">tv</i>
+                    <div><strong>Show top-lists</strong> — Hold up to 10 shows. Each user can have only one show top-list. Clicking a show in the row opens a page with Play, the synopsis and the real series.</div>
+                </div>
+                <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">palette</i>
+                    <div><strong>Badge style &amp; Max items</strong> — Pick how the rank number looks (colour badges, <em>Top 10 tile</em>, or <em>No number</em>) for movie and show lists alike. <strong>Max items</strong> limits how many titles the list shows (0 = all for movies, up to 10 for shows).</div>
+                </div>
+                <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">visibility_off</i>
+                    <div><strong>Hide top-list libraries</strong> — On by default, in the <strong>Settings</strong> tab. Keeps the libraries of movie top-lists out of every user's sidebar, "My Media" tiles and "Latest" rows; only the top-list row shows them.</div>
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">block</i>
@@ -1815,6 +1871,10 @@
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">shield</i>
                     <div><strong>Preserve Tags on Empty Result</strong> — If a source returns zero items — for example because the website was temporarily unreachable — the plugin will keep the existing tags and collection members as they are instead of removing everything. This prevents an accidental wipe-out caused by a network hiccup. Enable in the Settings tab.</div>
+                </div>
+                <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">auto_delete</i>
+                    <div><strong>Cleanup tab</strong> — Lists every tag and collection in Emby with its item count; the ones the plugin manages carry a <em>Managed by HSC Plugin</em> badge. Use <em>Remove</em> to clear out ones you no longer need; nothing changes until you confirm the summary with <em>Confirm &amp; Save</em>. Removing a <em>tag</em> takes that tag off every item that has it (films, shows, episodes, collections and so on) — the items themselves stay. Removing a <em>collection</em> deletes the collection itself from Emby, with its poster and background; the films and shows that were in it stay in your library. If an active group still makes that tag or collection, the next sync puts it back — the summary offers to deactivate that group. Tick <em>Only managed by HSC</em> to show just the plugin's own; this choice is remembered in your browser.</div>
                 </div>
                 <div class="help-feature-row" style="margin-bottom:0;">
                     <i class="md-icon help-feat-icon">save</i>
@@ -1909,7 +1969,8 @@
                 <div class="help-feature-row"><i class="md-icon help-feat-icon">group</i><div><span class="mi-help-prop">Any User</span> — matches if <b>at least one</b> user in the library satisfies the condition. Example: <i>Watched = Any User</i> matches items that <em>someone</em> has seen.</div></div>
                 <div class="help-feature-row"><i class="md-icon help-feat-icon">groups</i><div><span class="mi-help-prop">All Users</span> — matches only if <b>every</b> user in the library satisfies the condition. Example: <i>Watched = All Users</i> matches items that <em>everybody</em> has seen. <i>NOT Watched = All Users</i> matches items that nobody has seen.</div></div>
                 <div class="help-feature-row"><i class="md-icon help-feat-icon">person</i><div><span class="mi-help-prop">Specific user</span> — scopes the condition to one named user only. Useful when different household members have different watch habits.</div></div>
-                <div class="help-feature-row" style="margin-bottom:0;"><i class="md-icon help-feat-icon">check_circle</i><div><span class="mi-help-prop">WatchedByCount</span> — number of distinct users who have finished the item. Supports numeric operators (e.g. <i>&gt;= 2</i> = at least two users have watched it). Useful for finding content that is popular or completely unseen across the household.</div></div>
+                <div class="help-feature-row"><i class="md-icon help-feat-icon">check_circle</i><div><span class="mi-help-prop">WatchedByCount</span> — number of distinct users who have finished the item. Supports numeric operators (e.g. <i>&gt;= 2</i> = at least two users have watched it). Useful for finding content that is popular or completely unseen across the household.</div></div>
+                <div class="help-feature-row" style="margin-bottom:0;"><i class="md-icon help-feat-icon">trending_up</i><div><span class="mi-help-prop">Popular on this server (viewers)</span> — number of different users who watched it in a time window: the last 7, 14, 30, 60, 90 or 180 days, the last year, or all time. Pick an operator and a viewer count (default <i>&gt;= 3</i>). Anyone who watched an episode counts for the show. Matches are listed most viewed first, so <b>Max items</b> keeps the most popular. Emby only remembers each user's last play, and titles marked watched without a date only count for <i>All time</i>.</div></div>
 
                 <div class="help-section"><i class="md-icon help-section-icon">lightbulb</i>Examples</div>
                 <div class="step-text" style="font-size:0.88em; margin-bottom:12px; opacity:0.75;"><b>Tip:</b> for text properties (Genre, Actor, Director, Studio, etc.) you can enter multiple values on separate lines in a single rule — any matching line satisfies the rule (OR logic).</div>

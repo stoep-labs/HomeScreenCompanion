@@ -32,6 +32,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         btn.style.display = ta.value.trim() !== DEFAULT_AI_SYSTEM_PROMPT.trim() ? '' : 'none';
     }
 
+    // The copy of this page the user is on. After moving around inside Emby the DOM can hold an
+    // old, hidden copy of the page as well (first in document order), so a plain
+    // document.querySelector('#HomeScreenCompanionConfigPage') would find the old one.
+    var _activeView = null;
+    function activeView() {
+        return (_activeView && _activeView.isConnected) ? _activeView : document.querySelector('#HomeScreenCompanionConfigPage');
+    }
+
     function applyPluginTheme() {
         var candidates = ['.skinHeader', '.mainDrawer', '.contentScrollSlider', 'body'];
         var bg = null;
@@ -653,6 +661,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         <option value="SpecificDate" ${type === 'SpecificDate' ? 'selected' : ''}>Specific Date</option>
                         <option value="EveryYear" ${type === 'EveryYear' ? 'selected' : ''}>Recurring</option>
                         <option value="Weekly" ${type === 'Weekly' ? 'selected' : ''}>Week Days</option>
+                        <option value="TimeOfDay" ${type === 'TimeOfDay' ? 'selected' : ''}>Time of Day</option>
                     </select>
                 </div>
                 
@@ -702,6 +711,22 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     </div>
                 </div>
 
+                <div class="inputs-time" style="display: ${type === 'TimeOfDay' ? 'flex' : 'none'}; flex-grow: 1; align-items: flex-start; gap: 8px; flex-wrap: wrap;">
+                    <div style="width:110px;">
+                        <input is="emby-input" type="time" class="txtFromTime" label="From" value="${interval.FromTime || '20:00'}" />
+                    </div>
+                    <span style="opacity:0.5; padding-top:32px;">to</span>
+                    <div style="width:110px;">
+                        <input is="emby-input" type="time" class="txtToTime" label="To" value="${interval.ToTime || '23:00'}" />
+                    </div>
+                    <div style="width:100%;">
+                        <label class="selectLabel">On Days <span style="opacity:0.6;">(none = every day)</span></label>
+                        <div class="week-btn-container" style="display:flex; gap:5px; margin-top:2px;">
+                            ${getWeekButtons(type === 'TimeOfDay' ? dayOfWeek : '')}
+                        </div>
+                    </div>
+                </div>
+
                 <button type="button" is="emby-button" class="btnRemoveDate" style="background:transparent; color:#cc3333; min-width:40px; margin-top: 25px;" title="Remove Rule"><i class="md-icon">delete</i></button>
             </div>`;
     }
@@ -736,13 +761,21 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
     // Preview art: draws the collection poster/background from the source's current (unsaved)
     // settings on the server and shows them in the preview dialog. Nothing is saved.
-    function showCollectionArtPreview(row, btn) {
-        var view = document.querySelector('#HomeScreenCompanionConfigPage');
+    // forTag: the tag art instead (same endpoint; the Tag* settings stand in for the collection's
+    // and the art is named after the tag).
+    function showCollectionArtPreview(row, btn, forTag) {
+        var view = row.closest('#HomeScreenCompanionConfigPage') || activeView();
         var source = sourceConfigOfRow(view, row);
         if (!source) return;
-        var overlay = document.getElementById('miPreviewModalOverlay');
+        if (forTag) source = Object.assign({}, source, {
+            CollectionName: source.Tag, CollectionPosterStyle: source.TagPosterStyle, CollectionBackgroundStyle: source.TagBackgroundStyle,
+            CollectionArtTitle: source.TagArtTitle, CollectionBackgroundPath: source.TagBackgroundPath
+        });
+        var overlay = view.querySelector('#miPreviewModalOverlay');
         var body = overlay.querySelector('.mi-preview-body');
-        overlay.querySelector('.mi-preview-subtitle').textContent = (source.CollectionName || source.Name || source.Tag || 'Collection') + ' — collection art';
+        overlay.querySelector('.mi-preview-subtitle').textContent = forTag
+            ? (source.Tag || source.Name || 'Tag') + ' — tag art'
+            : (source.CollectionName || source.Name || source.Tag || 'Collection') + ' — collection art';
         body.innerHTML = '<div style="padding:20px 0; text-align:center; opacity:0.8;">Drawing the art…</div>';
         overlay.classList.add('modal-visible');
         btn.disabled = true;
@@ -766,13 +799,13 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     // Preview: runs this source's current (unsaved) filters on the server without tagging
     // anything, and lists what it would tag.
     function showSourcePreview(row, btn) {
-        var view = document.querySelector('#HomeScreenCompanionConfigPage');
+        var view = row.closest('#HomeScreenCompanionConfigPage') || activeView();
         var label = row.querySelector('.txtEntryLabel').value;
         var tag = row.querySelector('.txtTagName').value || label;
         var source = sourceConfigOfRow(view, row);
         if (!source) return;
 
-        var overlay = document.getElementById('miPreviewModalOverlay');
+        var overlay = view.querySelector('#miPreviewModalOverlay');
         var body = overlay.querySelector('.mi-preview-body');
         overlay.querySelector('.mi-preview-subtitle').textContent = (label || tag || 'This source') + ' — what it would tag right now';
         body.innerHTML = '<div style="padding:20px 0; text-align:center; opacity:0.8;">Checking your library…</div>';
@@ -826,35 +859,49 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
     // Collection art settings of a source card (generated poster / background, top of Collections).
     function readCollectionArt(row) {
-        var poster = row.querySelector('.coll-style-picker[data-kind="poster"] input:checked');
-        var bg = row.querySelector('.coll-style-picker[data-kind="background"] input:checked');
+        var poster = row.querySelector('.collection-tab .coll-style-picker[data-kind="poster"] input:checked');
+        var bg = row.querySelector('.collection-tab .coll-style-picker[data-kind="background"] input:checked');
         return {
             CollectionPosterStyle: poster ? poster.value : '',
             CollectionBackgroundStyle: bg ? bg.value : '',
-            CollectionBackgroundPath: (row.querySelector('.hiddenBgPath') || {}).value || '',
+            CollectionBackgroundPath: (row.querySelector('.collection-tab .hiddenBgPath') || {}).value || '',
             CollectionSortToTop: !!(row.querySelector('.chkCollSortToTop') || {}).checked,
             CollectionArtTitle: ((row.querySelector('.txtCollArtTitle') || {}).value || '').trim()
         };
     }
 
-    // Collection art style picker (cards like the top-list badge picker). '' = Custom (upload).
+    // Tag art settings of a source card (generated poster / background on the tag's own page).
+    function readTagArt(row) {
+        var poster = row.querySelector('.tagname-tab .coll-style-picker[data-kind="poster"] input:checked');
+        var bg = row.querySelector('.tagname-tab .coll-style-picker[data-kind="background"] input:checked');
+        return {
+            TagPosterStyle: poster ? poster.value : '',
+            TagBackgroundStyle: bg ? bg.value : '',
+            TagBackgroundPath: (row.querySelector('.tagname-tab .hiddenBgPath') || {}).value || '',
+            TagArtTitle: ((row.querySelector('.txtTagArtTitle') || {}).value || '').trim()
+        };
+    }
+
+    // Collection art style picker (cards like the top-list badge picker). '' = Custom (upload);
+    // for the tag poster (scope 'tag') '' = Emby's own collage.
     var COLLECTION_ART_STYLES = [['', 'Custom'], ['collage', 'Collage'], ['grid', 'Grid'], ['fan', 'Fan'], ['wall', 'Wall'],
                                  ['hero_strip', 'Hero strip'], ['spotlight', 'Spotlight split'], ['ranked', 'Ranked (Top 10)']];
     var _collPickerSeq = 0;
-    function buildCollStylePickerHtml(kind, selected) {
+    function buildCollStylePickerHtml(kind, selected, scope) {
         var sel = selected || '';
+        var embyOwn = scope === 'tag' && kind === 'poster';
         var name = 'collStyle_' + kind + '_' + (++_collPickerSeq);
         var cardBase = 'cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 12px;border-radius:6px;border:2px solid transparent;transition:border-color 0.15s;';
         var thumb = kind === 'poster' ? 'width:60px;height:90px;' : 'width:120px;height:68px;';
-        return '<div class="coll-style-picker" data-kind="' + kind + '" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">' +
+        return '<div class="coll-style-picker" data-kind="' + kind + '" data-scope="' + (scope || 'collection') + '" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">' +
             COLLECTION_ART_STYLES.map(function (o) {
                 var active = o[0] === sel;
                 return '<label class="coll-style-opt" style="' + cardBase + 'border-color:' + (active ? '#52B54B' : 'var(--line-color,rgba(255,255,255,0.12))') + ';">' +
                     '<input type="radio" name="' + name + '" value="' + o[0] + '" style="position:absolute;opacity:0;pointer-events:none;"' + (active ? ' checked' : '') + '>' +
                     (o[0]
                         ? '<img class="coll-style-thumb" data-kind="' + kind + '" data-style="' + o[0] + '" alt="" style="' + thumb + 'border-radius:4px;object-fit:cover;background:rgba(128,128,128,0.15);display:block;" />'
-                        : '<div style="' + thumb + 'border-radius:4px;border:1px dashed rgba(128,128,128,0.5);display:flex;align-items:center;justify-content:center;"><i class="md-icon" style="font-size:1.6em;opacity:0.7;">upload</i></div>') +
-                    '<span style="font-size:0.78em;opacity:0.8;white-space:nowrap;">' + o[1] + '</span>' +
+                        : '<div style="' + thumb + 'border-radius:4px;border:1px dashed rgba(128,128,128,0.5);display:flex;align-items:center;justify-content:center;"><i class="md-icon" style="font-size:1.6em;opacity:0.7;">' + (embyOwn ? 'block' : 'upload') + '</i></div>') +
+                    '<span style="font-size:0.78em;opacity:0.8;white-space:nowrap;">' + (o[0] || !embyOwn ? o[1] : "Emby's own") + '</span>' +
                     '</label>';
             }).join('') +
             '</div>';
@@ -895,23 +942,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var collPoster = row.querySelector('.hiddenPosterPath') ? row.querySelector('.hiddenPosterPath').value : '';
         var st = row.querySelector('.selSourceType').value;
 
-        var intervals = [];
-        row.querySelectorAll('.date-row').forEach(function(dr) {
-            var type = dr.querySelector('.selDateType').value;
-            var s = null, e = null, days = '';
-            if (type === 'SpecificDate') {
-                s = dr.querySelector('.txtFullStartDate').value;
-                e = dr.querySelector('.txtFullEndDate').value;
-            } else if (type === 'EveryYear') {
-                var sM = dr.querySelector('.selStartMonth').value, sD = dr.querySelector('.selStartDay').value;
-                var eM = dr.querySelector('.selEndMonth').value, eD = dr.querySelector('.selEndDay').value;
-                s = '2000-' + sM.padStart(2, '0') + '-' + sD.padStart(2, '0');
-                e = '2000-' + eM.padStart(2, '0') + '-' + eD.padStart(2, '0');
-            } else if (type === 'Weekly') {
-                days = Array.from(dr.querySelectorAll('.day-toggle.active')).map(function(b) { return b.dataset.day; }).join(',');
-            }
-            intervals.push({ Type: type, Start: s || null, End: e || null, DayOfWeek: days });
-        });
+        var intervals = readIntervalsFromRow(row);
 
         var miFilters = [];
         row.querySelectorAll('.mediainfo-filter-group').forEach(function(group, gi) {
@@ -1008,8 +1039,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             CollectionBackgroundPath: readCollectionArt(row).CollectionBackgroundPath,
             CollectionSortToTop: readCollectionArt(row).CollectionSortToTop,
             CollectionArtTitle: readCollectionArt(row).CollectionArtTitle,
+            TagPosterStyle: readTagArt(row).TagPosterStyle, TagBackgroundStyle: readTagArt(row).TagBackgroundStyle,
+            TagBackgroundPath: readTagArt(row).TagBackgroundPath, TagArtTitle: readTagArt(row).TagArtTitle,
             OverrideWhenActive: overrideWhenActive, SourceType: st,
-            Urls: urls, LocalSources: localSources, Limit: miLimit,
+            Urls: urls, LocalSources: localSources, Limit: miLimit, ManualItemIds: readManualIds(row),
             MediaInfoFilters: miFilters, MediaInfoConditions: [],
             EnableHomeSection: enableHse, HomeSectionLibraryId: hseLibraryId,
             HomeSectionUserIds: hseUserIds, HomeSectionSettings: JSON.stringify(hseSettings),
@@ -1444,7 +1477,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     }
 
     function refreshMySavedFiltersPanels() {
-        var v = document.querySelector('#HomeScreenCompanionConfigPage');
+        var v = activeView();
         if (!v) return;
         var html = getMySavedFiltersPanelHtml();
         v.querySelectorAll('.mi-saved-panel-content').forEach(function (el) {
@@ -1466,7 +1499,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         originalConfigState = JSON.stringify(state);
                     } catch (e) {}
                 }
-                var view = document.querySelector('#HomeScreenCompanionConfigPage');
+                var view = activeView();
                 if (view) checkFormState();
             });
     }
@@ -1477,6 +1510,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var dowNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
         var todayName = dowNames[now.getDay()];
         return intervals.some(function(iv) {
+            if (iv.Type === 'TimeOfDay') {
+                var fp = (iv.FromTime || '').split(':'), tp = (iv.ToTime || '').split(':');
+                if (fp.length < 2 || tp.length < 2) return false;
+                var from = +fp[0] * 60 + +fp[1], to = +tp[0] * 60 + +tp[1], t = now.getHours() * 60 + now.getMinutes();
+                var dayOk = function (d) { return !iv.DayOfWeek || iv.DayOfWeek.split(',').map(function (x) { return x.trim(); }).indexOf(dowNames[d]) >= 0; };
+                if (from < to) return dayOk(now.getDay()) && t >= from && t < to;
+                if (from === to) return dayOk(now.getDay());
+                return (t >= from && dayOk(now.getDay())) || (t < to && dayOk((now.getDay() + 6) % 7));
+            }
             if (iv.Type === 'Weekly') {
                 var days = (iv.DayOfWeek || '').split(',').map(function(d) { return d.trim(); });
                 return days.indexOf(todayName) >= 0;
@@ -1511,12 +1553,121 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var eD = (dr.querySelector('.selEndDay') || {}).value || '1';
                 s = '2000-' + sM.padStart(2, '0') + '-' + sD.padStart(2, '0');
                 e = '2000-' + eM.padStart(2, '0') + '-' + eD.padStart(2, '0');
-            } else if (type === 'Weekly') {
-                days = Array.from(dr.querySelectorAll('.day-toggle.active')).map(function(b) { return b.dataset.day; }).join(',');
+            } else if (type === 'Weekly' || type === 'TimeOfDay') {
+                var daysBox = dr.querySelector(type === 'Weekly' ? '.inputs-weekly' : '.inputs-time');
+                days = Array.from(daysBox.querySelectorAll('.day-toggle.active')).map(function(b) { return b.dataset.day; }).join(',');
             }
-            intervals.push({ Type: type, Start: s, End: e, DayOfWeek: days });
+            var iv = { Type: type, Start: s, End: e, DayOfWeek: days };
+            if (type === 'TimeOfDay') {
+                iv.FromTime = (dr.querySelector('.txtFromTime') || {}).value || '';
+                iv.ToTime = (dr.querySelector('.txtToTime') || {}).value || '';
+            }
+            intervals.push(iv);
         });
         return intervals;
+    }
+
+    // ── Manual List source: search the library, add, reorder and remove movies and shows ──
+    function readManualIds(row) {
+        var box = row.querySelector('.source-manual-container');
+        try { return JSON.parse(decodeURIComponent((box && box.dataset.manualIds) || '%5B%5D')); } catch (ex) { return []; }
+    }
+
+    function initManualEditor(row) {
+        var box = row.querySelector('.source-manual-container');
+        if (!box) return;
+        var input = box.querySelector('.txtManualSearch');
+        var results = box.querySelector('.manualSearchResults');
+        var listEl = box.querySelector('.manualItemList');
+        var items = readManualIds(row).map(function (id) { return { Id: id, Name: '', Year: null, Type: '' }; });
+        var searchTimer = null, searchSeq = 0;
+
+        function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+        function kind(t) { return t === 'Series' ? 'Show' : (t === 'Movie' ? 'Movie' : ''); }
+        function save() {
+            box.dataset.manualIds = encodeURIComponent(JSON.stringify(items.map(function (i) { return i.Id; })));
+            if (typeof checkFormState === 'function') setTimeout(checkFormState, 0);
+        }
+        function render() {
+            if (items.length === 0) { listEl.innerHTML = '<div style="padding:8px 4px;opacity:0.5;font-size:0.9em;">Nothing added yet.</div>'; return; }
+            listEl.innerHTML = items.map(function (m, idx) {
+                var label = m.Name ? esc(m.Name) + (m.Year ? ' (' + m.Year + ')' : '') : '<span style="opacity:0.5;">Not in the library any more</span>';
+                return '<div style="display:flex;align-items:center;gap:5px;padding:5px 2px;border-bottom:1px solid rgba(128,128,128,0.15);">' +
+                    '<span style="min-width:22px;font-size:0.8em;opacity:0.55;font-weight:600;text-align:right;">' + (idx + 1) + '.</span>' +
+                    '<span style="flex:1;font-size:0.9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + label + '</span>' +
+                    (kind(m.Type) ? '<span style="font-size:0.75em;opacity:0.6;">' + kind(m.Type) + '</span>' : '') +
+                    '<button type="button" class="btnManualUp" data-idx="' + idx + '"' + (idx === 0 ? ' disabled' : '') + ' style="cursor:pointer;border:none;background:transparent;color:inherit;padding:2px 4px;opacity:0.7;" title="Move up">▲</button>' +
+                    '<button type="button" class="btnManualDown" data-idx="' + idx + '"' + (idx === items.length - 1 ? ' disabled' : '') + ' style="cursor:pointer;border:none;background:transparent;color:inherit;padding:2px 4px;opacity:0.7;" title="Move down">▼</button>' +
+                    '<button type="button" class="btnManualRemove" data-idx="' + idx + '" style="cursor:pointer;border:none;background:transparent;color:#cc3333;padding:2px 4px;" title="Remove">✕</button>' +
+                    '</div>';
+            }).join('');
+        }
+
+        render();
+        if (items.length > 0) {
+            window.ApiClient.getJSON(window.ApiClient.getUrl('Items', {
+                Ids: items.map(function (i) { return i.Id; }).join(','), Fields: 'ProductionYear'
+            })).then(function (res) {
+                var byId = {};
+                (res.Items || []).forEach(function (i) { byId[i.Id] = i; });
+                items.forEach(function (m) { var i = byId[m.Id]; if (i) { m.Name = i.Name || ''; m.Year = i.ProductionYear || null; m.Type = i.Type || ''; } });
+                render();
+            }).catch(function () {});
+        }
+
+        function search(q) {
+            var seq = ++searchSeq;
+            if (q.length < 2) { results.style.display = 'none'; results.innerHTML = ''; return; }
+            window.ApiClient.getJSON(window.ApiClient.getUrl('Items', {
+                SearchTerm: q, IncludeItemTypes: 'Movie,Series', Recursive: true, Limit: 20, Fields: 'ProductionYear'
+            })).then(function (res) {
+                if (seq !== searchSeq) return;
+                var hits = res.Items || [];
+                if (hits.length === 0) { results.innerHTML = '<div style="padding:7px 12px;opacity:0.6;font-size:0.9em;">No matches</div>'; results.style.display = 'block'; return; }
+                var have = {};
+                items.forEach(function (m) { have[m.Id] = true; });
+                results.innerHTML = hits.map(function (i) {
+                    var added = have[i.Id];
+                    return '<div class="manualSearchHit" data-id="' + esc(i.Id) + '" data-name="' + esc(i.Name) + '" data-year="' + esc(i.ProductionYear || '') + '" data-type="' + esc(i.Type) + '"' +
+                        ' style="display:flex;gap:8px;padding:7px 12px;cursor:pointer;font-size:0.9em;border-bottom:1px solid rgba(128,128,128,0.12);' + (added ? 'opacity:0.42;pointer-events:none;' : '') + '">' +
+                        '<span style="flex:1;">' + esc(i.Name) + (i.ProductionYear ? ' (' + i.ProductionYear + ')' : '') + (added ? ' <span style="font-size:0.8em;">(already added)</span>' : '') + '</span>' +
+                        '<span style="font-size:0.8em;opacity:0.6;">' + kind(i.Type) + '</span></div>';
+                }).join('');
+                results.style.display = 'block';
+            }).catch(function () {});
+        }
+
+        input.addEventListener('input', function () {
+            var q = this.value.trim();
+            clearTimeout(searchTimer);
+            searchTimer = setTimeout(function () { search(q); }, 250);
+        });
+        input.addEventListener('blur', function () { setTimeout(function () { results.style.display = 'none'; }, 150); });
+        // Enter would submit the settings form.
+        input.addEventListener('keydown', function (e) { if (e.key === 'Enter') e.preventDefault(); });
+        results.addEventListener('mousedown', function (e) {
+            var hit = e.target.closest('.manualSearchHit');
+            if (!hit) return;
+            e.preventDefault();
+            if (items.some(function (m) { return m.Id === hit.dataset.id; })) return;
+            items.push({ Id: hit.dataset.id, Name: hit.dataset.name, Year: hit.dataset.year ? parseInt(hit.dataset.year, 10) : null, Type: hit.dataset.type });
+            input.value = '';
+            results.style.display = 'none';
+            render();
+            save();
+        });
+        listEl.addEventListener('click', function (e) {
+            var btn = e.target.closest('button');
+            if (!btn) return;
+            e.preventDefault();
+            e.stopPropagation();
+            var idx = parseInt(btn.dataset.idx, 10), tmp;
+            if (btn.classList.contains('btnManualUp') && idx > 0) { tmp = items[idx - 1]; items[idx - 1] = items[idx]; items[idx] = tmp; }
+            else if (btn.classList.contains('btnManualDown') && idx < items.length - 1) { tmp = items[idx + 1]; items[idx + 1] = items[idx]; items[idx] = tmp; }
+            else if (btn.classList.contains('btnManualRemove')) items.splice(idx, 1);
+            render();
+            save();
+        });
     }
 
     function getSourceBadgeHtml(st) {
@@ -1524,6 +1675,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             'External':          { icon: 'language',        title: 'External List' },
             'LocalCollection':   { icon: 'folder_special',  title: 'Local Collection' },
             'LocalPlaylist':     { icon: 'playlist_play',   title: 'Local Playlist' },
+            'Manual':            { icon: 'format_list_numbered', title: 'Manual List' },
             'MediaInfo':         { icon: 'tune',            title: 'Smart Playlist' },
                 'AI':              { icon: 'auto_awesome',   title: 'AI created lists' }
         };
@@ -1673,6 +1825,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             <option value="External" ${sourceType === 'External' ? 'selected' : ''}>External List (Trakt/MDBList/TMDb)</option>
                             <option value="LocalCollection" ${sourceType === 'LocalCollection' ? 'selected' : ''}>Local Collection</option>
                             <option value="LocalPlaylist" ${sourceType === 'LocalPlaylist' ? 'selected' : ''}>Local Playlist</option>
+                            <option value="Manual" ${sourceType === 'Manual' ? 'selected' : ''}>Manual List (pick movies and shows)</option>
                             <option value="MediaInfo" ${sourceType === 'MediaInfo' ? 'selected' : ''}>Local Media Information (Smart Playlist)</option>
                             <option value="AI" ${sourceType === 'AI' ? 'selected' : ''}>AI created lists</option>
                         </select>
@@ -1680,6 +1833,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             if (st === 'External')         return 'Use an external list to tag, or create a collection, from the items that match your library.';
                             if (st === 'LocalCollection') return 'Every item in the selected collection(s) gets the configured tag or is added to a new collection. You can also use this to create a curated list of selected collections as a home screen section.';
                             if (st === 'LocalPlaylist')   return 'Every item in the selected playlist(s) gets the configured tag or is added to a new collection.';
+                            if (st === 'Manual')          return 'Pick movies and shows by hand. Search to add them, use the arrows to set the order, and remove them with ✕.';
                             if (st === 'MediaInfo')       return 'Filter your own library to select which movies or shows to tag or create a collection of. This is also known as a Smart Playlist.';
                             if (st === 'AI')              return 'Use AI to create a list. Write your prompt and the AI will build a list based on it.';
                             return '';
@@ -1699,6 +1853,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         <p style="margin:10px 0 10px 0; font-size:0.9em; font-weight:bold; opacity:0.7;" class="local-type-label">${sourceType === 'LocalPlaylist' ? 'Select Playlists' : 'Select Collections'}</p>
                         <div class="local-list-container">${localSources.map(ls => getLocalRowHtml(sourceType, ls.id, ls.limit)).join('')}</div>
                         <div style="margin-top:10px;"><button is="emby-button" type="button" class="raised btnAddLocal" style="width:100%; background:transparent; border:2px dashed rgba(128,128,128,0.4); color:var(--theme-text-secondary);"><i class="md-icon" style="margin-right:5px;">add</i>Add another</button></div>
+                    </div>
+
+                    <div class="source-manual-container" data-manual-ids="${encodeURIComponent(JSON.stringify(tagConfig.ManualItemIds || []))}" style="display: ${sourceType === 'Manual' ? 'block' : 'none'};">
+                        <p style="margin:10px 0 10px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Movies and Shows</p>
+                        <div style="position:relative; margin-bottom:10px;">
+                            <input is="emby-input" type="text" class="txtManualSearch" autocomplete="off" label="Add a movie or show" placeholder="Type to search…" />
+                            <div class="manualSearchResults" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:200;background:var(--plugin-popup-bg,#2a2a2a);border:1px solid var(--line-color);border-radius:4px;max-height:240px;overflow-y:auto;margin-top:2px;box-shadow:0 4px 12px rgba(0,0,0,0.45);"></div>
+                        </div>
+                        <div class="manualItemList" style="max-height:420px;overflow-y:auto;border:1px solid var(--line-color);border-radius:4px;padding:4px 8px;min-height:44px;"></div>
                     </div>
 
                     <div class="source-ai-container" style="display: ${sourceType === 'AI' ? 'block' : 'none'};">
@@ -1850,6 +2013,48 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                     </label>
                                 </div>
                             </div>
+
+                            <div style="margin-top:15px;">
+                                <p style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Tag Poster</p>
+                                ${buildCollStylePickerHtml('poster', tagConfig.TagPosterStyle, 'tag')}
+                                <div class="fieldDescription tag-poster-note">${tagConfig.TagPosterStyle ? 'Drawn from the posters of the first titles with this tag, with the tag name. It is redrawn when the titles change.' : "Emby's own collage of the tagged titles."}</div>
+                            </div>
+
+                            <div style="margin-top:15px;">
+                                <p style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Tag Background</p>
+                                ${buildCollStylePickerHtml('background', tagConfig.TagBackgroundStyle, 'tag')}
+                                <div class="tag-bg-upload" style="display:${tagConfig.TagBackgroundStyle ? 'none' : 'block'};">
+                                <div class="bg-preview-container" style="margin-bottom:8px; display:${tagConfig.TagBackgroundPath ? 'block' : 'none'};">
+                                    <span class="bg-filename" style="font-size:0.85em; opacity:0.7;">${tagConfig.TagBackgroundPath ? tagConfig.TagBackgroundPath.split(/[\\\\/]/).pop() : ''}</span>
+                                    <button type="button" class="btnRemoveBg" style="margin-left:10px; font-size:0.8em; background:transparent; border:none; color:#e55; cursor:pointer; vertical-align:middle;">✕ Remove</button>
+                                </div>
+                                <img class="bg-preview-img" src="" alt="" style="max-width:240px; max-height:135px; border-radius:4px; display:none; margin-bottom:8px;" />
+                                <input type="file" class="inputBgFile" accept="image/*" style="display:none;" />
+                                <input type="hidden" class="hiddenBgPath" value="${tagConfig.TagBackgroundPath || ''}" />
+                                <button type="button" is="emby-button" class="btnChooseBg raised" style="width:100%; background:transparent; border:2px dashed rgba(128,128,128,0.4); color:var(--theme-text-secondary);">
+                                    <i class="md-icon" style="margin-right:5px;">image</i>Choose Background Image
+                                </button>
+                                <div style="display:flex; align-items:center; gap:6px; margin-top:8px; opacity:0.45;">
+                                    <div style="flex:1; height:1px; background:currentColor;"></div>
+                                    <span style="font-size:0.75em;">or</span>
+                                    <div style="flex:1; height:1px; background:currentColor;"></div>
+                                </div>
+                                <div style="display:flex; gap:6px; margin-top:6px;">
+                                    <input class="txtBgUrl" is="emby-input" type="url" placeholder="https://example.com/background.jpg" style="flex:1;" />
+                                    <button type="button" is="emby-button" class="btnLoadBgUrl raised btn-neutral">Load</button>
+                                </div>
+                                <div class="fieldDescription">Leave empty for no background on the tag's page (Emby's default).</div>
+                                </div>
+                            </div>
+
+                            <div class="inputContainer tag-art-title-row" style="margin-top:15px; display:${tagConfig.TagPosterStyle || tagConfig.TagBackgroundStyle ? 'block' : 'none'};">
+                                <input is="emby-input" type="text" class="txtTagArtTitle" label="Title on the art" value="${(tagConfig.TagArtTitle || '').replace(/"/g, '&quot;')}" placeholder="{name}" />
+                                <div class="fieldDescription">Leave empty to use the tag name. <b>{name}</b> = tag name, <b>{week}</b> = this week's number.</div>
+                            </div>
+
+                            <div class="tag-art-preview-row" style="margin-top:10px; display:${tagConfig.TagPosterStyle || tagConfig.TagBackgroundStyle ? 'block' : 'none'};">
+                                <button type="button" is="emby-button" class="btnTagArtPreview raised" style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">visibility</i><span>Preview art</span></button>
+                            </div>
                         </div>
                     </div>
             </div>
@@ -1863,7 +2068,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             <input is="emby-checkbox" type="checkbox" class="chkOverrideWhenActive" ${overrideChecked} ${intervals.length === 0 ? 'disabled' : ''} />
                             <span>Priority override when active</span>
                         </label>
-                        <div class="fieldDescription">When this entry is in schedule, all other entries sharing the same tag or collection are suppressed — only this entry's items keep the tag and collection.</div>
+                        <div class="fieldDescription">When this entry is in schedule, all other entries sharing the same tag or collection are suppressed — only this entry's items keep the tag and collection. If several priority entries are in schedule at once, the one highest in the list wins.</div>
                     </div>
                 </div>
 
@@ -2056,6 +2261,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
         var newRow = afterRef ? afterRef.nextElementSibling : (prepend ? container.firstElementChild : container.lastElementChild);
         setupRowEvents(newRow);
+        initManualEditor(newRow);
         // Auto-size any pre-filled growing textareas
         newRow.querySelectorAll('textarea.txtMiValue, textarea.txtTagBlacklist').forEach(function (ta) {
             ta.style.height = 'auto';
@@ -2164,6 +2370,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 row.querySelector('.source-local-container').style.display = (type === 'LocalCollection' || type === 'LocalPlaylist') ? 'block' : 'none';
                 row.querySelector('.source-mediainfo-container').style.display = (type && type !== '') ? 'block' : 'none';
                 row.querySelector('.source-ai-container').style.display = type === 'AI' ? 'block' : 'none';
+                row.querySelector('.source-manual-container').style.display = type === 'Manual' ? 'block' : 'none';
 
                 var _hint = row.querySelector('.source-type-hint');
                 if (_hint) {
@@ -2171,6 +2378,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         'External':         'Use an external list to tag, or create a collection, from the items that match your library.',
                         'LocalCollection':  'Every item in the selected collection(s) gets the configured tag or is added to a new collection. You can also use this to create a curated list of selected collections as a home screen section.',
                         'LocalPlaylist':    'Every item in the selected playlist(s) gets the configured tag or is added to a new collection.',
+                        'Manual':           'Pick movies and shows by hand. Search to add them, use the arrows to set the order, and remove them with ✕.',
                         'MediaInfo':        'Filter your own library to select which movies or shows to tag or create a collection of. This is also known as a Smart Playlist.',
                         'AI':               'Use AI to create a list. Write your prompt and the AI will build a list based on it.'
                     };
@@ -2230,6 +2438,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 dateRow.querySelector('.inputs-specific').style.display = type === 'SpecificDate' ? 'flex' : 'none';
                 dateRow.querySelector('.inputs-annual').style.display = type === 'EveryYear' ? 'flex' : 'none';
                 dateRow.querySelector('.inputs-weekly').style.display = type === 'Weekly' ? 'flex' : 'none';
+                dateRow.querySelector('.inputs-time').style.display = type === 'TimeOfDay' ? 'flex' : 'none';
             }
             if (e.target.classList.contains('selStartMonth') || e.target.classList.contains('selEndMonth')) {
                 var isStart = e.target.classList.contains('selStartMonth');
@@ -2333,16 +2542,16 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         });
 
         row.querySelector('.btnTagTargetHelp').addEventListener('click', () => {
-            document.getElementById('tagTargetHelpModalOverlay').classList.add('modal-visible');
+            (row.closest('#HomeScreenCompanionConfigPage') || activeView()).querySelector('#tagTargetHelpModalOverlay').classList.add('modal-visible');
         });
 
         row.querySelector('.btnCollTargetHelp').addEventListener('click', () => {
-            document.getElementById('tagTargetHelpModalOverlay').classList.add('modal-visible');
+            (row.closest('#HomeScreenCompanionConfigPage') || activeView()).querySelector('#tagTargetHelpModalOverlay').classList.add('modal-visible');
         });
 
         row.addEventListener('click', e => {
             if (e.target.closest('.btnMiHelp')) {
-                document.getElementById('miHelpModalOverlay').classList.add('modal-visible');
+                (row.closest('#HomeScreenCompanionConfigPage') || activeView()).querySelector('#miHelpModalOverlay').classList.add('modal-visible');
                 return;
             }
             if (e.target.closest('.btnMiPreview')) {
@@ -2543,13 +2752,13 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         window.Dashboard.alert('Request failed.');
                     });
                 };
-                var _saveBtn = row.closest('#HomeScreenCompanionConfigPage') ? row.closest('#HomeScreenCompanionConfigPage').querySelector('.btn-save') : document.querySelector('.btn-save');
+                var _saveBtn = (row.closest('#HomeScreenCompanionConfigPage') || activeView()).querySelector('.btn-save');
                 var isDirty = _saveBtn && !_saveBtn.disabled;
                 if (isDirty) {
-                    // Unsaved changes are saved first, then the group runs.
-                    showToast('Saving settings…');
-                    _saveBtn.click();
-                    setTimeout(doRun, 800);
+                    if (confirm('You have unsaved changes. Save and run?')) {
+                        _saveBtn.click();
+                        setTimeout(doRun, 800);
+                    }
                 } else {
                     doRun();
                 }
@@ -2731,7 +2940,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     label.style.borderColor = '#52B54B';
                 });
             });
-            picker.addEventListener('change', syncCollArt);
+            picker.addEventListener('change', picker.dataset.scope === 'tag' ? syncTagArt : syncCollArt);
         });
         setTimeout(fillCollStyleThumbs, 0);
         function syncCollArt() {
@@ -2742,66 +2951,84 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             row.querySelector('.coll-art-preview-row').style.display = art.CollectionPosterStyle || art.CollectionBackgroundStyle ? 'block' : 'none';
             row.querySelector('.coll-art-title-row').style.display = art.CollectionPosterStyle || art.CollectionBackgroundStyle ? 'block' : 'none';
         }
-
-        // Background upload (Custom): same endpoints as the poster upload.
-        function bgUploaded(filePath, name, previewSrc) {
-            row.querySelector('.hiddenBgPath').value = filePath;
-            row.querySelector('.bg-filename').textContent = name;
-            row.querySelector('.bg-preview-container').style.display = 'block';
-            var img = row.querySelector('.bg-preview-img');
-            img.src = previewSrc;
-            img.style.display = 'block';
-            row.querySelector('.hiddenBgPath').dispatchEvent(new Event('change', { bubbles: true }));
+        function syncTagArt() {
+            var art = readTagArt(row);
+            row.querySelector('.tag-poster-note').textContent = art.TagPosterStyle
+                ? 'Drawn from the posters of the first titles with this tag, with the tag name. It is redrawn when the titles change.'
+                : "Emby's own collage of the tagged titles.";
+            row.querySelector('.tag-bg-upload').style.display = art.TagBackgroundStyle ? 'none' : 'block';
+            row.querySelector('.tag-art-preview-row').style.display = art.TagPosterStyle || art.TagBackgroundStyle ? 'block' : 'none';
+            row.querySelector('.tag-art-title-row').style.display = art.TagPosterStyle || art.TagBackgroundStyle ? 'block' : 'none';
         }
+
+        // Background upload (Custom): same endpoints as the poster upload. Wired once for the
+        // collection background and once for the tag background (each its own block).
         function bgHeaders() {
             var headers = { 'Content-Type': 'application/json' };
             var token = window.ApiClient.accessToken();
             if (token) headers['X-Emby-Token'] = token;
             return headers;
         }
-        row.querySelector('.btnChooseBg').addEventListener('click', function () {
-            row.querySelector('.inputBgFile').click();
-        });
-        row.querySelector('.inputBgFile').addEventListener('change', function () {
-            var file = this.files[0];
-            if (!file) return;
-            var reader = new FileReader();
-            reader.onload = function (e) {
-                var dataUrl = e.target.result;
-                fetch(window.ApiClient.getUrl('HomeScreenCompanion/UploadCollectionImage'), {
+        function wireBgUpload(box) {
+            if (!box) return;
+            function bgUploaded(filePath, name, previewSrc) {
+                box.querySelector('.hiddenBgPath').value = filePath;
+                box.querySelector('.bg-filename').textContent = name;
+                box.querySelector('.bg-preview-container').style.display = 'block';
+                var img = box.querySelector('.bg-preview-img');
+                img.src = previewSrc;
+                img.style.display = 'block';
+                box.querySelector('.hiddenBgPath').dispatchEvent(new Event('change', { bubbles: true }));
+            }
+            box.querySelector('.btnChooseBg').addEventListener('click', function () {
+                box.querySelector('.inputBgFile').click();
+            });
+            box.querySelector('.inputBgFile').addEventListener('change', function () {
+                var file = this.files[0];
+                if (!file) return;
+                var reader = new FileReader();
+                reader.onload = function (e) {
+                    var dataUrl = e.target.result;
+                    fetch(window.ApiClient.getUrl('HomeScreenCompanion/UploadCollectionImage'), {
+                        method: 'POST',
+                        headers: bgHeaders(),
+                        body: JSON.stringify({ FileName: file.name, Base64Data: dataUrl.split(',')[1], OldFilePath: box.querySelector('.hiddenBgPath').value })
+                    }).then(function (r) { return r.json(); })
+                    .then(function (result) {
+                        if (result.Success) bgUploaded(result.FilePath, file.name, dataUrl);
+                        else window.Dashboard.alert('Upload failed: ' + (result.Message || 'Unknown error'));
+                    }).catch(function () { window.Dashboard.alert('Upload error. Check server logs.'); });
+                };
+                reader.readAsDataURL(file);
+            });
+            box.querySelector('.btnRemoveBg').addEventListener('click', function () {
+                box.querySelector('.hiddenBgPath').value = '';
+                box.querySelector('.bg-filename').textContent = '';
+                box.querySelector('.bg-preview-container').style.display = 'none';
+                box.querySelector('.bg-preview-img').style.display = 'none';
+                box.querySelector('.inputBgFile').value = '';
+                box.querySelector('.hiddenBgPath').dispatchEvent(new Event('change', { bubbles: true }));
+            });
+            box.querySelector('.btnLoadBgUrl').addEventListener('click', function () {
+                var url = box.querySelector('.txtBgUrl').value.trim();
+                if (!url) return;
+                fetch(window.ApiClient.getUrl('HomeScreenCompanion/FetchCollectionImageFromUrl'), {
                     method: 'POST',
                     headers: bgHeaders(),
-                    body: JSON.stringify({ FileName: file.name, Base64Data: dataUrl.split(',')[1], OldFilePath: row.querySelector('.hiddenBgPath').value })
+                    body: JSON.stringify({ Url: url, OldFilePath: box.querySelector('.hiddenBgPath').value })
                 }).then(function (r) { return r.json(); })
                 .then(function (result) {
-                    if (result.Success) bgUploaded(result.FilePath, file.name, dataUrl);
-                    else window.Dashboard.alert('Upload failed: ' + (result.Message || 'Unknown error'));
-                }).catch(function () { window.Dashboard.alert('Upload error. Check server logs.'); });
-            };
-            reader.readAsDataURL(file);
-        });
-        row.querySelector('.btnRemoveBg').addEventListener('click', function () {
-            row.querySelector('.hiddenBgPath').value = '';
-            row.querySelector('.bg-filename').textContent = '';
-            row.querySelector('.bg-preview-container').style.display = 'none';
-            row.querySelector('.bg-preview-img').style.display = 'none';
-            row.querySelector('.inputBgFile').value = '';
-            row.querySelector('.hiddenBgPath').dispatchEvent(new Event('change', { bubbles: true }));
-        });
-        row.querySelector('.btnLoadBgUrl').addEventListener('click', function () {
-            var url = row.querySelector('.txtBgUrl').value.trim();
-            if (!url) return;
-            fetch(window.ApiClient.getUrl('HomeScreenCompanion/FetchCollectionImageFromUrl'), {
-                method: 'POST',
-                headers: bgHeaders(),
-                body: JSON.stringify({ Url: url, OldFilePath: row.querySelector('.hiddenBgPath').value })
-            }).then(function (r) { return r.json(); })
-            .then(function (result) {
-                if (result.Success) {
-                    bgUploaded(result.FilePath, url.split('/').pop().split('?')[0], url);
-                    row.querySelector('.txtBgUrl').value = '';
-                } else window.Dashboard.alert('Failed to load image: ' + (result.Message || 'Unknown error'));
-            }).catch(function () { window.Dashboard.alert('Error fetching image. Check the URL and server logs.'); });
+                    if (result.Success) {
+                        bgUploaded(result.FilePath, url.split('/').pop().split('?')[0], url);
+                        box.querySelector('.txtBgUrl').value = '';
+                    } else window.Dashboard.alert('Failed to load image: ' + (result.Message || 'Unknown error'));
+                }).catch(function () { window.Dashboard.alert('Error fetching image. Check the URL and server logs.'); });
+            });
+        }
+        wireBgUpload(row.querySelector('.coll-bg-upload'));
+        wireBgUpload(row.querySelector('.tag-bg-upload'));
+        row.querySelector('.btnTagArtPreview').addEventListener('click', function () {
+            showCollectionArtPreview(row, this, true);
         });
         row.querySelector('.btnCollArtPreview').addEventListener('click', function () {
             showCollectionArtPreview(row, this);
@@ -3102,7 +3329,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             '<span class="hsc-user-dropdown-label" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(lbl) + '</span>' +
             '<i class="md-icon hsc-user-dropdown-caret" style="font-size:1em;margin-left:6px;flex-shrink:0;">expand_more</i>' +
             '</button>' +
-            '<div class="filter-dropdown-panel" style="min-width:220px;width:100%;box-sizing:border-box;">' + rows + '</div>' +
+            '<div class="filter-dropdown-panel" style="min-width:220px;width:100%;box-sizing:border-box;">' +
+            '<div style="display:flex;gap:12px;padding:2px 0 6px 0;margin-bottom:4px;border-bottom:1px solid var(--line-color);font-size:0.85em;">' +
+            '<a href="#" class="hsc-user-select-all" style="color:#52B54B;">Select all</a>' +
+            '<a href="#" class="hsc-user-select-none" style="color:inherit;opacity:0.7;">Clear</a></div>' +
+            rows + '</div>' +
             '</div>';
     }
 
@@ -3133,6 +3364,17 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         });
         panel.querySelectorAll('input[type="checkbox"]').forEach(function(chk) {
             chk.addEventListener('change', updateLabel);
+        });
+        // Select all / Clear: one change event afterwards so form-state listeners run once.
+        panel.querySelectorAll('.hsc-user-select-all, .hsc-user-select-none').forEach(function(link) {
+            link.addEventListener('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                var on = link.classList.contains('hsc-user-select-all');
+                var boxes = panel.querySelectorAll('input[type="checkbox"]');
+                boxes.forEach(function(chk) { chk.checked = on; });
+                if (boxes.length) boxes[boxes.length - 1].dispatchEvent(new Event('change', { bubbles: true }));
+            });
         });
         document.addEventListener('click', function closeUserDrop(e) {
             if (!wrapper.isConnected) { document.removeEventListener('click', closeUserDrop); return; }
@@ -3492,7 +3734,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var collEnabled = !!(row.querySelector('.chkEnableCollection') || {}).checked;
 
                 // Check dirty state BEFORE rendering — so we know if user had unsaved changes already
-                var _hseView = document.querySelector('#HomeScreenCompanionConfigPage');
+                var _hseView = row.closest('#HomeScreenCompanionConfigPage') || activeView();
                 var _wasAlreadyDirty = _hseView && originalConfigState &&
                     JSON.stringify(getUiConfig(_hseView, true)) !== originalConfigState;
 
@@ -3574,26 +3816,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var collDescription = row.querySelector('.txtCollectionDescription') ? row.querySelector('.txtCollectionDescription').value : '';
             var collPoster = row.querySelector('.hiddenPosterPath') ? row.querySelector('.hiddenPosterPath').value : '';
 
-            var intervals = [];
-            row.querySelectorAll('.date-row').forEach(dr => {
-                var type = dr.querySelector('.selDateType').value;
-                var s = null, e = null, days = "";
-
-                if (type === 'SpecificDate') {
-                    s = dr.querySelector('.txtFullStartDate').value;
-                    e = dr.querySelector('.txtFullEndDate').value;
-                } else if (type === 'EveryYear') {
-                    var sM = dr.querySelector('.selStartMonth').value, sD = dr.querySelector('.selStartDay').value;
-                    var eM = dr.querySelector('.selEndMonth').value, eD = dr.querySelector('.selEndDay').value;
-                    s = `2000-${sM.padStart(2, '0')}-${sD.padStart(2, '0')}`;
-                    e = `2000-${eM.padStart(2, '0')}-${eD.padStart(2, '0')}`;
-                } else if (type === 'Weekly') {
-                    var activeBtns = Array.from(dr.querySelectorAll('.day-toggle.active')).map(b => b.dataset.day);
-                    days = activeBtns.join(',');
-                }
-
-                intervals.push({ Type: type, Start: s || null, End: e || null, DayOfWeek: days });
-            });
+            var intervals = readIntervalsFromRow(row);
 
             var currentLastMod = row.dataset.lastModified || new Date().toISOString();
             
@@ -3675,6 +3898,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 CollectionBackgroundPath: readCollectionArt(row).CollectionBackgroundPath,
                 CollectionSortToTop: readCollectionArt(row).CollectionSortToTop,
                 CollectionArtTitle: readCollectionArt(row).CollectionArtTitle,
+                TagPosterStyle: readTagArt(row).TagPosterStyle, TagBackgroundStyle: readTagArt(row).TagBackgroundStyle,
+                TagBackgroundPath: readTagArt(row).TagBackgroundPath, TagArtTitle: readTagArt(row).TagArtTitle,
                 SourceType: st, MediaInfoFilters: miFilters, MediaInfoConditions: [],
                 TagTargetEpisode:        !!(row.querySelector('.chkTagTargetEpisode')  || {}).checked,
                 TagTargetSeason:         !!(row.querySelector('.chkTagTargetSeason')   || {}).checked,
@@ -3713,6 +3938,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 if (forComparison && !pushedLocal) {
                     flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: 0, LocalSourceId: "" }));
                 }
+            } else if (st === 'Manual') {
+                flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: 0, LocalSourceId: "", ManualItemIds: readManualIds(row) }));
             } else if (st === 'AI') {
                 var aiLimitVal = parseInt((row.querySelector('.txtAiLimit') || {}).value, 10) || 0;
                 flatTags.push(Object.assign({}, baseTag, {
@@ -3774,7 +4001,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     }
 
     function checkFormState() {
-        var view = document.querySelector('#HomeScreenCompanionConfigPage');
+        var view = activeView();
         if (!view || !originalConfigState) return;
         
         var isDirty = false;
@@ -3808,7 +4035,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     }
 
     function updateDryRunWarning() {
-        var view = document.querySelector('#HomeScreenCompanionConfigPage');
+        var view = activeView();
         if (!view || !originalConfigState) return;
         var warn = view.querySelector('.dry-run-warning');
         if (warn) {
@@ -3887,7 +4114,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     function checkForUpdates(view) {
         window.ApiClient.getJSON(window.ApiClient.getUrl("HomeScreenCompanion/Version")).then(function (result) {
             var currentVer = result.Version || '';
-            var footerVer = document.getElementById('footerVersionText');
+            var footerVer = view.querySelector('#footerVersionText');
             if (footerVer && currentVer) {
                 var releaseUrl = 'https://github.com/soderlund91/HomeScreenCompanion/releases/tag/v' + currentVer;
                 footerVer.innerHTML = '<a href="' + releaseUrl + '" target="_blank" style="color:inherit;text-decoration:none;">v' + currentVer + '</a>';
@@ -3907,11 +4134,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         if ((a[i] || 0) < (b[i] || 0)) break;
                     }
                     if (isNewer) {
-                        var footerUpdate = document.getElementById('footerUpdateInfo');
+                        var footerUpdate = view.querySelector('#footerUpdateInfo');
                         if (footerUpdate) {
                             footerUpdate.innerHTML = '<a href="' + release.html_url + '"'
                                 + ' target="_blank" class="footer-update-link">Update available: v' + latestTag + '</a>';
-                            var footerUpdateSep = document.getElementById('footerUpdateSep');
+                            var footerUpdateSep = view.querySelector('#footerUpdateSep');
                             if (footerUpdateSep) footerUpdateSep.style.display = '';
                         }
                     }
@@ -3947,6 +4174,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     CollectionPosterStyle: t.CollectionPosterStyle || '', CollectionBackgroundStyle: t.CollectionBackgroundStyle || '',
                     CollectionBackgroundPath: t.CollectionBackgroundPath || '', CollectionSortToTop: !!t.CollectionSortToTop,
                     CollectionArtTitle: t.CollectionArtTitle || '',
+                    TagPosterStyle: t.TagPosterStyle || '', TagBackgroundStyle: t.TagBackgroundStyle || '',
+                    TagBackgroundPath: t.TagBackgroundPath || '', TagArtTitle: t.TagArtTitle || '',
                     OnlyCollection: t.OnlyCollection, OverrideWhenActive: t.OverrideWhenActive || false, LastModified: t.LastModified,
                     SourceType: t.SourceType || "External", MediaInfoConditions: t.MediaInfoConditions || [], MediaInfoFilters: t.MediaInfoFilters || [],
                     Limit: t.Limit || 0,
@@ -3974,6 +4203,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             if ((t.SourceType === 'LocalCollection' || t.SourceType === 'LocalPlaylist') && t.LocalSourceId) grouped[key].LocalSources.push({ id: t.LocalSourceId, limit: t.Limit });
             if (t.SourceType === 'MediaInfo') grouped[key].Limit = t.Limit;
             if (t.SourceType === 'AI') grouped[key].Limit = t.Limit;
+            if (t.SourceType === 'Manual') grouped[key].ManualItemIds = t.ManualItemIds || [];
         });
         return grouped;
     }
@@ -7193,6 +7423,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
     return function (view) {
         view.addEventListener('viewshow', () => {
+            _activeView = view;
             if (!document.getElementById('homeScreenCompanionCustomCss')) {
                 document.body.insertAdjacentHTML('beforeend', customCss);
             }
@@ -7484,6 +7715,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         });
 
         view.addEventListener('viewhide', stopStatusPolling);
+
+        // Save submits this copy's own form. (A form="…" attribute would submit the first form with
+        // that id in the document, which can be an old hidden copy of this page.)
+        view.querySelector('.btn-save').addEventListener('click', e => {
+            e.preventDefault();
+            var f = view.querySelector('.HomeScreenCompanionForm');
+            if (f.requestSubmit) f.requestSubmit();
+            else f.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+        });
 
         view.querySelector('.HomeScreenCompanionForm').addEventListener('submit', e => {
             e.preventDefault();

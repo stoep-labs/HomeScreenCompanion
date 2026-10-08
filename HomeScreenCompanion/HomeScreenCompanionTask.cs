@@ -224,6 +224,10 @@ namespace HomeScreenCompanion
                 var collectionDescriptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 var collectionPosters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 var collectionSources = new Dictionary<string, TagConfig>(StringComparer.OrdinalIgnoreCase);
+                // Tag art (ApplyTagArt): the source that owns each tag and its titles in list order,
+                // across all flat entries of the tag.
+                var tagArtSources = new Dictionary<string, TagConfig>(StringComparer.OrdinalIgnoreCase);
+                var tagArtTitles = new Dictionary<string, List<BaseItem>>(StringComparer.OrdinalIgnoreCase);
                 var managedTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var activeCollections = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var failedFetches = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -240,7 +244,7 @@ namespace HomeScreenCompanion
 
                 var previouslyManagedCollections = LoadFileHistory("homescreencompanion_collections.txt");
                 // Also track collection names from inactive groups so they get cleaned up
-                // even if the group was only ever run via single-entry sync (which doesn't update history)
+                // even if their collection was never recorded in the history file
                 foreach (var tc in config.Tags)
                 {
                     if (tc.EnableCollection && !string.IsNullOrWhiteSpace(tc.Tag))
@@ -387,6 +391,10 @@ namespace HomeScreenCompanion
 
                 var activeTagOverrides = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var activeCollectionOverrides = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                // When several overrides for one tag (or collection) are in schedule at once, the first
+                // one in the list that finds items owns it; the others are skipped.
+                var overrideOwnerByTag = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var overrideOwnerByCollection = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var tc in config.Tags)
                 {
                     if (!tc.Active || !tc.OverrideWhenActive || string.IsNullOrWhiteSpace(tc.Tag)) continue;
@@ -566,6 +574,16 @@ namespace HomeScreenCompanion
                         WriteFetchLine(gs);
                         continue;
                     }
+                    if (tagConfig.OverrideWhenActive &&
+                        ((overrideOwnerByTag.TryGetValue(tagName, out var _tagOwner) && _tagOwner != GroupKey(tagConfig)) ||
+                         (tagConfig.EnableCollection && overrideOwnerByCollection.TryGetValue(cName, out var _collOwner) && _collOwner != GroupKey(tagConfig))))
+                    {
+                        gs.Skipped = true;
+                        gs.SkipReason = "another priority group higher in the list is active for the same tag";
+                        statsList.Add(gs);
+                        WriteFetchLine(gs);
+                        continue;
+                    }
                     if (tagConfig.EnableCollection)
                     {
                         activeCollections.Add(cName);
@@ -739,6 +757,12 @@ namespace HomeScreenCompanion
                                 if (effectiveLimit < 10000 && matchedLocalItems.Count > effectiveLimit)
                                     matchedLocalItems = matchedLocalItems.Take(effectiveLimit).ToList();
                             }
+                        }
+                        else if (tagConfig.SourceType == "Manual")
+                        {
+                            matchedLocalItems = ManualItems(tagConfig, blacklist, effectiveLimit, gs);
+                            gs.ListCount = tagConfig.ManualItemIds?.Count ?? 0;
+                            _log.Debug($"  {matchedLocalItems.Count} of {gs.ListCount} hand-picked items found");
                         }
                         // Apply MediaInfo post-filter for non-MediaInfo source types
                         if (tagConfig.SourceType != "MediaInfo" && matchedLocalItems.Count > 0
@@ -973,6 +997,11 @@ namespace HomeScreenCompanion
                             activeTagOverrides.Remove(tagName);
                             if (tagConfig.EnableCollection) activeCollectionOverrides.Remove(cName);
                         }
+                        else if (tagConfig.OverrideWhenActive)
+                        {
+                            if (!overrideOwnerByTag.ContainsKey(tagName)) overrideOwnerByTag[tagName] = GroupKey(tagConfig);
+                            if (tagConfig.EnableCollection && !overrideOwnerByCollection.ContainsKey(cName)) overrideOwnerByCollection[cName] = GroupKey(tagConfig);
+                        }
 
                         // For External and AI sources: if the remote returned zero items and the user has
                         // opted to preserve tags on empty results, treat it as a failed fetch.
@@ -999,6 +1028,8 @@ namespace HomeScreenCompanion
 
                         if (tagConfig.EnableTag && !tagConfig.OnlyCollection && !IsBoxSetHomeSectionEntry(tagConfig))
                         {
+                            if (!tagArtSources.ContainsKey(tagName)) { tagArtSources[tagName] = tagConfig; tagArtTitles[tagName] = new List<BaseItem>(); }
+                            tagArtTitles[tagName].AddRange(matchedLocalItems);
                             foreach (var localItem in tagOutputItems)
                             {
                                 if (!desiredTagsMap.ContainsKey(localItem.Id))
@@ -1252,6 +1283,9 @@ namespace HomeScreenCompanion
                     : dryRun
                         ? $"    Would add {tagsAdded} and remove {tagsRemoved} tags on {RunLog.Plural(itemsChanged, "item")}"
                         : $"    +{tagsAdded} added, -{tagsRemoved} removed on {RunLog.Plural(itemsChanged, "item")}  ·  {RunLog.Elapsed(phaseTimer.Elapsed)}");
+                if (!dryRun)
+                    foreach (var kvp in tagArtSources)
+                        ApplyTagArt(kvp.Key, kvp.Value, tagArtTitles[kvp.Key].GroupBy(i => i.Id).Select(g => g.First()).ToList());
 
                 _log.Blank();
                 _log.Info("» Collections");
@@ -2011,6 +2045,12 @@ namespace HomeScreenCompanion
                         return (false, $"Source '{string.Join("', '", missingSources)}' not found");
                     }
                 }
+                else if (tagConfig.SourceType == "Manual")
+                {
+                    matchedLocalItems = ManualItems(tagConfig, blacklist, tagConfig.Limit <= 0 ? 10000 : tagConfig.Limit, gs);
+                    _listCount = tagConfig.ManualItemIds?.Count ?? 0;
+                    _log.Debug($"  {matchedLocalItems.Count} of {_listCount} hand-picked items found");
+                }
                 else if (tagConfig.SourceType == "MediaInfo")
                 {
                     IList<BaseItem> _itemsToScan;
@@ -2381,6 +2421,64 @@ namespace HomeScreenCompanion
                 }
             }
 
+            // Tags this plugin wrote earlier (history file) that no group uses any more — the old name
+            // of a renamed tag, or a deleted group's tag. The full run removes these through the
+            // history too; doing it here means Run Group cleans up a rename straight away.
+            // Tags of other groups (active or not) are left to the full run.
+            if (_preview == null)
+            {
+                var orphanTags = LoadFileHistory("homescreencompanion_history.txt")
+                    .Where(t => !string.Equals(t, tagName, StringComparison.OrdinalIgnoreCase)
+                        && !config.Tags.Any(c => !string.IsNullOrWhiteSpace(c.Tag) && string.Equals(c.Tag.Trim(), t, StringComparison.OrdinalIgnoreCase)))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                foreach (var orphan in orphanTags)
+                {
+                    // Drop it from the real-time cache first, or UpdateItem would re-add it.
+                    if (!dryRun) TagCacheManager.Instance.RemoveTagFromAllEntries(orphan);
+                    // BoxSets asked for separately: an old tag HSC put on a collection itself
+                    // (ApplyTagToSourceBoxSet) must go too.
+                    var orphanItems = _libraryManager.GetItemList(new InternalItemsQuery
+                    {
+                        Recursive = true,
+                        IsVirtualItem = false,
+                        Tags = new[] { orphan }
+                    }).Concat(_libraryManager.GetItemList(new InternalItemsQuery
+                    {
+                        IncludeItemTypes = new[] { "BoxSet" },
+                        Recursive = true,
+                        Tags = new[] { orphan }
+                    })).GroupBy(i => i.Id).Select(g => g.First()).ToList();
+                    int orphanRemoved = 0;
+                    foreach (var item in orphanItems)
+                    {
+                        if (debug)
+                        {
+                            var _tagYr = item.ProductionYear.HasValue ? $" ({item.ProductionYear})" : "";
+                            string _itemLabel = $"{item.Name}{_tagYr}  [{item.GetType().Name}]";
+                            if (!_dbgTagRemoved!.ContainsKey(orphan)) _dbgTagRemoved[orphan] = new List<string>();
+                            _dbgTagRemoved[orphan].Add(_itemLabel);
+                        }
+                        if (!dryRun)
+                        {
+                            item.RemoveTag(orphan);
+                            try { _libraryManager.UpdateItem(item, item.Parent, ItemUpdateType.MetadataEdit, null); }
+                            catch (Exception ex) { _log.Warn($"Could not save tags for '{item.Name}': {ex.Message}"); }
+                            if (++updateCount % 25 == 0) await Task.Yield();
+                        }
+                        orphanRemoved++;
+                    }
+                    if (orphanRemoved > 0)
+                    {
+                        tagsRemoved += orphanRemoved;
+                        _log.Skip(dryRun
+                            ? $"Old tag \"{orphan}\" would be removed from {orphanRemoved} item(s) (no group uses it any more)"
+                            : $"Old tag \"{orphan}\" removed from {orphanRemoved} item(s) (no group uses it any more)");
+                    }
+                }
+                if (orphanTags.Count > 0 && !dryRun) TagCacheManager.Instance.Save();
+            }
+
             WriteTagDiffDebug(_dbgTagAdded, _dbgTagRemoved);
             if (gs.EnableTag && !gs.BoxSetHse)
                 _log.Info(tagsAdded == 0 && tagsRemoved == 0
@@ -2392,6 +2490,8 @@ namespace HomeScreenCompanion
                 _log.Skip("The tag is applied to the collection itself, not to its items (see results)");
             else
                 _log.Skip("Tagging is not enabled for this group");
+            if (!dryRun && tagConfig.EnableTag && !tagConfig.OnlyCollection && !_isBoxSetHse)
+                ApplyTagArt(tagName, tagConfig, matchedLocalItems);
 
             // Apply collection (scoped to this entry's collection only)
             int collResult = 0;
@@ -2484,6 +2584,16 @@ namespace HomeScreenCompanion
                     {
                         _hist.Add(tagName);
                         SaveFileHistory("homescreencompanion_history.txt", _hist);
+                    }
+                }
+                // Same for the collection, so the full run removes it once the group is renamed or deleted.
+                if (tagConfig.EnableCollection && !string.IsNullOrEmpty(cName))
+                {
+                    var _collHist = LoadFileHistory("homescreencompanion_collections.txt");
+                    if (!_collHist.Any(c => string.Equals(c, cName, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        _collHist.Add(cName);
+                        SaveFileHistory("homescreencompanion_collections.txt", _collHist);
                     }
                 }
 
@@ -3656,6 +3766,7 @@ namespace HomeScreenCompanion
             {
                 bool match = false;
                 if (interval.Type == "Weekly") { if (!string.IsNullOrEmpty(interval.DayOfWeek) && interval.DayOfWeek.IndexOf(now.DayOfWeek.ToString(), StringComparison.OrdinalIgnoreCase) >= 0) match = true; }
+                else if (interval.Type == "TimeOfDay") match = TimeOfDayMatches(interval, now);
                 else if (interval.Type == "EveryYear")
                 {
                     if (interval.Start.HasValue && interval.End.HasValue)
@@ -3674,6 +3785,40 @@ namespace HomeScreenCompanion
                 if (match) return true;
             }
             return false;
+        }
+
+        // A "Manual" source: the hand-picked movies and shows, in list order. Items that were
+        // deleted from the library are skipped with a warning.
+        private List<BaseItem> ManualItems(TagConfig tagConfig, HashSet<string> blacklist, int limit, GroupRunStats gs)
+        {
+            var result = new List<BaseItem>();
+            int gone = 0;
+            foreach (var id in tagConfig.ManualItemIds ?? new List<string>())
+            {
+                BaseItem? item = null;
+                if (long.TryParse(id, out var internalId)) item = _libraryManager.GetItemById(internalId);
+                else if (Guid.TryParse(id, out var guid)) item = _libraryManager.GetItemById(guid);
+                if (item == null || !IsTaggableTopLevelItem(item)) { gone++; continue; }
+                var imdb = item.GetProviderId("Imdb");
+                if (!string.IsNullOrEmpty(imdb) && blacklist.Contains(imdb)) continue;
+                if (!result.Contains(item)) result.Add(item);
+                if (result.Count >= limit) break;
+            }
+            if (gone > 0) gs.Warnings.Add($"{gone} hand-picked item(s) are no longer in the library");
+            return result;
+        }
+
+        // A "TimeOfDay" window. One that runs past midnight (22:00 → 02:00) belongs to the day it
+        // starts on, so Friday 22:00 → 02:00 is still active at 01:00 on Saturday.
+        private static bool TimeOfDayMatches(DateInterval interval, DateTime now)
+        {
+            if (!TimeSpan.TryParse(interval.FromTime ?? "", out var from) || !TimeSpan.TryParse(interval.ToTime ?? "", out var to)) return false;
+            bool DayOk(DayOfWeek d) => string.IsNullOrWhiteSpace(interval.DayOfWeek)
+                || interval.DayOfWeek.IndexOf(d.ToString(), StringComparison.OrdinalIgnoreCase) >= 0;
+            var t = now.TimeOfDay;
+            if (from < to) return DayOk(now.DayOfWeek) && t >= from && t < to;
+            if (from == to) return DayOk(now.DayOfWeek);
+            return (t >= from && DayOk(now.DayOfWeek)) || (t < to && DayOk(now.AddDays(-1).DayOfWeek));
         }
 
         private BaseItem ResolveItemForMediaInfo(BaseItem item, Dictionary<long, BaseItem> seriesEpisodeCache)
@@ -4568,6 +4713,7 @@ namespace HomeScreenCompanion
                 case "MediaInfo":       return "Smart playlist";
                 case "LocalCollection": return "Local collection";
                 case "LocalPlaylist":   return "Local playlist";
+                case "Manual":          return "Manual list";
                 case "AI":              return "AI · " + (string.IsNullOrWhiteSpace(tc.AiProvider) ? "unknown provider" : tc.AiProvider);
                 default:
                     var url = tc.Url ?? "";
@@ -4590,6 +4736,9 @@ namespace HomeScreenCompanion
                 case "LocalCollection":
                 case "LocalPlaylist":
                     parts.Add($"'{tc.LocalSourceId}'");
+                    break;
+                case "Manual":
+                    parts.Add($"{tc.ManualItemIds?.Count ?? 0} hand-picked items");
                     break;
                 case "AI":
                     parts.Add($"prompt {tc.AiPrompt?.Length ?? 0} chars" + (tc.AiIncludeRecentlyWatched ? ", includes watch history" : ""));
@@ -4640,7 +4789,7 @@ namespace HomeScreenCompanion
         {
             if (gs.BoxSetHse) return gs.BoxSetTaggedCount > 0 ? $"{RunLog.Plural(gs.BoxSetTaggedCount, "collection")} tagged" : "collection not found";
             if (gs.SourceType == "MediaInfo") return $"scanned {gs.ListCount:N0} items, {gs.MatchCount} matched";
-            if (gs.SourceType == "LocalCollection" || gs.SourceType == "LocalPlaylist") return $"{gs.ListCount} in source, {gs.MatchCount} matched";
+            if (gs.SourceType == "LocalCollection" || gs.SourceType == "LocalPlaylist" || gs.SourceType == "Manual") return $"{gs.ListCount} in source, {gs.MatchCount} matched";
             return $"{gs.ListCount} in list, {gs.MatchCount} in your library";
         }
 
@@ -4936,27 +5085,8 @@ namespace HomeScreenCompanion
         {
             try
             {
-                bool changed = false;
-                foreach (var (style, background) in new[] { (tc.CollectionPosterStyle, false), (tc.CollectionBackgroundStyle, true) })
-                {
-                    string? path;
-                    if (CollectionArtRenderer.IsStyle(style)) path = RenderCollectionArt(cName, CollectionArtRenderer.ArtTitle(tc.CollectionArtTitle, cName), style, background, items);
-                    else if (background && !string.IsNullOrWhiteSpace(tc.CollectionBackgroundPath) && File.Exists(tc.CollectionBackgroundPath))
-                        path = tc.CollectionBackgroundPath;   // Custom: the uploaded background
-                    else continue;
-                    if (path == null) continue;
-                    var type = background ? ImageType.Backdrop : ImageType.Primary;
-                    var images = (coll.ImageInfos ?? Array.Empty<ItemImageInfo>()).Where(i => i.Type != type).ToList();
-                    images.Add(new ItemImageInfo { Path = path, Type = type, DateModified = File.GetLastWriteTimeUtc(path) });
-                    var current = (coll.ImageInfos ?? Array.Empty<ItemImageInfo>()).FirstOrDefault(i => i.Type == type);
-                    if (current == null || !string.Equals(current.Path, path, StringComparison.OrdinalIgnoreCase)
-                        || current.DateModified != File.GetLastWriteTimeUtc(path))
-                    {
-                        coll.ImageInfos = images.ToArray();
-                        changed = true;
-                    }
-                }
-                if (changed)
+                if (SetGeneratedArt(coll, cName, "collection_art", tc.CollectionPosterStyle, tc.CollectionBackgroundStyle,
+                        tc.CollectionArtTitle, tc.CollectionBackgroundPath, items, false))
                 {
                     _libraryManager.UpdateItem(coll, coll.Parent, ItemUpdateType.ImageUpdate, null);
                     _log.Debug($"  {cName}  →  collection art applied");
@@ -4967,6 +5097,100 @@ namespace HomeScreenCompanion
             {
                 _log.Warn($"Collection art for \"{cName}\" failed: {ex.Message}");
             }
+        }
+
+        // Generated poster / background on the tag's own page (Emby opens a tag as an item; its
+        // background is only ever the tag item's own Backdrop). Same styles and cache as a
+        // collection, drawn into <plugin data>/tag_art/<tag>/. With no style set (the default)
+        // nothing is touched, except that art this plugin put on the tag earlier is removed so
+        // Emby's own collage poster returns. Tags of show top-lists keep their ranked art.
+        private void ApplyTagArt(string tagName, TagConfig tc, IList<BaseItem> titles)
+        {
+            try
+            {
+                var showListTags = (Plugin.Instance?.Configuration?.TopLists ?? new List<TopListHomeSection>())
+                    .Where(ShowTopList.IsShowList)
+                    .SelectMany(t => t.ShowEntries ?? new List<ShowTopListEntry>())
+                    .Select(e => e.TagName);
+                if (showListTags.Contains(tagName, StringComparer.OrdinalIgnoreCase)) return;
+
+                bool wanted = CollectionArtRenderer.IsStyle(tc.TagPosterStyle) || CollectionArtRenderer.IsStyle(tc.TagBackgroundStyle)
+                    || !string.IsNullOrWhiteSpace(tc.TagBackgroundPath);
+                BaseItem? tagItem = null;
+                // The tag item appears once the first title is saved with the tag; give it a moment.
+                for (int attempt = 0; attempt < (wanted ? 5 : 1) && tagItem == null; attempt++)
+                {
+                    if (attempt > 0) Thread.Sleep(300);
+                    tagItem = _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "Tag" }, Name = tagName }).FirstOrDefault();
+                }
+                if (tagItem == null) return;
+                if (!wanted && !(tagItem.ImageInfos ?? Array.Empty<ItemImageInfo>()).Any(i => IsPluginTagArt(i.Path))) return;
+
+                // Art shows titles, never episodes or seasons: those count as their show.
+                var items = titles.Select(i => i is MediaBrowser.Controller.Entities.TV.Episode ep ? ep.Series
+                                             : i is MediaBrowser.Controller.Entities.TV.Season se ? se.Series : i)
+                                  .Where(i => i != null).Select(i => i!).ToList();
+                if (SetGeneratedArt(tagItem, tagName, "tag_art", tc.TagPosterStyle, tc.TagBackgroundStyle,
+                        tc.TagArtTitle, tc.TagBackgroundPath, items, true))
+                {
+                    _libraryManager.UpdateItem(tagItem, tagItem.GetParent(), ItemUpdateType.ImageUpdate, null);
+                    _log.Debug(wanted ? $"  {tagName}  →  tag art applied" : $"  {tagName}  →  tag art removed");
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Tag art for \"{tagName}\" failed: {ex.Message}");
+            }
+        }
+
+        private const string EmbyCollagePoster = "emby://playlistcollage";
+
+        // Images this plugin put on a tag item: generated art or an uploaded background.
+        private static bool IsPluginTagArt(string? path)
+        {
+            if (string.IsNullOrEmpty(path) || Plugin.Instance == null) return false;
+            var data = Plugin.Instance.DataFolderPath;
+            return path!.StartsWith(Path.Combine(data, "tag_art"), StringComparison.OrdinalIgnoreCase)
+                || path.StartsWith(Path.Combine(data, "collection_images"), StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Puts the generated (or uploaded) poster and background on the item's ImageInfos. With
+        // removeWhenNone, a kind with no style drops the plugin's earlier image (the poster goes
+        // back to Emby's own collage). True when the item's images changed.
+        private bool SetGeneratedArt(BaseItem target, string name, string artFolder, string posterStyle, string backgroundStyle,
+            string artTitle, string backgroundPath, IList<BaseItem> items, bool removeWhenNone)
+        {
+            bool changed = false;
+            foreach (var (style, background) in new[] { (posterStyle, false), (backgroundStyle, true) })
+            {
+                var type = background ? ImageType.Backdrop : ImageType.Primary;
+                var current = (target.ImageInfos ?? Array.Empty<ItemImageInfo>()).FirstOrDefault(i => i.Type == type);
+                string? path;
+                if (CollectionArtRenderer.IsStyle(style)) path = RenderCollectionArt(name, artFolder, CollectionArtRenderer.ArtTitle(artTitle, name), style, background, items);
+                else if (background && !string.IsNullOrWhiteSpace(backgroundPath) && File.Exists(backgroundPath))
+                    path = backgroundPath;   // Custom: the uploaded background
+                else
+                {
+                    if (removeWhenNone && current != null && IsPluginTagArt(current.Path))
+                    {
+                        var kept = (target.ImageInfos ?? Array.Empty<ItemImageInfo>()).Where(i => i.Type != type).ToList();
+                        if (!background) kept.Add(new ItemImageInfo { Path = EmbyCollagePoster, Type = ImageType.Primary, DateModified = DateTime.UtcNow });
+                        target.ImageInfos = kept.ToArray();
+                        changed = true;
+                    }
+                    continue;
+                }
+                if (path == null) continue;
+                if (current == null || !string.Equals(current.Path, path, StringComparison.OrdinalIgnoreCase)
+                    || current.DateModified != File.GetLastWriteTimeUtc(path))
+                {
+                    var images = (target.ImageInfos ?? Array.Empty<ItemImageInfo>()).Where(i => i.Type != type).ToList();
+                    images.Add(new ItemImageInfo { Path = path, Type = type, DateModified = File.GetLastWriteTimeUtc(path) });
+                    target.ImageInfos = images.ToArray();
+                    changed = true;
+                }
+            }
+            return changed;
         }
 
         private const string SortToTopPrefix = "!!! ";
@@ -4991,14 +5215,14 @@ namespace HomeScreenCompanion
             _libraryManager.UpdateItem(coll, coll.Parent, ItemUpdateType.MetadataEdit, null);
         }
 
-        // Draws the art into <plugin data>/collection_art/<collection>/ and returns its path, or
-        // the existing file when nothing changed. Null when no poster could be found.
-        private string? RenderCollectionArt(string cName, string title, string style, bool background, IList<BaseItem> items)
+        // Draws the art into <plugin data>/<artFolder>/<name>/ (collection_art or tag_art) and
+        // returns its path, or the existing file when nothing changed. Null when no poster could be found.
+        private string? RenderCollectionArt(string cName, string artFolder, string title, string style, bool background, IList<BaseItem> items)
         {
             var invalid = Path.GetInvalidFileNameChars();
             var safe = new string(cName.Select(ch => Array.IndexOf(invalid, ch) >= 0 ? '_' : ch).ToArray()).Trim().Trim('.');
             if (string.IsNullOrEmpty(safe)) safe = "collection";
-            var dir = Path.Combine(Plugin.Instance!.DataFolderPath, "collection_art", safe);
+            var dir = Path.Combine(Plugin.Instance!.DataFolderPath, artFolder, safe);
             Directory.CreateDirectory(dir);
             var kind = background ? "background" : "poster";
             var output = Path.Combine(dir, kind + ".jpg");
@@ -5019,7 +5243,7 @@ namespace HomeScreenCompanion
                         _providerManager, _libraryManager, _fileSystem, m => _log.Debug("  " + m));
                     if (poster != null) posters.Add(poster);
                 }
-                if (posters.Count == 0) { _log.Warn($"Collection art for \"{cName}\": no posters found"); return null; }
+                if (posters.Count == 0) { _log.Warn($"Art for \"{cName}\": no posters found"); return null; }
                 CollectionArtRenderer.Render(style, posters, title, background, output);
                 File.WriteAllText(keyFile, key);
                 return output;

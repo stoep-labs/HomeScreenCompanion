@@ -3343,6 +3343,10 @@ public class HomeScreenCompanionService : IService
             t.CollectionArtTitle        ??= "";
             t.CollectionBackgroundStyle ??= "";
             t.CollectionBackgroundPath  ??= "";
+            t.TagPosterStyle            ??= "";
+            t.TagArtTitle               ??= "";
+            t.TagBackgroundStyle        ??= "";
+            t.TagBackgroundPath         ??= "";
             if (string.IsNullOrEmpty(t.HomeSectionLibraryId)) t.HomeSectionLibraryId = "auto";
             if (string.IsNullOrEmpty(t.HomeSectionSettings)) t.HomeSectionSettings = "{}";
             foreach (var m in t.PlaylistMappings) m.LastSyncedItemIds ??= new List<long>();
