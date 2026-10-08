@@ -7,7 +7,10 @@ namespace HomeScreenCompanion
 {
     /// <summary>
     /// Renders Netflix-style "Top 10" art: a huge outlined rank numeral with the movie poster as
-    /// a rounded card, on a blurred, darkened copy of the same poster. Two shapes:
+    /// a rounded card, on a flat background in Emby's dark-theme page colour (#141414) so the
+    /// row reads as one strip instead of a run of separate dark blocks. Opaque on purpose:
+    /// Emby's web cards paint a grey fill behind images, so transparency would show grey.
+    /// Two shapes:
     ///   Render       — 1280x720 tile (numeral left, poster right) for the Thumb image.
     ///   RenderPoster — 1500x1200 (5:4) card (full-height poster right, numeral behind it) for the Primary image.
     ///
@@ -27,6 +30,10 @@ namespace HomeScreenCompanion
 
         private static readonly SKColor Outline = new SKColor(150, 150, 160);
 
+        // Emby dark theme page background (modules/themes/dark/theme.css: hsl(0,0%,7.96%)).
+        // The numeral is filled with it too, so it reads as an outline cut into the page.
+        internal static readonly SKColor PageBackground = new SKColor(0x14, 0x14, 0x14);
+
         private static readonly Lazy<SKTypeface> Numerals = new Lazy<SKTypeface>(LoadNumeralFont);
 
         public static void Render(string posterPath, int rank, string outputPath)
@@ -40,9 +47,7 @@ namespace HomeScreenCompanion
                 ?? throw new InvalidOperationException($"SkiaSharp could not create a {Width}x{Height} surface");
             var canvas = surface.Canvas;
 
-            DrawBackdrop(canvas, poster, Width, Height);
-            DrawScrim(canvas, Width, Height, towardBottom: false);
-            DrawVignette(canvas, Width, Height, 0.5f);
+            canvas.Clear(PageBackground);
 
             int pw = (int)(TileCardH / 1.5);
             int py = (Height - TileCardH) / 2;
@@ -84,9 +89,7 @@ namespace HomeScreenCompanion
                 ?? throw new InvalidOperationException($"SkiaSharp could not create a {w}x{h} surface");
             var canvas = surface.Canvas;
 
-            DrawBackdrop(canvas, poster, w, h);
-            DrawScrim(canvas, w, h, towardBottom: false);
-            DrawVignette(canvas, w, h, 0.45f);
+            canvas.Clear(PageBackground);
 
             // Emby shows this image in a 4:3 card and crops the top and bottom; the poster sits
             // inside the visible part so its rounded corners show.
@@ -159,7 +162,7 @@ namespace HomeScreenCompanion
             Typeface = Numerals.Value,
             TextSize = size,
             TextAlign = align,
-            Color = Base,
+            Color = PageBackground,
             IsAntialias = true
         };
 
@@ -179,28 +182,6 @@ namespace HomeScreenCompanion
             var bounds = new SKRect();
             paint.MeasureText(text, ref bounds);
             return bounds.Width;
-        }
-
-        // Base colour fading in from 20% to 85% of the way toward the left (or bottom) edge,
-        // so the numeral has a dark ground to sit on.
-        private static void DrawScrim(SKCanvas canvas, int w, int h, bool towardBottom)
-        {
-            const int stops = 64;
-            var colors = new SKColor[stops + 1];
-            var positions = new float[stops + 1];
-            for (int i = 0; i <= stops; i++)
-            {
-                float p = i / (float)stops;           // position along the gradient line
-                float toward = towardBottom ? p : 1 - p;
-                float t = Clamp01((toward - 0.2f) / 0.65f);
-                colors[i] = Base.WithAlpha((byte)Math.Round(255 * Math.Pow(t, 1.3)));
-                positions[i] = p;
-            }
-            using var paint = new SKPaint
-            {
-                Shader = SKShader.CreateLinearGradient(new SKPoint(0, 0), towardBottom ? new SKPoint(0, h) : new SKPoint(w, 0), colors, positions, SKShaderTileMode.Clamp)
-            };
-            canvas.DrawRect(0, 0, w, h, paint);
         }
 
         private static SKTypeface LoadNumeralFont() => LoadFont("Anton.ttf");

@@ -244,6 +244,7 @@ namespace HomeScreenCompanion
         public string CustomName { get; set; } = "";
         public string DisplayMode { get; set; } = "";
         public string ImageType { get; set; } = "";
+        public string CardSizeOffset { get; set; } = "0";
         public string BadgeStyle { get; set; } = "neutral";
         public List<string> UserIds { get; set; } = new List<string>();
         public string Message { get; set; } = "";
@@ -279,6 +280,8 @@ namespace HomeScreenCompanion
         public string SourceTag { get; set; } = "";
         public string BadgeStyle { get; set; } = "top10";
         public int MaxItems { get; set; }   // 1–10; 0 = 10
+        // Emby's ContentSection.CardSizeOffset (-1 = smaller cards); null keeps the stored value.
+        public int? CardSizeOffset { get; set; }
     }
 
     public class PrepareShowTopListResponse
@@ -518,6 +521,7 @@ namespace HomeScreenCompanion
         public string CustomName { get; set; } = "";
         public string DisplayMode { get; set; } = "";
         public string ImageType { get; set; } = "";
+        public string CardSizeOffset { get; set; } = "0";
         public string BadgeStyle { get; set; } = "neutral";
         public int MaxItems { get; set; }
         public List<string> UserIds { get; set; } = new List<string>();
@@ -2434,6 +2438,7 @@ public class HomeScreenCompanionService : IService
                 var customName  = "";
                 var displayMode = "";
                 var imageType   = "";
+                var cardSize    = "0";
                 var badgeStyle  = "neutral";
                 var userIds     = new List<string>();
                 if (tlConfig != null)
@@ -2444,6 +2449,7 @@ public class HomeScreenCompanionService : IService
                         customName  = settings.TryGetValue("CustomName",  out var cn) ? cn  : "";
                         displayMode = settings.TryGetValue("DisplayMode", out var dm) ? dm  : "";
                         imageType   = settings.TryGetValue("ImageType",   out var it) ? it  : "";
+                        cardSize    = settings.TryGetValue("CardSizeOffset", out var cs) && !string.IsNullOrEmpty(cs) ? cs : "0";
                         badgeStyle  = settings.TryGetValue("BadgeStyle",  out var bs) ? bs  : "neutral";
                     }
                     catch { }
@@ -2459,6 +2465,7 @@ public class HomeScreenCompanionService : IService
                     CustomName  = customName,
                     DisplayMode = displayMode,
                     ImageType   = imageType,
+                    CardSizeOffset = cardSize,
                     BadgeStyle  = badgeStyle,
                     UserIds     = userIds
                 };
@@ -2522,6 +2529,8 @@ public class HomeScreenCompanionService : IService
                 settings["CustomName"] = string.IsNullOrWhiteSpace(request.CustomName) ? listName : request.CustomName.Trim();
                 settings["DisplayMode"] = request.DisplayMode ?? "";
                 settings["ImageType"] = request.ImageType ?? "";
+                if (request.CardSizeOffset.HasValue)
+                    settings["CardSizeOffset"] = Math.Max(-3, Math.Min(3, request.CardSizeOffset.Value)).ToString(System.Globalization.CultureInfo.InvariantCulture);
                 settings["BadgeStyle"] = string.IsNullOrWhiteSpace(request.BadgeStyle) ? "top10" : request.BadgeStyle.Trim();
                 tl.HomeSectionSettings = _jsonSerializer.SerializeToString(settings);
 
@@ -2564,6 +2573,7 @@ public class HomeScreenCompanionService : IService
                 CustomName  = settings.TryGetValue("CustomName", out var cn) ? cn : "",
                 DisplayMode = settings.TryGetValue("DisplayMode", out var dm) ? dm : "",
                 ImageType   = settings.TryGetValue("ImageType", out var it) ? it : "",
+                CardSizeOffset = settings.TryGetValue("CardSizeOffset", out var cs) && !string.IsNullOrEmpty(cs) ? cs : "0",
                 BadgeStyle  = settings.TryGetValue("BadgeStyle", out var bs) && !string.IsNullOrWhiteSpace(bs) ? bs : "top10",
                 UserIds     = tl.HomeSectionUserIds ?? new List<string>()
             };
@@ -3187,6 +3197,7 @@ public class HomeScreenCompanionService : IService
                                 CustomName  = settings.TryGetValue("CustomName", out var cn) && !string.IsNullOrEmpty(cn) ? cn : tl.TagName,
                                 DisplayMode = settings.TryGetValue("DisplayMode", out var dm) ? dm : "",
                                 ImageType   = settings.TryGetValue("ImageType", out var it) ? it : "",
+                                CardSizeOffset = settings.TryGetValue("CardSizeOffset", out var cs) && !string.IsNullOrEmpty(cs) ? cs : "0",
                                 BadgeStyle  = badgeStyle,
                                 MaxItems    = tl.MaxItems,
                                 UserIds     = tl.HomeSectionUserIds.ToList(),

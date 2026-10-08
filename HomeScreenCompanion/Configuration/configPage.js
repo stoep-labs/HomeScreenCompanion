@@ -3408,6 +3408,20 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
 
 
+    // Emby's per-section card size (ContentSection.CardSizeOffset): negative = smaller cards,
+    // more per row. "0" (not "") is Default, so switching back really resets the section.
+    var CARD_SIZE_OPTIONS = [['0', 'Default'], ['-1', 'Smaller'], ['-2', 'Smallest'], ['1', 'Larger']];
+    function normCardSize(v) {
+        var n = parseInt(v, 10);
+        return isNaN(n) ? '0' : String(n);
+    }
+    function cardSizeOptionsHtml(selected) {
+        var sel = normCardSize(selected);
+        return CARD_SIZE_OPTIONS.map(function (o) {
+            return '<option value="' + o[0] + '"' + (sel === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+        }).join('');
+    }
+
     function buildHomeSectionFormHtml(savedSettings, defaultSectionType, defaultName, tagEnabled, collEnabled, libraryOptions, savedLibraryId, allLibraries) {
         var s = savedSettings || {};
         var html = '';
@@ -3479,6 +3493,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         html += '<select is="emby-select" class="selHseImageType hse-field-str" data-field="ImageType" style="width:100%;"' + (imgTypeDisabled ? ' disabled' : '') + '><option value=""' + (imgTypeVal === '' ? ' selected' : '') + '>Auto</option>';
         ['Primary','Thumb'].forEach(function(o) { html += '<option value="' + o + '"' + (imgTypeVal === o ? ' selected' : '') + '>' + o + '</option>'; });
         html += '</select></div>';
+
+        html += '<div style="margin-bottom:12px;"><label class="selectLabel">Card Size</label>';
+        html += '<select is="emby-select" class="selHseCardSize hse-field-str" data-field="CardSizeOffset" style="width:100%;">' + cardSizeOptionsHtml(s.CardSizeOffset) + '</select></div>';
 
         var sortByVal = s.SortBy || '';
         html += '<div style="margin-bottom:12px;"><label class="selectLabel">Sort By</label>';
@@ -3618,6 +3635,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     DisplayMode:     section.DisplayMode || '',
                     ViewType:        section.ViewType || '',
                     ImageType:       section.ImageType || '',
+                    CardSizeOffset:  normCardSize(section.CardSizeOffset),
                     SortBy:          section.SortBy || '',
                     SortOrder:       section.SortOrder || '',
                     ScrollDirection: (function() {
@@ -4209,6 +4227,29 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     }
 
 
+    // "Select all" / "Clear" links above a plain (always open) per-user checkbox list — same look
+    // as the dropdown version in buildUserMultiSelectHtml.
+    function userListSelectLinksHtml() {
+        return '<div class="hsc-user-list-links" style="display:flex;gap:12px;padding:2px 0 6px 0;margin-bottom:4px;font-size:0.85em;">' +
+            '<a href="#" class="hsc-user-select-all" style="color:#52B54B;">Select all</a>' +
+            '<a href="#" class="hsc-user-select-none" style="color:inherit;opacity:0.7;">Clear</a></div>';
+    }
+
+    // Wires those links: sets every enabled checkbox in listEl, then fires one change event so
+    // the list's own listeners (and checkFormState) run once.
+    function wireUserListSelectLinks(linksEl, listEl) {
+        if (!linksEl || !listEl) return;
+        linksEl.querySelectorAll('.hsc-user-select-all, .hsc-user-select-none').forEach(function (link) {
+            link.addEventListener('click', function (e) {
+                e.preventDefault();
+                var on = link.classList.contains('hsc-user-select-all');
+                var boxes = Array.from(listEl.querySelectorAll('input[type="checkbox"]')).filter(function (c) { return !c.disabled; });
+                boxes.forEach(function (chk) { chk.checked = on; });
+                if (boxes.length) boxes[boxes.length - 1].dispatchEvent(new Event('change', { bubbles: true }));
+            });
+        });
+    }
+
     function renderHscTab(container, config, users) {
         var sourceOptions = users.map(function (u) {
             return '<option value="' + u.Id + '"' + (config.HomeSyncSourceUserId === u.Id ? ' selected' : '') + '>' + u.Name + '</option>';
@@ -4252,6 +4293,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             '<div class="hsc-card" id="hscSyncToCard" style="display:' + syncDisplay + '">',
             '<h3 class="hsc-section-title">Sync to</h3>',
             '<p class="textMuted" style="font-size:0.88em;margin-bottom:12px;">These users will receive the source user\'s home screen layout on each sync.</p>',
+            (targetRows ? userListSelectLinksHtml() : ''),
             '<div class="hsc-user-list" id="hscTargetList">',
             targetRows || '<p class="textMuted" style="font-size:0.85em;">No users found.</p>',
             '</div>',
@@ -4315,6 +4357,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         setTimeout(checkFormState, 0);
                     });
                 });
+
+                var hscList = container.querySelector('#hscTargetList');
+                wireUserListSelectLinks(hscList && hscList.previousElementSibling, hscList);
 
                 container.querySelectorAll('input:not(.hsc-target-chk), select:not(#selHscSourceUser)').forEach(function (el) {
                     el.addEventListener('change', function () { setTimeout(checkFormState, 0); });
@@ -4383,6 +4428,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             '</div>',
             '<div id="cwbUserListWrap" style="display:' + cwbUsersDisp + '">',
             '<p class="textMuted" style="font-size:0.88em;margin:12px 0;">Bump Continue Watching for these users:</p>',
+            (cwbUserRows ? userListSelectLinksHtml() : ''),
             '<div class="hsc-user-list" id="cwbUserList">',
             cwbUserRows || '<p class="textMuted" style="font-size:0.85em;">No users found.</p>',
             '</div>',
@@ -4428,6 +4474,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         if (wrap) wrap.style.display = this.checked ? 'none' : '';
                     });
                 }
+
+                var cwbList = container.querySelector('#cwbUserList');
+                wireUserListSelectLinks(cwbList && cwbList.previousElementSibling, cwbList);
 
                 container.querySelectorAll('input, select').forEach(function (el) {
                     el.addEventListener('change', function () { setTimeout(checkFormState, 0); });
@@ -5200,6 +5249,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var existing = topLists.find(function (t) {
                     return (t.TagName || '').toLowerCase() === tagName.toLowerCase();
                 });
+                var storedSettings = {};
+                try { storedSettings = JSON.parse((existing && existing.HomeSectionSettings) || '{}'); } catch (e) {}
+                var cardSizeOffset = ui.cardSizeOffset != null ? normCardSize(ui.cardSizeOffset) : normCardSize(storedSettings.CardSizeOffset);
                 var hseSettings = JSON.stringify({
                     SectionType: 'items',
                     DisplayMode: displayMode,
@@ -5207,6 +5259,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     MaxItems: String(maxItems),
                     ViewType: '',
                     ImageType: imageType,
+                    CardSizeOffset: cardSizeOffset,
                     BadgeStyle: badgeStyle,
                     SortBy: 'SortName',
                     SortOrder: 'Ascending',
@@ -5404,7 +5457,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         { val: 'soft-red',   label: 'Soft red',   bg: 'rgba(201,69,69,0.82)',    textColor: '#fff' },
         { val: 'violet',     label: 'Violet',     bg: 'rgba(123,82,181,0.82)',   textColor: '#fff' },
         { val: 'none',       label: 'No number',  bg: 'transparent',             textColor: '#fff', noNumber: true },
-        { val: 'top10',      label: 'Top 10 tile', bg: '#0d0d10',                textColor: '#0d0d10', tile: true }
+        { val: 'top10',      label: 'Top 10 tile', bg: '#141414',                textColor: '#141414', tile: true }
     ];
 
     function buildBadgePickerHtml(selectedVal) {
@@ -5520,6 +5573,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '<option value="Thumb">Thumb</option>' +
                 '</select></div>' +
 
+                '<div style="' + fieldStyle + '">' +
+                '<label style="' + labelStyle + '">Card Size</label>' +
+                '<select is="emby-select" class="tlm-card-size" style="width:100%;">' + cardSizeOptionsHtml(existingData ? existingData.cardSizeOffset : '0') + '</select></div>' +
+
                 buildBadgePickerHtml(existingData ? existingData.badgeStyle : (isShows ? 'top10' : 'neutral')) +
 
                 '<div style="' + fieldStyle + '">' +
@@ -5570,6 +5627,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var customName    = modal.querySelector('.tlm-custom-name').value.trim() || displayName;
                 var displayMode   = modal.querySelector('.tlm-display-mode').value;
                 var imageType     = modal.querySelector('.tlm-image-type').value;
+                var cardSize      = normCardSize(modal.querySelector('.tlm-card-size').value);
                 var badgeStyle    = readBadgeStyle(modal);
                 var maxItems      = Math.max(0, parseInt(modal.querySelector('.tlm-max-items').value, 10) || 0);
                 var tok = window.ApiClient.accessToken ? window.ApiClient.accessToken() : '';
@@ -5583,6 +5641,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         headers: { 'Content-Type': 'application/json', 'X-Emby-Token': tok },
                         body: JSON.stringify({
                             ListName: listName, CustomName: customName, DisplayMode: displayMode, ImageType: imageType,
+                            CardSizeOffset: parseInt(cardSize, 10),
                             UserIds: selectedUserIds, SourceTag: tagName, BadgeStyle: badgeStyle, MaxItems: maxItems
                         })
                     })
@@ -5611,7 +5670,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     if (!prepareResult.Success) throw new Error(prepareResult.Message || 'Failed to create folder.');
                     executeTopListCreationSteps(
                         tagName, displayName, selectedUserIds, displayMode, customName, imageType, maxItems,
-                        prepareResult, { saveBtn: saveBtn, errEl: errEl, modal: modal, badgeStyle: badgeStyle }, onSuccess
+                        prepareResult, { saveBtn: saveBtn, errEl: errEl, modal: modal, badgeStyle: badgeStyle, cardSizeOffset: cardSize }, onSuccess
                     );
                 })
                 .catch(function (err) {
@@ -5694,6 +5753,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var presetCustomName = (existingData && existingData.customName)  || '';
             var presetDisplay    = (existingData && existingData.displayMode) || '';
             var presetImageType  = (existingData && existingData.imageType)   || '';
+            var presetCardSize   = (existingData && existingData.cardSizeOffset) || '0';
             var presetBadgeStyle = (existingData && existingData.badgeStyle)  || (isShows ? 'top10' : 'neutral');
 
             var displayOptions = [
@@ -5760,6 +5820,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '<div style="' + fieldStyle + '">' +
                 '<label style="' + labelStyle + '">Image Type</label>' +
                 '<select is="emby-select" class="mtlImageType" style="width:100%;">' + imageOptions + '</select></div>' +
+                '<div style="' + fieldStyle + '">' +
+                '<label style="' + labelStyle + '">Card Size</label>' +
+                '<select is="emby-select" class="mtlCardSize" style="width:100%;">' + cardSizeOptionsHtml(presetCardSize) + '</select></div>' +
 
                 '</div>' +
 
@@ -5944,6 +6007,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var customNameVal   = (modal.querySelector('.mtlCustomName').value || '').trim() || listName;
                 var displayMode     = modal.querySelector('.mtlDisplayMode').value;
                 var imageType       = modal.querySelector('.mtlImageType').value;
+                var cardSize        = normCardSize(modal.querySelector('.mtlCardSize').value);
                 var badgeStyle      = readBadgeStyle(modal);
                 var selectedUserIds = Array.from(modal.querySelectorAll('.chkMtlUser:checked')).map(function (c) { return c.value; });
 
@@ -5960,6 +6024,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         headers: { 'Content-Type': 'application/json', 'X-Emby-Token': tokS },
                         body: JSON.stringify({
                             ListName: listName, CustomName: customNameVal, DisplayMode: displayMode, ImageType: imageType,
+                            CardSizeOffset: parseInt(cardSize, 10),
                             UserIds: selectedUserIds,
                             SourceTag: sourceTag,
                             BadgeStyle: badgeStyle,
@@ -5999,7 +6064,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     if (!prepareResult.Success) throw new Error(prepareResult.Message || 'Failed to create folder.');
                     executeTopListCreationSteps(
                         listName, customNameVal, selectedUserIds, displayMode, customNameVal, imageType, 0,
-                        prepareResult, { saveBtn: createBtn, errEl: errEl, modal: modal, badgeStyle: badgeStyle }, function () {
+                        prepareResult, { saveBtn: createBtn, errEl: errEl, modal: modal, badgeStyle: badgeStyle, cardSizeOffset: cardSize }, function () {
                             document.removeEventListener('keydown', onEsc);
                             if (typeof onSuccess === 'function') onSuccess();
                         }
@@ -6066,6 +6131,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var presetUserIds    = data.UserIds      || editJson.userIds      || [];
                 var presetDisplay    = data.DisplayMode  || editJson.displayMode  || '';
                 var presetImageType  = data.ImageType    || editJson.imageType    || '';
+                var presetCardSize   = data.CardSizeOffset != null ? String(data.CardSizeOffset) : (editJson.cardSizeOffset || '0');
                 var presetBadgeStyle = data.BadgeStyle   || editJson.badgeStyle   || (isShows ? 'top10' : 'neutral');
                 var presetCustomName = data.CustomName   || editJson.customName   || '';
                 var presetMovies     = data.Movies       || [];
@@ -6111,6 +6177,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     '<div style="' + fieldStyle + '">' +
                     '<label style="' + labelStyle + '">Image Type</label>' +
                     '<select is="emby-select" class="mtlImageType" style="width:100%;">' + imageOptions + '</select></div>' +
+                '<div style="' + fieldStyle + '">' +
+                '<label style="' + labelStyle + '">Card Size</label>' +
+                '<select is="emby-select" class="mtlCardSize" style="width:100%;">' + cardSizeOptionsHtml(presetCardSize) + '</select></div>' +
 
                     '</div>' +
 
@@ -6238,6 +6307,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         customName: (wrapper.querySelector('.mtlCustomName').value || '').trim(),
                         displayMode: wrapper.querySelector('.mtlDisplayMode').value,
                         imageType: wrapper.querySelector('.mtlImageType').value,
+                        cardSize: wrapper.querySelector('.mtlCardSize').value,
                         badgeStyle: readBadgeStyle(body),
                         userIds: Array.from(wrapper.querySelectorAll('.chkMtlUser:checked')).map(function (c) { return c.value; }).sort(),
                         movies: selectedMovies.map(function (m) { return m.ItemId; })
@@ -6260,6 +6330,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         var customNameVal   = (wrapper.querySelector('.mtlCustomName').value || '').trim() || tagName;
                         var displayMode     = wrapper.querySelector('.mtlDisplayMode').value;
                         var imageType       = wrapper.querySelector('.mtlImageType').value;
+                        var cardSize        = normCardSize(wrapper.querySelector('.mtlCardSize').value);
                         var badgeStyle      = readBadgeStyle(body);
                         var userIds         = Array.from(wrapper.querySelectorAll('.chkMtlUser:checked')).map(function (c) { return c.value; });
 
@@ -6273,6 +6344,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                 headers: { 'Content-Type': 'application/json', 'X-Emby-Token': tok2 },
                                 body: JSON.stringify({
                                     ListName: tagName, CustomName: customNameVal, DisplayMode: displayMode, ImageType: imageType,
+                                    CardSizeOffset: parseInt(cardSize, 10),
                                     UserIds: userIds, BadgeStyle: badgeStyle,
                                     SeriesIds: selectedMovies.map(function (m) { return m.ItemId; })
                                 })
@@ -6300,7 +6372,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             var errEl = wrapper.querySelector('.mtl-error');
                             executeTopListCreationSteps(
                                 tagName, customNameVal, userIds, displayMode, customNameVal, imageType, 0,
-                                prepareResult, { saveBtn: fakeBtn, errEl: errEl, modal: body, innerBox: wrapper, badgeStyle: badgeStyle, closeHandler: resolve, silent: true },
+                                prepareResult, { saveBtn: fakeBtn, errEl: errEl, modal: body, innerBox: wrapper, badgeStyle: badgeStyle, cardSizeOffset: cardSize, closeHandler: resolve, silent: true },
                                 resolve
                             );
                         })
@@ -6317,6 +6389,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var presetUserIds    = editJson.userIds     || [];
                 var presetDisplay    = editJson.displayMode || '';
                 var presetImageType  = editJson.imageType   || '';
+                var presetCardSize   = editJson.cardSizeOffset || '0';
                 var presetBadgeStyle = editJson.badgeStyle  || 'neutral';
                 var presetCustomName = editJson.customName  || '';
                 var presetMaxItems   = editJson.maxItems    || '0';
@@ -6351,6 +6424,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     '<option value="Thumb">Thumb</option>' +
                     '</select></div>' +
 
+                    '<div style="' + fieldStyle + '">' +
+                    '<label style="' + labelStyle + '">Card Size</label>' +
+                    '<select is="emby-select" class="tlm-card-size" style="width:100%;">' + cardSizeOptionsHtml(presetCardSize) + '</select></div>' +
+
                     buildBadgePickerHtml(presetBadgeStyle) +
 
                     '<div style="' + fieldStyle + '">' +
@@ -6378,6 +6455,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         customName: (wrapper.querySelector('.tlm-custom-name').value || '').trim(),
                         displayMode: wrapper.querySelector('.tlm-display-mode').value,
                         imageType: wrapper.querySelector('.tlm-image-type').value,
+                        cardSize: wrapper.querySelector('.tlm-card-size').value,
                         badgeStyle: readBadgeStyle(body),
                         maxItems: wrapper.querySelector('.tlm-max-items').value,
                         userIds: Array.from(wrapper.querySelectorAll('.chkTlmUser:checked')).map(function (c) { return c.value; }).sort()
@@ -6404,6 +6482,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         var customNameVal = wrapper.querySelector('.tlm-custom-name').value.trim() || displayName;
                         var displayMode   = wrapper.querySelector('.tlm-display-mode').value;
                         var imageType     = wrapper.querySelector('.tlm-image-type').value;
+                        var cardSize      = normCardSize(wrapper.querySelector('.tlm-card-size').value);
                         var badgeStyle    = readBadgeStyle(body);
                         var maxItems      = Math.max(0, parseInt(wrapper.querySelector('.tlm-max-items').value, 10) || 0);
                         var tok2 = window.ApiClient.accessToken ? window.ApiClient.accessToken() : '';
@@ -6414,6 +6493,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                 headers: { 'Content-Type': 'application/json', 'X-Emby-Token': tok2 },
                                 body: JSON.stringify({
                                     ListName: tagName, CustomName: customNameVal, DisplayMode: displayMode, ImageType: imageType,
+                                    CardSizeOffset: parseInt(cardSize, 10),
                                     UserIds: userIds, SourceTag: editJson.sourceTag || tagName, BadgeStyle: badgeStyle, MaxItems: maxItems
                                 })
                             })
@@ -6438,7 +6518,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             var errEl = wrapper.querySelector('.tlm-error');
                             executeTopListCreationSteps(
                                 tagName, customNameVal, userIds, displayMode, customNameVal, imageType, maxItems,
-                                prepareResult, { saveBtn: fakeBtn, errEl: errEl, modal: body, innerBox: wrapper, badgeStyle: badgeStyle, closeHandler: resolve, silent: true },
+                                prepareResult, { saveBtn: fakeBtn, errEl: errEl, modal: body, innerBox: wrapper, badgeStyle: badgeStyle, cardSizeOffset: cardSize, closeHandler: resolve, silent: true },
                                 resolve
                             );
                         })
@@ -6823,7 +6903,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             executeTopListCreationSteps(
                                 tl.TagName, tl.CustomName || tl.TagName, tl.UserIds || [], tl.DisplayMode || '', tl.CustomName || tl.TagName,
                                 tl.ImageType || '', tl.MaxItems || 0, { FolderPath: tl.FolderPath, FilesCreated: 0 },
-                                { saveBtn: dummyBtn, errEl: dummyErr, modal: dummyModal, badgeStyle: tl.BadgeStyle || 'neutral', silent: true, closeHandler: resolve }
+                                { saveBtn: dummyBtn, errEl: dummyErr, modal: dummyModal, badgeStyle: tl.BadgeStyle || 'neutral', cardSizeOffset: tl.CardSizeOffset, silent: true, closeHandler: resolve }
                             ).catch(reject);
                         }).catch(function (err) {
                             failures.push((tl.CustomName || tl.TagName) + ': ' + (err && err.message ? err.message : err));
@@ -6933,6 +7013,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     customName:  settings.CustomName  || '',
                     displayMode: settings.DisplayMode || '',
                     imageType:   settings.ImageType   || '',
+                    cardSizeOffset: normCardSize(settings.CardSizeOffset),
                     badgeStyle:  settings.BadgeStyle  || 'neutral',
                     maxItems:    settings.MaxItems    || 0
                 };
@@ -6961,6 +7042,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         customName:  item.customName,
                         displayMode: item.displayMode,
                         imageType:   item.imageType,
+                        cardSizeOffset: item.cardSizeOffset,
                         badgeStyle:  item.badgeStyle,
                         maxItems:    String(item.maxItems || '0')
                     }));
