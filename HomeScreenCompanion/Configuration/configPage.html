@@ -1581,6 +1581,10 @@
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">auto_awesome</i> AI created lists</div>
                         Describe what you want in plain language — for example <em>"Best sci-fi films from the 90s"</em> — and let <strong>OpenAI</strong> or <strong>Google Gemini</strong> generate the list. You can also have the AI take into account what a specific user has watched recently, to personalise the suggestions. Requires an API key in Settings. <em>Preview</em> asks the AI once and shows which of its titles are in your library and which are not; <em>Test AI Source</em> just shows the raw answer.
                     </div>
+                    <div class="src-card">
+                        <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">recommend</i> Personal: Your Next Watch</div>
+                        Personal recommendations, worked out on your server (no AI, no internet). For each user ticked on the source's <em>Playlist</em> tab the plugin looks at what they finished in the last 90 days (or their last 50 titles when that is too few; a show counts once they watched an episode), their favourites and titles they rated highly, and picks the unwatched movies and shows that are most alike: shared genres, top-billed actors, directors and writers, studios and tags, a similar year, a good rating, and titles watched by other users with the same taste. A title has to have several things in common with something the user watched (for example genres <em>and</em> actors <em>and</em> studio or keywords) to make the top 10 — one shared actor or one broad genre is not enough — and the next or previous film of a franchise they are watching always counts. Unwatched favourites are included as titles the user wants to watch, but at most 3 in the top 10 and about 30% of the list, spread through it. It never picks anything the user watched or started, anything they cannot open (their library access and parental rating apply), or a second version of the same film, and it limits titles from one franchise and one genre so the list stays varied. A user with almost no history gets the server's most watched titles they have not seen. <strong>Max items</strong> (default 50) sets the list length; add filters (for example <em>Media Type</em>) to keep it to movies or shows. Each user gets <strong>their own</strong> playlist with their picks, best first, and the <em>Home Screen</em> tab can show it as a row for each user. A show goes into the playlist as its first episode, because Emby playlists hold episodes, not whole shows; on the home screen row its card still shows the show's poster (the row's <em>Image Type</em> is set to <em>Primary</em> for this; choose <em>Thumb</em> for the show's landscape image instead). Tags and collections are shared by everyone, so this type does not make them. <em>Preview</em> lets you pick a user and shows their list with the reason for each title. The lists are refreshed whenever the sync runs.
+                    </div>
                 </div>
 
                 <!-- 3. SOURCE SETTINGS -->
@@ -1627,7 +1631,7 @@
                     </div>
                     <div class="src-card">
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">queue_music</i> Playlist tab</div>
-                        Enable <em>Create Playlist</em> to keep an Emby playlist of the matched items, in the source's order, for each user you tick. Set a <strong>Playlist Name</strong> or leave it empty to use the Display Name. Each sync brings the playlists up to date; unticking a user, turning the option off or making the group inactive deletes those playlists on the next sync.
+                        Enable <em>Create Playlist</em> to keep an Emby playlist of the matched items, in the source's order, for each user you tick. Set a <strong>Playlist Name</strong> or leave it empty to use the Display Name. Each sync brings the playlists up to date; unticking a user, turning the option off or making the group inactive deletes those playlists on the next sync. For <em>Your Next Watch</em> every ticked user gets a playlist with <strong>their own</strong> picks instead of one shared list.
                     </div>
                     <div class="src-card">
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">calendar_month</i> Schedule tab</div>
@@ -1639,7 +1643,7 @@
                     </div>
                     <div class="src-card">
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">tv</i> Home Screen tab</div>
-                        Make this source automatically show up as a row on the home screen for specific users, updated every time sync runs. In the user list, <em>Select all</em> and <em>Clear</em> tick or untick everyone at once. Choose <em>Media Type: Collections</em> to show a collection row instead of individual items.
+                        Make this source automatically show up as a row on the home screen for specific users, updated every time sync runs. In the user list, <em>Select all</em> and <em>Clear</em> tick or untick everyone at once. Choose <em>Media Type: Collections</em> to show a collection row instead of individual items. For <em>Your Next Watch</em> the row shows each user's own playlist from this source, in pick order — tick the same users on the <em>Playlist</em> tab; a user without that playlist gets no row.
                     </div>
                 </div>
 

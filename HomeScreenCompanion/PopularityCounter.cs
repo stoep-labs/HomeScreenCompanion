@@ -82,7 +82,8 @@ namespace HomeScreenCompanion
             return viewers.ToDictionary(kv => kv.Key, kv => kv.Value.Count);
         }
 
-        private static bool Counts(UserItemData d, DateTimeOffset? cutoff)
+        // Also used by NextWatchRecommender, so "popular" means the same in both.
+        internal static bool Counts(UserItemData d, DateTimeOffset? cutoff)
         {
             bool watched = d.Played || d.PlayCount > 0;
             if (!watched) return false;
@@ -90,14 +91,15 @@ namespace HomeScreenCompanion
             return d.LastPlayedDate.HasValue && d.LastPlayedDate.Value >= cutoff.Value;
         }
 
-        private List<UserItemData> RecordsOf(long userInternalId)
+        // One GetAllUserData call per user per run, shared with NextWatchRecommender.
+        internal List<UserItemData> RecordsOf(long userInternalId)
         {
             if (!_recordsByUser.TryGetValue(userInternalId, out var records))
                 _recordsByUser[userInternalId] = records = _userDataManager.GetAllUserData(userInternalId) ?? new List<UserItemData>();
             return records;
         }
 
-        private static string KeyOf(BaseItem item)
+        internal static string KeyOf(BaseItem item)
         {
             var key = item.UserDataKey;
             if (string.IsNullOrEmpty(key))
@@ -129,6 +131,9 @@ namespace HomeScreenCompanion
         public int Scanned { get; private set; }
         public List<BaseItem> Items { get; private set; } = new List<BaseItem>();
         public Dictionary<Guid, int> Viewers { get; private set; } = new Dictionary<Guid, int>();
+        // "Your Next Watch": the user the preview is for, and a short reason per title.
+        public string UserId { get; set; } = "";
+        public Dictionary<Guid, string> Reasons { get; } = new Dictionary<Guid, string>();
 
         public void Complete(List<BaseItem> items, int scanned, Dictionary<Guid, int>? viewers, List<string>? warnings = null)
         {

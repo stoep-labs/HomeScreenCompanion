@@ -132,6 +132,8 @@ namespace HomeScreenCompanion
         public TagConfig Source { get; set; } = new TagConfig();
         // Every URL / collection / playlist of the card, one TagConfig each (as saved). Optional.
         public List<TagConfig> Sources { get; set; } = new List<TagConfig>();
+        // "Your Next Watch": the user whose picks to show (empty = the first selected user).
+        public string PreviewUserId { get; set; } = "";
     }
 
     public class PreviewSourceResponse
@@ -165,6 +167,7 @@ namespace HomeScreenCompanion
         public int? Year { get; set; }
         public int? Viewers { get; set; }
         public string ImageTag { get; set; } = "";
+        public string Reason { get; set; } = "";       // "Your Next Watch": why it was picked
     }
 
     [Route("/HomeScreenCompanion/Hsc/Status", "GET")]
@@ -981,7 +984,7 @@ public class HomeScreenCompanionService : IService
                 .ToList();
             foreach (var g in group) { g.Name = source.Name; g.Tag = source.Tag; }
 
-            var preview = await task.PreviewEntryAsync(source, CancellationToken.None, group);
+            var preview = await task.PreviewEntryAsync(source, CancellationToken.None, group, request.PreviewUserId ?? "");
             if (!preview.Done)
                 return new PreviewSourceResponse { Message = preview.Message, SourceType = source.SourceType ?? "" };
             bool showViewers = preview.Viewers.Count > 0;
@@ -1004,6 +1007,7 @@ public class HomeScreenCompanionService : IService
                     Type = i.GetType().Name,
                     Year = i.ProductionYear,
                     Viewers = showViewers && preview.Viewers.TryGetValue(i.Id, out var v) ? v : (int?)null,
+                    Reason = preview.Reasons.TryGetValue(i.Id, out var why) ? why : "",
                     ImageTag = i.HasImage(ImageType.Primary) ? (i.GetImageInfo(ImageType.Primary, 0)?.DateModified.Ticks.ToString() ?? "") : ""
                 }).ToList()
             };
@@ -1292,6 +1296,8 @@ public class HomeScreenCompanionService : IService
 
                 if (!settingsDict.ContainsKey("SectionType"))
                     settingsDict["SectionType"] = (tc.EnableCollection && !string.IsNullOrEmpty(tc.CollectionName)) ? "boxset" : "items";
+                // NextWatch rows keep their per-user playlist (ParentId is left as it is).
+                if (HomeScreenCompanionTask.IsNextWatch(tc)) HomeScreenCompanionTask.NormalizeNextWatchSectionSettings(settingsDict);
 
                 settingsDict.TryGetValue("SectionType", out var sectionType);
 
@@ -2918,7 +2924,8 @@ public class HomeScreenCompanionService : IService
                         catch { }
 
                         tcSettings.TryGetValue("SectionType", out var tcSt);
-                        if (tcSt == "boxset") continue;
+                        // Only items rows get the top-list exclusion; a NextWatch row shows a playlist.
+                        if (tcSt == "boxset" || tcSt == "playlist" || HomeScreenCompanionTask.IsNextWatch(tc)) continue;
 
                         var existingExcluded = (tcSettings.TryGetValue("_queryExcludeViewIds", out var ev) ? ev : "")
                             .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)

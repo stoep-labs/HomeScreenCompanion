@@ -382,7 +382,8 @@ namespace HomeScreenCompanion
                     catch { }
 
                     tcSettings.TryGetValue("SectionType", out var tcSt);
-                    if (tcSt == "boxset") continue;
+                    // Only items rows get the top-list exclusion; a NextWatch row shows a playlist.
+                    if (tcSt == "boxset" || tcSt == "playlist" || HomeScreenCompanionTask.IsNextWatch(tc)) continue;
 
                     var existingExcluded = (tcSettings.TryGetValue("_queryExcludeViewIds", out var tcEv) ? tcEv : "")
                         .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)

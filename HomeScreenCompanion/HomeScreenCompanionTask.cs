@@ -235,6 +235,8 @@ namespace HomeScreenCompanion
                 // source. Playlists and rank files must be built from the union of all sources in the group,
                 // so they are accumulated here and written once after the loop.
                 var groupPlaylistItems = new Dictionary<string, (TagConfig Owner, List<BaseItem> Items, HashSet<Guid> Seen)>(StringComparer.OrdinalIgnoreCase);
+                // "Your Next Watch": one list per user, written to that user's own playlist.
+                var nextWatchByGroup = new Dictionary<string, (TagConfig Owner, Dictionary<string, List<BaseItem>> PerUser)>(StringComparer.OrdinalIgnoreCase);
                 var rankIdsByTag = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
                 // Groups where a source failed / returned nothing — their playlists are left untouched
                 var playlistGroupsToSkip = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -507,6 +509,7 @@ namespace HomeScreenCompanion
                     if (string.IsNullOrWhiteSpace(tagConfig.Tag)) continue;
                     string tagName = tagConfig.Tag.Trim();
                     managedTags.Add(tagName); // track all groups (active or inactive) so cleanup always runs
+                    NormalizeNextWatch(tagConfig);
 
                     if (!tagConfig.Active) continue;
 
@@ -761,6 +764,17 @@ namespace HomeScreenCompanion
                             gs.ListCount = tagConfig.ManualItemIds?.Count ?? 0;
                             _log.Debug($"  {matchedLocalItems.Count} of {gs.ListCount} hand-picked items found");
                         }
+                        else if (IsNextWatch(tagConfig))
+                        {
+                            Func<BaseItem, bool>? _nwAllow = null;
+                            if (tagConfig.MediaInfoFilters?.Count > 0 || tagConfig.MediaInfoConditions?.Count > 0)
+                                _nwAllow = item => ItemMatchesMediaInfo(item, tagConfig, debug, seriesEpisodeCache, personCache, userDataCache,
+                                    mediaInfoCache.TryGetValue(item.InternalId, out var _nwCi) ? _nwCi : (CachedMediaInfo?)null,
+                                    preloadedUsers, seriesLastPlayedCache, collectionMembershipCache, seriesEpisodeNamesCache);
+                            var _nwPerUser = ComputeNextWatch(tagConfig, matchableItems, config, blacklist, _nwAllow, gs, NextWatchUserIds(tagConfig));
+                            if (_nwPerUser.Count > 0 && !dryRun)
+                                nextWatchByGroup[GroupKey(tagConfig)] = (tagConfig, _nwPerUser);
+                        }
                         // Apply MediaInfo post-filter for non-MediaInfo source types
                         if (tagConfig.SourceType != "MediaInfo" && matchedLocalItems.Count > 0
                             && (tagConfig.MediaInfoFilters?.Count > 0 || tagConfig.MediaInfoConditions?.Count > 0))
@@ -973,7 +987,7 @@ namespace HomeScreenCompanion
 
                         var allOutputIds = new HashSet<Guid>(tagOutputItems.Select(i => i.Id));
                         foreach (var id in collectionOutputItems.Select(i => i.Id)) allOutputIds.Add(id);
-                        gs.MatchCount = allOutputIds.Count;
+                        if (!IsNextWatch(tagConfig)) gs.MatchCount = allOutputIds.Count;
                         matchCount += allOutputIds.Count;
 
                         // Collect rank order so top-list .strm files can be numbered in list order.
@@ -1056,7 +1070,7 @@ namespace HomeScreenCompanion
                         // Collect this entry's items for the group's playlist sync (done once per group after
                         // the loop so all sources of a multi-source group end up in the same playlist).
                         // Placed here so it inherits the loop's skip/preserve/override guards above.
-                        if (tagConfig.EnablePlaylist)
+                        if (tagConfig.EnablePlaylist && !IsNextWatch(tagConfig))
                         {
                             var groupKey = GroupKey(tagConfig);
                             if (!groupPlaylistItems.TryGetValue(groupKey, out var plGroup))
@@ -1098,7 +1112,7 @@ namespace HomeScreenCompanion
 
                 // Playlist sync — once per group, with the union of all its sources.
                 // Skipped for groups where any source failed, so a bad fetch never empties the playlist.
-                if (groupPlaylistItems.Count > 0)
+                if (groupPlaylistItems.Count > 0 || nextWatchByGroup.Count > 0)
                 {
                     _log.Blank();
                     _log.Info("» Playlists");
@@ -1116,7 +1130,12 @@ namespace HomeScreenCompanion
                     }
                     await SyncPlaylistsForEntryAsync(kvp.Value.Owner, kvp.Value.Items, dryRun, plStats);
                 }
-                if (groupPlaylistItems.Count > 0 && !dryRun)
+                foreach (var kvp in nextWatchByGroup)
+                {
+                    statsByGroupKey.TryGetValue(kvp.Key, out var nwStats);
+                    await SyncPlaylistsForEntryAsync(kvp.Value.Owner, new List<BaseItem>(), dryRun, nwStats, kvp.Value.PerUser);
+                }
+                if ((groupPlaylistItems.Count > 0 || nextWatchByGroup.Count > 0) && !dryRun)
                 {
                     int _plCreated = statsList.Sum(g => g.PlaylistUsersCreated), _plUpdated = statsList.Sum(g => g.PlaylistUsersUpdated), _plFailed = statsList.Sum(g => g.PlaylistUsersFailed);
                     _log.Info($"    {_plCreated} created, {_plUpdated} updated{(_plFailed > 0 ? $", {_plFailed} failed" : "")}  ·  {RunLog.Elapsed(phaseTimer.Elapsed)}");
@@ -1587,9 +1606,9 @@ namespace HomeScreenCompanion
         /// matching code with nothing written (no tags, no tag cache, no log, no AiLastRunDate).
         /// An AI source asks the provider once, ignoring the refresh interval.
         /// </summary>
-        internal async Task<SourcePreview> PreviewEntryAsync(TagConfig source, CancellationToken cancellationToken, List<TagConfig>? group = null)
+        internal async Task<SourcePreview> PreviewEntryAsync(TagConfig source, CancellationToken cancellationToken, List<TagConfig>? group = null, string previewUserId = "")
         {
-            var preview = new SourcePreview(source, group);
+            var preview = new SourcePreview(source, group) { UserId = previewUserId ?? "" };
             if (IsRunning) { preview.Message = "A sync is running — try again when it has finished."; return preview; }
             IsRunning = true;
             var savedLog = _log;
@@ -1624,6 +1643,7 @@ namespace HomeScreenCompanion
                 (!string.IsNullOrWhiteSpace(t.Name) == false && string.Equals(t.Tag, entryName, StringComparison.OrdinalIgnoreCase)));
             if (tagConfig == null) { LastRunStatus = $"Failed: entry not found"; _log.Error($"Group '{entryName}' was not found in the saved settings — save your settings and try again"); return (false, $"Entry '{entryName}' not found in saved config"); }
             if (string.IsNullOrWhiteSpace(tagConfig.Tag)) { LastRunStatus = "Failed: no tag name"; _log.Error($"Group '{entryName}' has no tag name"); return (false, "Entry has no tag name"); }
+            NormalizeNextWatch(tagConfig);
 
             // A group with several URLs / local sources is stored as one flat TagConfig per source
             // (same Name + Tag). tagConfig owns the shared settings; groupEntries supplies the sources.
@@ -2050,6 +2070,25 @@ namespace HomeScreenCompanion
                     _listCount = tagConfig.ManualItemIds?.Count ?? 0;
                     _log.Debug($"  {matchedLocalItems.Count} of {_listCount} hand-picked items found");
                 }
+                else if (IsNextWatch(tagConfig))
+                {
+                    Func<BaseItem, bool>? _nwAllow = null;
+                    if (tagConfig.MediaInfoFilters?.Count > 0 || tagConfig.MediaInfoConditions?.Count > 0)
+                        _nwAllow = item => ItemMatchesMediaInfo(item, tagConfig, debug, seriesEpisodeCache, personCache, userDataCache,
+                            mediaInfoCache.TryGetValue(item.InternalId, out var _nwCi) ? _nwCi : (CachedMediaInfo?)null,
+                            preloadedUsers, seriesLastPlayedCache, collectionMembershipCache, seriesEpisodeNamesCache);
+                    if (_preview != null)
+                    {
+                        // Preview: one user (picked in the dialog; else the first selected user).
+                        var _pvUser = !string.IsNullOrEmpty(_preview.UserId) ? _preview.UserId : NextWatchUserIds(tagConfig).FirstOrDefault() ?? "";
+                        if (string.IsNullOrEmpty(_pvUser)) return (false, "Pick a user to preview.");
+                        var _pv = ComputeNextWatch(tagConfig, matchableItems, config, blacklist, _nwAllow, gs, new[] { _pvUser });
+                        _pv.TryGetValue(_pvUser, out var _pvItems);
+                        _preview.Complete(_pvItems ?? new List<BaseItem>(), gs.ListCount, null, gs.Warnings);
+                        return (true, "");
+                    }
+                    _nextWatchPerUser = ComputeNextWatch(tagConfig, matchableItems, config, blacklist, _nwAllow, gs, NextWatchUserIds(tagConfig));
+                }
                 else if (tagConfig.SourceType == "MediaInfo")
                 {
                     IList<BaseItem> _itemsToScan;
@@ -2254,7 +2293,7 @@ namespace HomeScreenCompanion
                 collectionOutputItems = BuildNonMiOutput(cEp, cSea, cSer, cEp || cSea || cSer);
             }
 
-            gs.ListCount = _listCount;
+            if (!IsNextWatch(tagConfig)) gs.ListCount = _listCount;
             if ((string.IsNullOrEmpty(tagConfig.SourceType) || tagConfig.SourceType == "External" || tagConfig.SourceType == "AI") && _listCount == 0)
                 gs.Warnings.Add(tagConfig.SourceType == "AI"
                     ? "The AI returned 0 items — the group's tags, collection and playlist are being cleared. Check the prompt and the API key in Settings."
@@ -2262,7 +2301,7 @@ namespace HomeScreenCompanion
             {
                 var _outIds = new HashSet<Guid>(tagOutputItems.Select(i => i.Id));
                 foreach (var _id in collectionOutputItems.Select(i => i.Id)) _outIds.Add(_id);
-                gs.MatchCount = _outIds.Count;
+                if (!IsNextWatch(tagConfig)) gs.MatchCount = _outIds.Count;
             }
             if (gs.MissingItems.Count > 0 && debug)
             {
@@ -2587,7 +2626,15 @@ namespace HomeScreenCompanion
                 _log.Info("» Playlists");
                 if (dryRun) _log.Skip("Dry run — playlists are not changed");
             }
-            await SyncPlaylistsForEntryAsync(tagConfig, collectionOutputItems, dryRun, gs);
+            if (IsNextWatch(tagConfig))
+            {
+                // Each user's own picks; nothing is written for a user whose list could not be made.
+                if (_nextWatchPerUser != null && _nextWatchPerUser.Count > 0)
+                    await SyncPlaylistsForEntryAsync(tagConfig, new List<BaseItem>(), dryRun, gs, _nextWatchPerUser);
+                _nextWatchPerUser = null;
+            }
+            else
+                await SyncPlaylistsForEntryAsync(tagConfig, collectionOutputItems, dryRun, gs);
 
             if (!dryRun)
             {
@@ -2658,7 +2705,7 @@ namespace HomeScreenCompanion
             }
             else
             {
-                parts = new List<string> { $"{matchedLocalItems.Count} matched" };
+                parts = new List<string> { IsNextWatch(tagConfig) ? $"{gs.MatchCount} picks for {RunLog.Plural(gs.ListCount, "user")}" : $"{matchedLocalItems.Count} matched" };
                 if (tagsAdded > 0 || tagsRemoved > 0) parts.Add($"{tagsAdded}↑ {tagsRemoved}↓ tags");
             }
             if (collResult > 0) parts.Add("collection updated");
@@ -2693,6 +2740,116 @@ namespace HomeScreenCompanion
             _popularity = new PopularityCounter(_libraryManager, _userManager, _userDataManager);
             _popularityScope = scope;
             _viewersByDays.Clear();
+            _nextWatch = null;
+        }
+
+        // ── "Your Next Watch" (source type NextWatch) ─────────────────────────────────────────
+        // Per-user picks from NextWatchRecommender, written to each selected user's own playlist;
+        // the home row (SectionType "playlist") shows that playlist. Tags and collections are
+        // global, so this source type never writes them.
+        private NextWatchRecommender? _nextWatch;
+        private Dictionary<string, List<BaseItem>>? _nextWatchPerUser;
+
+        internal static bool IsNextWatch(TagConfig t) => string.Equals(t?.SourceType, "NextWatch", StringComparison.OrdinalIgnoreCase);
+
+        private static void NormalizeNextWatch(TagConfig t)
+        {
+            if (!IsNextWatch(t)) return;
+            t.EnableTag = false;
+            t.OnlyCollection = false;
+            t.EnableCollection = false;
+        }
+
+        // The users a NextWatch source makes lists for: the ones selected on its Playlist tab.
+        // The home row shows a user's playlist, so it needs the playlist too.
+        private static List<string> NextWatchUserIds(TagConfig t) =>
+            t.EnablePlaylist ? (t.PlaylistUserIds ?? new List<string>()).Distinct(StringComparer.OrdinalIgnoreCase).ToList() : new List<string>();
+
+        // The InternalId (as a section's ParentId wants it) of a user's playlist from this source.
+        private string? NextWatchPlaylistInternalId(TagConfig t, string userId)
+        {
+            var mapping = t.PlaylistMappings?.FirstOrDefault(m => string.Equals(m.UserId, userId, StringComparison.OrdinalIgnoreCase));
+            if (mapping == null || !Guid.TryParse(mapping.PlaylistId, out var g)) return null;
+            var pl = _libraryManager.GetItemById(g);
+            return pl != null && pl.GetType().Name.Contains("Playlist") ? pl.InternalId.ToString() : null;
+        }
+
+        // A NextWatch home row is Emby's "playlist" section type: the playlist's items in playlist
+        // order (no sort, no item-type or library filter). Image type Primary (the default here;
+        // only an explicit Thumb is kept) makes Emby's home screen draw a show's first episode with
+        // the show's poster (hometab: ImageType "Primary" → preferSeriesImage; imagehelper then uses
+        // SeriesPrimaryImageTag, 2:3), so shows look like the movies next to them. The episode's own
+        // image is not touched.
+        internal static void NormalizeNextWatchSectionSettings(Dictionary<string, string> settings)
+        {
+            settings["SectionType"] = "playlist";
+            if (!settings.TryGetValue("ImageType", out var imageType) || !string.Equals(imageType, "Thumb", StringComparison.OrdinalIgnoreCase))
+                settings["ImageType"] = "Primary";
+            settings["ItemTypes"] = "[]";
+            settings["ExcludedFolders"] = "[]";
+            settings["SortBy"] = "";
+            settings["SortOrder"] = "";
+            foreach (var k in settings.Keys.Where(k => k.StartsWith("_query", StringComparison.OrdinalIgnoreCase)).ToList())
+                settings.Remove(k);
+        }
+
+        private Dictionary<string, List<BaseItem>> ComputeNextWatch(TagConfig tagConfig, List<BaseItem> matchableItems, PluginConfiguration config,
+            HashSet<string> blacklist, Func<BaseItem, bool>? allow, GroupRunStats gs, IEnumerable<string> userIds)
+        {
+            var perUser = new Dictionary<string, List<BaseItem>>(StringComparer.OrdinalIgnoreCase);
+            var ids = userIds.ToList();
+            gs.ListCount = ids.Count;
+            if (ids.Count == 0)
+            {
+                gs.Warnings.Add("No users selected — pick users on the Playlist tab (each gets their own playlist)");
+                return perUser;
+            }
+            int limit = tagConfig.Limit > 0 ? tagConfig.Limit : NextWatchRecommender.DefaultLimit;
+            var total = System.Diagnostics.Stopwatch.StartNew();
+            if (_nextWatch == null)
+            {
+                var ignoredTags = (config.Tags ?? new List<TagConfig>()).Select(t => (t.Tag ?? "").Trim())
+                    .Concat((config.TopLists ?? new List<TopListHomeSection>()).Select(t => (t.TagName ?? "").Trim()))
+                    .Where(t => t.Length > 0);
+                _popularity ??= new PopularityCounter(_libraryManager, _userManager, _userDataManager);
+                _nextWatch = new NextWatchRecommender(_libraryManager, _userManager, _popularity,
+                    matchableItems.Where(i => i.LocationType == LocationType.FileSystem), ignoredTags, m => _log.Debug("  " + m));
+            }
+            var prepTimer = System.Diagnostics.Stopwatch.StartNew();
+            _nextWatch.EnsurePrepared();
+            long prepMs = prepTimer.ElapsedMilliseconds;
+            int picks = 0;
+            foreach (var userId in ids)
+            {
+                if (!Guid.TryParse(userId, out var guid)) continue;
+                var user = _userManager.GetUserById(guid);
+                if (user == null) { _log.Debug($"  User {userId} no longer exists — skipped"); continue; }
+                try
+                {
+                    var r = _nextWatch.Recommend(user, limit, allow, blacklist);
+                    // Preview lists the picks; a playlist gets a show's first episode (see FirstEpisode).
+                    perUser[userId] = _preview != null ? r.Picks.Select(p => p.Item).ToList()
+                        : r.Picks.Select(p => p.Item is MediaBrowser.Controller.Entities.TV.Series ? _nextWatch.FirstEpisode(p.Item) : p.Item)
+                            .Where(i => i != null).Select(i => i!).ToList();
+                    picks += r.Picks.Count;
+                    _log.Info($"    Next Watch for {user.Name}: {r.Picks.Count} picks in {r.ElapsedMs} ms  ·  seed {r.SeedCount}{(r.ColdStart ? " (cold start: popular titles)" : "")}  ·  {r.Candidates:N0} candidates");
+                    if (_preview != null)
+                    {
+                        _preview.Note = $"{user.Name}: {r.SeedSummary}";
+                        foreach (var p in r.Picks) _preview.Reasons[p.Item.Id] = p.Reason;
+                    }
+                    else if (r.Picks.Count > 0)
+                        _log.Debug("      " + string.Join(", ", r.Picks.Take(10).Select((p, n) => $"{n + 1}. {p.Item.Name}")));
+                }
+                catch (Exception ex)
+                {
+                    gs.Warnings.Add($"Next Watch for {user.Name} failed: {ex.Message}");
+                    WriteExceptionDebug(ex);
+                }
+            }
+            gs.MatchCount = picks;
+            _log.Info($"    Next Watch: {perUser.Count} user(s), {picks} picks  ·  index {prepMs} ms, total {total.ElapsedMilliseconds} ms");
+            return perUser;
         }
 
         private int ViewersOf(BaseItem item, int days)
@@ -2757,7 +2914,10 @@ namespace HomeScreenCompanion
         // Shared by both the full sync (Execute) and the single-group run (RunSingleEntryInternalAsync)
         // so both paths create/update playlists identically. collectionOutputItems must be the union
         // of all sources in the group, since the sync removes anything not in the list.
-        private async Task SyncPlaylistsForEntryAsync(TagConfig tagConfig, List<BaseItem> collectionOutputItems, bool dryRun, GroupRunStats? gs = null)
+        // perUser (NextWatch): each user's own list instead of collectionOutputItems; only the users
+        // in it are synced.
+        private async Task SyncPlaylistsForEntryAsync(TagConfig tagConfig, List<BaseItem> collectionOutputItems, bool dryRun, GroupRunStats? gs = null,
+            Dictionary<string, List<BaseItem>>? perUser = null)
         {
             // Playlist sync — one individual playlist per user in PlaylistUserIds
             if (tagConfig.EnablePlaylist && !dryRun)
@@ -2768,24 +2928,27 @@ namespace HomeScreenCompanion
                 {
                     // Deduplicate — pick one physical version per logical movie (IMDb > TMDb > InternalId).
                     // Keep an ordered list mirroring the source order plus a set for fast membership checks.
-                    var seenPlKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    var desiredPlIdList = new List<long>();   // ordered, mirrors source
-                    var desiredPlIdSet = new HashSet<long>();  // fast Contains
-                    foreach (var item in collectionOutputItems)
+                    (List<long> List, HashSet<long> Set) Desired(List<BaseItem> items)
                     {
-                        var key = item.GetProviderId("Imdb")
-                               ?? item.GetProviderId("Tmdb")
-                               ?? item.InternalId.ToString();
-                        if (seenPlKeys.Add(key))
+                        var seenPlKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        var list = new List<long>();   // ordered, mirrors source
+                        var set = new HashSet<long>();  // fast Contains
+                        foreach (var item in items)
                         {
-                            desiredPlIdList.Add(item.InternalId);
-                            desiredPlIdSet.Add(item.InternalId);
+                            var key = item.GetProviderId("Imdb")
+                                   ?? item.GetProviderId("Tmdb")
+                                   ?? item.InternalId.ToString();
+                            if (seenPlKeys.Add(key)) { list.Add(item.InternalId); set.Add(item.InternalId); }
                         }
+                        return (list, set);
                     }
-                    _log.Debug($"  {desiredPlIdList.Count} unique items for {tagConfig.PlaylistUserIds.Count} users");
+                    var shared = Desired(collectionOutputItems);
+                    var plUserIds = perUser == null ? tagConfig.PlaylistUserIds : tagConfig.PlaylistUserIds.Where(perUser.ContainsKey).ToList();
+                    if (perUser == null) _log.Debug($"  {shared.List.Count} unique items for {tagConfig.PlaylistUserIds.Count} users");
                     bool plMappingChanged = false;
-                    foreach (var userId in tagConfig.PlaylistUserIds)
+                    foreach (var userId in plUserIds)
                     {
+                        var (desiredPlIdList, desiredPlIdSet) = perUser == null ? shared : Desired(perUser[userId]);
                         if (!Guid.TryParse(userId, out var userGuid)) continue;
                         var plUser = _userManager.GetUserById(userGuid);
                         if (plUser == null) { _log.Debug($"  User {userId} no longer exists — skipped"); continue; }
@@ -2953,8 +3116,9 @@ namespace HomeScreenCompanion
                             // items just added) and move each item into its source position. Only issue a
                             // MoveItem when an item is actually out of place — no needless writes when the
                             // order already matches.
+                            // In playlist order — without it the read order differs and every run "reorders".
                             var afterItems = _libraryManager.GetItemList(
-                                new InternalItemsQuery { ListIds = new[] { existingPlaylist.InternalId } });
+                                new InternalItemsQuery { ListIds = new[] { existingPlaylist.InternalId }, OrderBy = new[] { ("ListItemOrder", SortOrder.Ascending) } });
 
                             var entryByInner = new Dictionary<long, long>();   // inner media item id -> playlist entry id
                             var currentOrder = new List<long>();               // inner media item id in current order
@@ -3117,6 +3281,8 @@ namespace HomeScreenCompanion
                         settingsDict["CustomName"] = _defaultCn;
                 }
 
+                if (IsNextWatch(tc)) NormalizeNextWatchSectionSettings(settingsDict);
+
                 settingsDict.TryGetValue("SectionType", out var sectionType);
 
                 // For items-type sections, dynamically ensure all top-list libraries are excluded
@@ -3209,6 +3375,18 @@ namespace HomeScreenCompanion
                 foreach (var userId in tc.HomeSectionUserIds)
                 {
                     string _hsAction = "created";
+                    // NextWatch: the row shows this user's own playlist.
+                    string? userLibraryId = resolvedLibraryId;
+                    if (IsNextWatch(tc))
+                    {
+                        userLibraryId = NextWatchPlaylistInternalId(tc, userId);
+                        if (userLibraryId == null)
+                        {
+                            string _nwName = Guid.TryParse(userId, out var _nwG) ? (_userManager.GetUserById(_nwG)?.Name ?? userId) : userId;
+                            HsWarn(statsList, _hsTagName, _hsDisplayName, $"no home row for {_nwName}: they have no playlist from this source yet (select them on the Playlist tab too)");
+                            continue;
+                        }
+                    }
                     try
                     {
                         var userInternalId = _userManager.GetInternalId(userId);
@@ -3233,7 +3411,7 @@ namespace HomeScreenCompanion
                             try
                             {
                                 // Hämta befintlig sektion som bas — plugin-inställningar appliceras ovanpå utan att nollställa Emby-egna värden
-                                var updateSection = BuildContentSection(_jsonSerializer, settingsDict, resolvedLibraryId, ownedSection);
+                                var updateSection = BuildContentSection(_jsonSerializer, settingsDict, userLibraryId, ownedSection);
                                 typeof(ContentSection).GetProperty("Id")?.SetValue(updateSection, ownedSection.Id);
                                 _userManager.UpdateHomeSection(userInternalId, updateSection, cancellationToken);
                                 trackId = ownedSection.Id ?? sectionMarker;
@@ -3250,7 +3428,7 @@ namespace HomeScreenCompanion
                         {
                             var beforeIds = new HashSet<string>(
                                 allCurrentSections.Where(s => !string.IsNullOrEmpty(s.Id)).Select(s => s.Id));
-                            _userManager.AddHomeSection(userInternalId, BuildContentSection(_jsonSerializer, settingsDict, resolvedLibraryId), cancellationToken);
+                            _userManager.AddHomeSection(userInternalId, BuildContentSection(_jsonSerializer, settingsDict, userLibraryId), cancellationToken);
                             var afterSections = _userManager.GetHomeSections(userInternalId, cancellationToken);
                             var newId = (afterSections?.Sections ?? Array.Empty<ContentSection>())
                                 .Where(s => !string.IsNullOrEmpty(s.Id) && !beforeIds.Contains(s.Id))
@@ -4731,6 +4909,7 @@ namespace HomeScreenCompanion
                 case "LocalCollection": return "Local collection";
                 case "LocalPlaylist":   return "Local playlist";
                 case "Manual":          return "Manual list";
+                case "NextWatch":       return "Your Next Watch";
                 case "AI":              return "AI · " + (string.IsNullOrWhiteSpace(tc.AiProvider) ? "unknown provider" : tc.AiProvider);
                 default:
                     var url = tc.Url ?? "";
@@ -4756,6 +4935,9 @@ namespace HomeScreenCompanion
                     break;
                 case "Manual":
                     parts.Add($"{tc.ManualItemIds?.Count ?? 0} hand-picked items");
+                    break;
+                case "NextWatch":
+                    parts.Add($"{NextWatchUserIds(tc).Count} user(s), {(tc.Limit > 0 ? tc.Limit : NextWatchRecommender.DefaultLimit)} picks each");
                     break;
                 case "AI":
                     parts.Add($"prompt {tc.AiPrompt?.Length ?? 0} chars" + (tc.AiIncludeRecentlyWatched ? ", includes watch history" : ""));
@@ -4806,6 +4988,7 @@ namespace HomeScreenCompanion
         {
             if (gs.BoxSetHse) return gs.BoxSetTaggedCount > 0 ? $"{RunLog.Plural(gs.BoxSetTaggedCount, "collection")} tagged" : "collection not found";
             if (gs.SourceType == "MediaInfo") return $"scanned {gs.ListCount:N0} items, {gs.MatchCount} matched";
+            if (gs.SourceType == "NextWatch") return $"{RunLog.Plural(gs.ListCount, "user")}, {gs.MatchCount} picks";
             if (gs.SourceType == "LocalCollection" || gs.SourceType == "LocalPlaylist" || gs.SourceType == "Manual") return $"{gs.ListCount} in source, {gs.MatchCount} matched";
             return $"{gs.ListCount} in list, {gs.MatchCount} in your library";
         }
@@ -4836,6 +5019,8 @@ namespace HomeScreenCompanion
             }
             else if (gs.SourceType == "MediaInfo")
                 _log.Ok($"Scanned {gs.ListCount:N0} items  ·  {gs.MatchCount} matched your conditions");
+            else if (gs.SourceType == "NextWatch")
+                _log.Ok($"Your Next Watch: {RunLog.Plural(gs.ListCount, "user")}  ·  {gs.MatchCount} picks in total");
             else if (gs.SourceType == "LocalCollection" || gs.SourceType == "LocalPlaylist")
             {
                 if (gs.ListCount > 0) _log.Ok($"Source: {gs.ListCount} items  ·  {gs.MatchCount} matched");

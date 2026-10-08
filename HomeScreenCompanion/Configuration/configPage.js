@@ -799,7 +799,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     // Preview: runs this source's current (unsaved) settings on the server without tagging
     // anything, and lists what it would tag — for a list source (External, AI) also the titles
     // on the list that are not in the library.
-    function showSourcePreview(row, btn) {
+    function showSourcePreview(row, btn, nwUserId) {
         var view = row.closest('#HomeScreenCompanionConfigPage') || activeView();
         var label = row.querySelector('.txtEntryLabel').value;
         var tag = row.querySelector('.txtTagName').value || label;
@@ -814,21 +814,42 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
         var overlay = view.querySelector('#miPreviewModalOverlay');
         var body = overlay.querySelector('.mi-preview-body');
-        overlay.querySelector('.mi-preview-subtitle').textContent = (label || tag || 'This source') + ' — what it would tag right now';
+        var isNw = st === 'NextWatch';
+        // Your Next Watch: picks are per user — preview one user at a time (picker on top).
+        if (isNw && nwUserId == null) nwUserId = row.dataset.nwPreviewUser || (source.PlaylistUserIds || [])[0] || '';
+        if (isNw) row.dataset.nwPreviewUser = nwUserId;
+        var nwPicker = '';
+        overlay.querySelector('.mi-preview-subtitle').textContent = (label || tag || 'This source') + (isNw ? ' — personal picks for one user' : ' — what it would tag right now');
         body.innerHTML = '<div style="padding:20px 0; text-align:center; opacity:0.8;">'
-            + escapeHtml(st === 'AI' ? 'Asking ' + aiName + '… this can take a minute.' : st === 'External' ? 'Fetching the list and checking your library…' : 'Checking your library…')
+            + escapeHtml(st === 'AI' ? 'Asking ' + aiName + '… this can take a minute.' : st === 'External' ? 'Fetching the list and checking your library…' : isNw ? 'Reading watch history and scoring the library…' : 'Checking your library…')
             + '</div>';
         overlay.classList.add('modal-visible');
         btn.disabled = true;
 
-        fetch(window.ApiClient.getUrl('HomeScreenCompanion/PreviewSource'), {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
-            body: JSON.stringify({ Source: source, Sources: sources })
+        (isNw ? getHseUsers() : Promise.resolve([])).then(function (users) {
+            if (isNw) {
+                var selected = source.PlaylistUserIds || [];
+                var ordered = users.filter(function (u) { return selected.indexOf(u.Id) !== -1; })
+                    .concat(users.filter(function (u) { return selected.indexOf(u.Id) === -1; }));
+                nwPicker = '<div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;"><label style="white-space:nowrap; opacity:0.85;">Picks for</label>'
+                    + '<select class="selNwPreviewUser" style="flex:1; padding:6px 8px; font-size:inherit; color:inherit; background:var(--plugin-input-bg,rgba(255,255,255,0.08)); border:1px solid var(--plugin-input-border,rgba(255,255,255,0.2)); border-radius:3px;">'
+                    + (nwUserId ? '' : '<option value="">-- Select user --</option>')
+                    + ordered.map(function (u) {
+                        return '<option value="' + escapeHtml(u.Id) + '"' + (u.Id === nwUserId ? ' selected' : '') + '>' + escapeHtml(u.Name) + (selected.indexOf(u.Id) !== -1 ? '  (selected on Playlist tab)' : '') + '</option>';
+                    }).join('') + '</select></div>';
+                body.innerHTML = nwPicker + body.innerHTML;
+                wireNwPicker();
+            }
+            return fetch(window.ApiClient.getUrl('HomeScreenCompanion/PreviewSource'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
+                body: JSON.stringify({ Source: source, Sources: sources, PreviewUserId: isNw ? nwUserId : '' })
+            });
         }).then(function (r) { return r.json(); })
         .then(function (res) {
             if (!res.Success) {
-                body.innerHTML = '<div style="padding:12px 0;">' + escapeHtml(res.Message || 'Preview failed.') + '</div>';
+                body.innerHTML = nwPicker + '<div style="padding:12px 0;">' + escapeHtml(res.Message || 'Preview failed.') + '</div>';
+                wireNwPicker();
                 return;
             }
             var items = res.Items || [];
@@ -840,10 +861,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var summary = total.toLocaleString() + ' title' + (total === 1 ? '' : 's') + ' would get the tag'
                 + checkedNote
                 + (total > items.length ? ' — showing the first ' + items.length + '.' : '.');
+            if (isNw) summary = total + ' pick' + (total === 1 ? '' : 's') + ' for this user, best first — this is the order of their playlist and home row.';
             if (!items.length) {
-                summary = 'Nothing matches, so nothing would be tagged.';
+                summary = isNw ? 'No picks — this user has nothing unwatched they can open.' : 'Nothing matches, so nothing would be tagged.';
             }
-            var html = '';
+            var html = nwPicker;
             if (res.Note) html += '<div class="mi-preview-note" style="margin-bottom:10px; font-size:0.85em; opacity:0.75;"><i class="md-icon" style="font-size:1em; vertical-align:-2px; margin-right:4px;">info</i>' + escapeHtml(res.Note) + '</div>';
             (res.Warnings || []).forEach(function (w) {
                 html += '<div style="margin-bottom:10px; font-size:0.9em; color:#e8a838;"><i class="md-icon" style="font-size:1em; vertical-align:-2px; margin-right:4px;">warning</i>' + escapeHtml(w) + '</div>';
@@ -860,7 +882,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 html += '<div style="display:flex; align-items:center; gap:12px; padding:6px 0; border-bottom:1px solid rgba(128,128,128,0.15);">'
                     + '<div style="width:24px; text-align:right; opacity:0.6;">' + (n + 1) + '</div>' + img
                     + '<div style="min-width:0;"><div style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">' + escapeHtml(it.Name) + '</div>'
-                    + '<div style="font-size:0.85em; opacity:0.7;">' + escapeHtml(meta) + '</div></div>' + viewers + '</div>';
+                    + '<div style="font-size:0.85em; opacity:0.7;">' + escapeHtml(meta) + '</div>'
+                    + (it.Reason ? '<div style="font-size:0.8em; opacity:0.6; white-space:normal;">' + escapeHtml(it.Reason) + '</div>' : '')
+                    + '</div>' + viewers + '</div>';
             });
             if (missingTotal > 0) {
                 html += '<div class="mi-preview-missing" style="margin-top:18px;">'
@@ -878,9 +902,16 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 html += '</div>';
             }
             body.innerHTML = html;
+            wireNwPicker();
         }).catch(function (err) {
-            body.innerHTML = '<div style="padding:12px 0;">Preview failed: ' + escapeHtml(err.message) + '</div>';
+            body.innerHTML = nwPicker + '<div style="padding:12px 0;">Preview failed: ' + escapeHtml(err.message) + '</div>';
+            wireNwPicker();
         }).finally(function () { btn.disabled = false; });
+
+        function wireNwPicker() {
+            var sel = body.querySelector('.selNwPreviewUser');
+            if (sel) sel.addEventListener('change', function () { if (this.value) showSourcePreview(row, btn, this.value); });
+        }
     }
 
     // Emby's own toast (bottom notification); falls back to nothing if it can't be loaded.
@@ -1743,12 +1774,39 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         });
     }
 
+    var NEXT_WATCH_HINT = 'Personal recommendations: each user selected on the Playlist tab gets their own playlist of titles like the ones they watched lately (local scoring, no AI). Turn on the Home Screen tab to show it as a row on their home screen. Tags and collections are shared by all users, so this type does not make them.';
+
+    // "Your Next Watch" has no tag or collection (they are global; its output is per user):
+    // hide those tabs, keep their checkboxes off, and show Max items + Preview.
+    function applyNextWatchUi(row) {
+        var isNw = row.querySelector('.selSourceType').value === 'NextWatch';
+        ['tag', 'collection'].forEach(function (t) {
+            var tab = row.querySelector('.tag-tab[data-tab="' + t + '"]');
+            if (tab) tab.style.display = isNw ? 'none' : '';
+        });
+        if (isNw) {
+            ['.chkEnableTag', '.chkEnableCollection'].forEach(function (sel) {
+                var c = row.querySelector(sel);
+                if (c && c.checked) { c.checked = false; c.dispatchEvent(new Event('change', { bubbles: true })); }
+            });
+        }
+        var hseCbx = row.querySelector('.chkEnableHomeSection');
+        var hint = row.querySelector('.hse-disabled-hint');
+        if (isNw && hseCbx) { hseCbx.disabled = false; if (hint) hint.style.display = 'none'; }
+        var nwHint = row.querySelector('.hse-nextwatch-hint');
+        if (nwHint) nwHint.style.display = isNw ? 'block' : 'none';
+        var plHint = row.querySelector('.pl-nextwatch-hint');
+        if (plHint) plHint.style.display = isNw ? 'block' : 'none';
+        if (!isNw) { try { updateHseSectionAvailability(row); } catch (e) { } }
+    }
+
     function getSourceBadgeHtml(st) {
         var map = {
             'External':          { icon: 'language',        title: 'External List' },
             'LocalCollection':   { icon: 'folder_special',  title: 'Local Collection' },
             'LocalPlaylist':     { icon: 'playlist_play',   title: 'Local Playlist' },
             'Manual':            { icon: 'format_list_numbered', title: 'Manual List' },
+            'NextWatch':         { icon: 'recommend',       title: 'Personal: Your Next Watch' },
             'MediaInfo':         { icon: 'tune',            title: 'Smart Playlist' },
                 'AI':              { icon: 'auto_awesome',   title: 'AI created lists' }
         };
@@ -1785,7 +1843,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var localSources = tagConfig.LocalSources || [];
         if (localSources.length === 0) localSources = [{ id: "", limit: 0 }];
 
-        var mediaInfoLimit = tagConfig.Limit || 0;
+        var mediaInfoLimit = tagConfig.Limit || (tagConfig.SourceType === 'NextWatch' ? 50 : 0);
         var aiLimit = tagConfig.Limit || 0;
         // Backwards compat: legacy single-target → derive separate tag + collection targets
         var _legacyTarget = tagConfig.MediaInfoTargetType || (tagConfig.MediaInfoSeasonMode ? 'Season' : '');
@@ -1805,7 +1863,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var _collTargetSer = tagConfig.CollectionTargetSeries  || tagConfig.MediaInfoTargetSeries  || _legacyTarget === 'Series' || !_collAnySet;
 
         var enableHomeSection = tagConfig.EnableHomeSection ? 'checked' : '';
-        var disableHomeSection = (tagConfig.EnableTag === false && !tagConfig.EnableCollection) ? 'disabled' : '';
+        var disableHomeSection = (tagConfig.EnableTag === false && !tagConfig.EnableCollection && tagConfig.SourceType !== 'NextWatch') ? 'disabled' : '';
         var homeSectionLibraryId = encodeURIComponent(tagConfig.HomeSectionLibraryId || 'auto');
         var homeSectionUserIdsEnc = encodeURIComponent(JSON.stringify(tagConfig.HomeSectionUserIds || []));
         var homeSectionSettingsEnc = encodeURIComponent(tagConfig.HomeSectionSettings || '{}');
@@ -1902,6 +1960,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             <option value="Manual" ${sourceType === 'Manual' ? 'selected' : ''}>Manual List (pick movies and shows)</option>
                             <option value="MediaInfo" ${sourceType === 'MediaInfo' ? 'selected' : ''}>Local Media Information (Smart Playlist)</option>
                             <option value="AI" ${sourceType === 'AI' ? 'selected' : ''}>AI created lists</option>
+                            <option value="NextWatch" ${sourceType === 'NextWatch' ? 'selected' : ''}>Personal: Your Next Watch</option>
                         </select>
                         <p class="source-type-hint" style="margin:6px 0 0 0; font-size:1em; opacity:0.8; line-height:1.4;">${(function(st) {
                             if (st === 'External')         return 'Use an external list to tag, or create a collection, from the items that match your library.';
@@ -1910,6 +1969,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             if (st === 'Manual')          return 'Pick movies and shows by hand. Search to add them, use the arrows to set the order, and remove them with ✕.';
                             if (st === 'MediaInfo')       return 'Filter your own library to select which movies or shows to tag or create a collection of. This is also known as a Smart Playlist.';
                             if (st === 'AI')              return 'Use AI to create a list. Write your prompt and the AI will build a list based on it.';
+                            if (st === 'NextWatch')       return NEXT_WATCH_HINT;
                             return '';
                         })(sourceType)}</p>
                     </div>
@@ -2013,7 +2073,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     </div>
 
                     <div class="source-mediainfo-container" style="display: ${(sourceType && sourceType !== '') ? 'block' : 'none'};">
-                        <div class="mi-limit-row" style="display:${sourceType === 'MediaInfo' ? 'flex' : 'none'}; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap;">
+                        <div class="mi-limit-row" style="display:${sourceType === 'MediaInfo' || sourceType === 'NextWatch' ? 'flex' : 'none'}; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap;">
                             <label style="font-size:0.9em; white-space:nowrap; margin:0;">Max items</label>
                             <input is="emby-input" class="txtMediaInfoLimit" type="number" value="${mediaInfoLimit}" min="0" style="width:90px;" />
                             <button type="button" is="emby-button" class="btnMiPreview raised" style="margin-left:auto; background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">visibility</i><span>Preview</span></button>
@@ -2282,6 +2342,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             <span>Create Playlist</span>
                         </label>
                         <div class="fieldDescription">Automatically create and maintain an individual Emby Playlist for each selected user.</div>
+                        <div class="pl-nextwatch-hint fieldDescription" style="display:none; margin-top:6px;">Your Next Watch: each selected user gets their <strong>own</strong> picks (not the same list for everyone). Required — the home screen row shows this playlist. A show is added as its first episode (Emby playlists hold episodes, not shows); the home screen row still shows the show's poster.</div>
                     </div>
                     <div class="playlist-settings" style="margin-left: 20px; padding-left: 15px; border-left: 2px solid var(--line-color); margin-top: 10px; display: ${tagConfig.EnablePlaylist ? 'block' : 'none'};">
                         <div class="inputContainer">
@@ -2316,7 +2377,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             <span>Add as home screen section</span>
                         </label>
                         <div class="fieldDescription">A home screen section will be managed for selected users each time sync runs.</div>
-                        <div class="hse-disabled-hint" style="font-size:0.9em; color:#e07070; margin-top:4px; display:${(tagConfig.EnableTag === false && !tagConfig.EnableCollection) ? 'block' : 'none'};">Requires <strong>Apply Tag</strong> or <strong>Create Collection</strong> to be enabled.</div>
+                        <div class="hse-disabled-hint" style="font-size:0.9em; color:#e07070; margin-top:4px; display:${(tagConfig.EnableTag === false && !tagConfig.EnableCollection && sourceType !== 'NextWatch') ? 'block' : 'none'};">Requires <strong>Apply Tag</strong> or <strong>Create Collection</strong> to be enabled.</div>
+                        <div class="hse-nextwatch-hint fieldDescription" style="display:none; margin-top:4px;">Your Next Watch: each selected user gets a row showing <strong>their own</strong> playlist, in pick order. Select the same users on the Playlist tab — a user without a playlist gets no row. Shows appear with their poster, like the movies.</div>
                     </div>
                     <div class="hse-details" style="display:${enableHomeSection ? 'block' : 'none'}; margin-top:15px;">
                         <div style="margin-bottom:15px;">
@@ -2344,6 +2406,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var newRow = afterRef ? afterRef.nextElementSibling : (prepend ? container.firstElementChild : container.lastElementChild);
         setupRowEvents(newRow);
         initManualEditor(newRow);
+        applyNextWatchUi(newRow);
         // Auto-size any pre-filled growing textareas
         newRow.querySelectorAll('textarea.txtMiValue, textarea.txtTagBlacklist').forEach(function (ta) {
             ta.style.height = 'auto';
@@ -2462,7 +2525,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         'LocalPlaylist':    'Every item in the selected playlist(s) gets the configured tag or is added to a new collection.',
                         'Manual':           'Pick movies and shows by hand. Search to add them, use the arrows to set the order, and remove them with ✕.',
                         'MediaInfo':        'Filter your own library to select which movies or shows to tag or create a collection of. This is also known as a Smart Playlist.',
-                        'AI':               'Use AI to create a list. Write your prompt and the AI will build a list based on it.'
+                        'AI':               'Use AI to create a list. Write your prompt and the AI will build a list based on it.',
+                        'NextWatch':        NEXT_WATCH_HINT
                     };
                     _hint.textContent = _hints[type] || '';
                 }
@@ -2474,7 +2538,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var miHelpBtnRow    = row.querySelector('.mi-help-btn-row');
                 var miPresetsSection = row.querySelector('.mi-presets-section');
                 if (miPresetsSection) miPresetsSection.style.display = isMi ? 'block' : 'none';
-                if (miLimitRow) miLimitRow.style.display = isMi ? 'flex' : 'none';
+                if (miLimitRow) miLimitRow.style.display = isMi || type === 'NextWatch' ? 'flex' : 'none';
+                var miLimitInput = row.querySelector('.txtMediaInfoLimit');
+                if (type === 'NextWatch' && miLimitInput && !(parseInt(miLimitInput.value, 10) > 0)) miLimitInput.value = '50';
+                applyNextWatchUi(row);
                 if (miHelpBtnRow) miHelpBtnRow.style.display = isMi ? 'none' : 'flex';
                 if (isMi) {
                     if (miToggleRow)  miToggleRow.style.display  = 'none';
@@ -3501,7 +3568,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }).join('');
     }
 
-    function buildHomeSectionFormHtml(savedSettings, defaultSectionType, defaultName, tagEnabled, collEnabled, libraryOptions, savedLibraryId, allLibraries) {
+    function buildHomeSectionFormHtml(savedSettings, defaultSectionType, defaultName, tagEnabled, collEnabled, libraryOptions, savedLibraryId, allLibraries, nextWatch) {
         var s = savedSettings || {};
         var html = '';
 
@@ -3509,8 +3576,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         html += '<div style="margin-bottom:12px;"><label class="selectLabel">Section Type</label>';
         html += '<select is="emby-select" class="selHseSectionType hse-field-str" data-field="SectionType" style="width:100%;">';
         var sectionTypeOptions = [];
-        if (collEnabled) sectionTypeOptions.push(['boxset', 'Single Collection']);
-        if (tagEnabled)  sectionTypeOptions.push(['items',  'Dynamic Media (tag)']);
+        if (nextWatch) { sectionTypeOptions.push(['playlist', "The user's own Your Next Watch playlist"]); st = 'playlist'; }
+        if (collEnabled && !nextWatch) sectionTypeOptions.push(['boxset', 'Single Collection']);
+        if (tagEnabled && !nextWatch)  sectionTypeOptions.push(['items',  'Dynamic Media (tag)']);
         sectionTypeOptions.forEach(function(o) {
             html += '<option value="' + o[0] + '"' + (st === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
         });
@@ -3566,12 +3634,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         });
         html += '</select></div>';
 
-        var imgTypeVal = s.ImageType || '';
+        // Your Next Watch: Primary = show cards use the show's poster (Auto would show the episode image).
+        var imgTypeVal = s.ImageType || (nextWatch ? 'Primary' : '');
         var imgTypeDisabled = viewTypeVal === 'spotlight';
         html += '<div style="margin-bottom:12px;"><label class="selectLabel">Image Type</label>';
         html += '<select is="emby-select" class="selHseImageType hse-field-str" data-field="ImageType" style="width:100%;"' + (imgTypeDisabled ? ' disabled' : '') + '><option value=""' + (imgTypeVal === '' ? ' selected' : '') + '>Auto</option>';
         ['Primary','Thumb'].forEach(function(o) { html += '<option value="' + o + '"' + (imgTypeVal === o ? ' selected' : '') + '>' + o + '</option>'; });
-        html += '</select></div>';
+        html += '</select>';
+        if (nextWatch) html += '<div class="fieldDescription">Your Next Watch: <em>Auto</em> and <em>Primary</em> show a show\'s poster on its card (the playlist holds its first episode); <em>Thumb</em> shows the show\'s landscape image.</div>';
+        html += '</div>';
 
         html += '<div style="margin-bottom:12px;"><label class="selectLabel">Card Size</label>';
         html += '<select is="emby-select" class="selHseCardSize hse-field-str" data-field="CardSizeOffset" style="width:100%;">' + cardSizeOptionsHtml(s.CardSizeOffset) + '</select></div>';
@@ -3652,7 +3723,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
     function updateHseItemsOnlyVisibility(tab) {
         var stSel = tab.querySelector('.selHseSectionType');
-        var isItems = !stSel || stSel.value !== 'boxset';
+        var isItems = !stSel || (stSel.value !== 'boxset' && stSel.value !== 'playlist');
         tab.querySelectorAll('.hse-items-only').forEach(function(el) {
             el.style.display = isItems ? '' : 'none';
         });
@@ -3835,7 +3906,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var _wasAlreadyDirty = _hseView && originalConfigState &&
                     JSON.stringify(getUiConfig(_hseView, true)) !== originalConfigState;
 
-                tab.querySelector('.hse-fields-inner').innerHTML = buildHomeSectionFormHtml(savedSettings, defaultSectionType, defaultTagName, tagEnabled, collEnabled, libraryOptions, savedLibraryId, allLibraries);
+                var nextWatch = (row.querySelector('.selSourceType') || {}).value === 'NextWatch';
+                tab.querySelector('.hse-fields-inner').innerHTML = buildHomeSectionFormHtml(savedSettings, defaultSectionType, defaultTagName, tagEnabled, collEnabled, libraryOptions, savedLibraryId, allLibraries, nextWatch);
                 wireHomeSectionTypeChange(tab);
 
                 // Mark as fully loaded only after form is in DOM so getUiConfig reads form values
@@ -3860,6 +3932,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var collEnabled = !!(row.querySelector('.chkEnableCollection') || {}).checked;
         var hseCbx = row.querySelector('.chkEnableHomeSection');
         if (!hseCbx) return;
+        if ((row.querySelector('.selSourceType') || {}).value === 'NextWatch') {
+            // The row shows each user's own playlist — no tag or collection needed.
+            hseCbx.disabled = false;
+            var nwHint0 = row.querySelector('.hse-disabled-hint');
+            if (nwHint0) nwHint0.style.display = 'none';
+            var nwTab = row.querySelector('.homescreen-tab');
+            if (nwTab && nwTab.dataset.hseLoaded === '1') refreshHseSectionTypeOptions(nwTab, false, false, true);
+            return;
+        }
 
         var hint = row.querySelector('.hse-disabled-hint');
         if (!tagEnabled && !collEnabled) {
@@ -3880,11 +3961,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }
     }
 
-    function refreshHseSectionTypeOptions(tab, tagEnabled, collEnabled) {
+    function refreshHseSectionTypeOptions(tab, tagEnabled, collEnabled, nextWatch) {
         var stSel = tab.querySelector('.selHseSectionType');
         if (!stSel) return;
         var currentVal = stSel.value;
         stSel.innerHTML = '';
+        if (nextWatch) { var o0 = document.createElement('option'); o0.value = 'playlist'; o0.textContent = "The user's own Your Next Watch playlist"; stSel.appendChild(o0); updateHseItemsOnlyVisibility(tab); return; }
         if (collEnabled) { var o1 = document.createElement('option'); o1.value = 'boxset'; o1.textContent = 'Single Collection'; stSel.appendChild(o1); }
         if (tagEnabled)  { var o2 = document.createElement('option'); o2.value = 'items';  o2.textContent = 'Dynamic Media (tag)'; stSel.appendChild(o2); }
         var stillValid = Array.from(stSel.options).some(function(o) { return o.value === currentVal; });
@@ -4053,6 +4135,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         : (parseInt(((row.querySelector('.txtAiWatchedCount') || {}).value || '20'), 10) || 20),
                     AiRefreshIntervalDays: parseInt(((row.querySelector('.txtAiRefreshInterval') || {}).value || '0'), 10) || 0
                 }));
+            } else if (st === 'NextWatch') {
+                var nwLimitVal = parseInt((row.querySelector('.txtMediaInfoLimit') || {}).value, 10) || 50;
+                flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: nwLimitVal, LocalSourceId: "", EnableTag: false, EnableCollection: false }));
             } else {
                 var miLimitVal = parseInt((row.querySelector('.txtMediaInfoLimit') || {}).value, 10) || 0;
                 flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: miLimitVal, LocalSourceId: "" }));
@@ -4318,6 +4403,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             if ((t.SourceType === 'LocalCollection' || t.SourceType === 'LocalPlaylist') && t.LocalSourceId) grouped[key].LocalSources.push({ id: t.LocalSourceId, limit: t.Limit });
             if (t.SourceType === 'MediaInfo') grouped[key].Limit = t.Limit;
             if (t.SourceType === 'AI') grouped[key].Limit = t.Limit;
+            if (t.SourceType === 'NextWatch') grouped[key].Limit = t.Limit;
             if (t.SourceType === 'Manual') grouped[key].ManualItemIds = t.ManualItemIds || [];
         });
         return grouped;
