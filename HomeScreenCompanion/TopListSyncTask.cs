@@ -344,8 +344,9 @@ namespace HomeScreenCompanion
                         settingsDict["ExcludedFolders"] = excludeStr;
                         tl.HomeSectionSettings = jsonSerializer.SerializeToString(settingsDict);
 
+                        // With top-list art set, the header opens the source tag's page (TopListArt).
                         var updated = HomeScreenCompanionTask.BuildContentSection(
-                            jsonSerializer, settingsDict, tl.HomeSectionLibraryId, owned);
+                            jsonSerializer, settingsDict, TopListArt.HeaderTargetId(tl, libraryManager) ?? tl.HomeSectionLibraryId, owned);
                         typeof(ContentSection).GetProperty("Id")?.SetValue(updated, owned.Id);
                         userManager.UpdateHomeSection(uid, updated, cancellationToken);
                         _log.Debug($"  {UserLabel(userManager, tracking.UserId)}: section updated");

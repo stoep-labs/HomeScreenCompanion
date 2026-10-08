@@ -124,6 +124,15 @@ namespace HomeScreenCompanion
         public int Titles { get; set; }
     }
 
+    // The art a top-list's header page would get (TopListArt), from the list's unsaved settings:
+    // TagName, ContentType, ShowSourceTag, MaxItems and the TopList* art fields. Changes nothing.
+    [Route("/HomeScreenCompanion/TopList/PreviewArt", "POST")]
+    [Authenticated(Roles = "Admin")]
+    public class PreviewTopListArtRequest : IReturn<PreviewCollectionArtResponse>
+    {
+        public TopListHomeSection List { get; set; } = new TopListHomeSection();
+    }
+
     // What a Local Media Information source would tag, from its unsaved settings. Changes nothing.
     [Route("/HomeScreenCompanion/PreviewSource", "POST")]
     [Authenticated(Roles = "Admin")]
@@ -282,6 +291,11 @@ namespace HomeScreenCompanion
         public int MaxItems { get; set; }   // 1–10; 0 = 10
         // Emby's ContentSection.CardSizeOffset (-1 = smaller cards); null keeps the stored value.
         public int? CardSizeOffset { get; set; }
+        // Header page art (TopListArt); null keeps the stored value.
+        public string? TopListPosterStyle { get; set; }
+        public string? TopListBackgroundStyle { get; set; }
+        public string? TopListArtTitle { get; set; }
+        public string? TopListBackgroundPath { get; set; }
     }
 
     public class PrepareShowTopListResponse
@@ -526,6 +540,67 @@ namespace HomeScreenCompanion
         public int MaxItems { get; set; }
         public List<string> UserIds { get; set; } = new List<string>();
         public string FolderPath { get; set; } = "";
+    }
+
+    // ── Copy / paste one source (Tag & Collection tab) ──
+    // Export takes the source's flat TagConfig entries as the card shows them (saved or not) and
+    // returns them with what another server needs to make sense of them: user, library and item
+    // names for the ids, and the uploaded images themselves. The page adds the "hsc-source"
+    // header and puts the text on the clipboard.
+    [Route("/HomeScreenCompanion/Source/Export", "POST")]
+    [Authenticated(Roles = "Admin")]
+    public class ExportSourceRequest : IReturn<SourceFile>
+    {
+        public List<TagConfig> Tags { get; set; } = new List<TagConfig>();
+    }
+
+    public class SourceFile
+    {
+        public int SourceVersion { get; set; }
+        public string PluginVersion { get; set; } = "";
+        public string CreatedUtc { get; set; } = "";
+        public List<TagConfig> Tags { get; set; } = new List<TagConfig>();
+        // id on the exporting server → name
+        public Dictionary<string, string> Users { get; set; } = new Dictionary<string, string>();
+        public Dictionary<string, string> Libraries { get; set; } = new Dictionary<string, string>();
+        public Dictionary<string, SourceItemRef> Items { get; set; } = new Dictionary<string, SourceItemRef>();
+        // stored image path on the exporting server → the file
+        public Dictionary<string, SourceImage> Images { get; set; } = new Dictionary<string, SourceImage>();
+        // Export only: things the person copying should know (not part of the pasted text).
+        public List<string> Notices { get; set; } = new List<string>();
+    }
+
+    public class SourceItemRef
+    {
+        public string Name { get; set; } = "";
+        public int? Year { get; set; }
+        public string Type { get; set; } = "";
+        public string Imdb { get; set; } = "";
+        public string Tmdb { get; set; } = "";
+        public string Tvdb { get; set; } = "";
+    }
+
+    public class SourceImage
+    {
+        public string FileName { get; set; } = "";
+        public string Base64 { get; set; } = "";
+    }
+
+    // Import maps everything to this server and returns the source's flat TagConfig entries,
+    // ready for a new (unsaved) card. Nothing is saved here – only images are uploaded.
+    [Route("/HomeScreenCompanion/Source/Import", "POST")]
+    [Authenticated(Roles = "Admin")]
+    public class ImportSourceRequest : IReturn<ImportSourceResponse>
+    {
+        public string SourceJson { get; set; } = "";
+    }
+
+    public class ImportSourceResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = "";
+        public List<TagConfig> Tags { get; set; } = new List<TagConfig>();
+        public List<string> Notices { get; set; } = new List<string>();
     }
 
 public class HomeScreenCompanionService : IService
@@ -787,7 +862,35 @@ public class HomeScreenCompanionService : IService
 
             var name = !string.IsNullOrWhiteSpace(source.CollectionName) ? source.CollectionName.Trim()
                 : !string.IsNullOrWhiteSpace(source.Name) ? source.Name.Trim() : (source.Tag ?? "").Trim();
-            var title = CollectionArtRenderer.ArtTitle(source.CollectionArtTitle, name);
+            return DrawArtPreview(items, name, source.CollectionArtTitle, source.CollectionPosterStyle, source.CollectionBackgroundStyle);
+        }
+
+        public object Post(PreviewTopListArtRequest request)
+        {
+            var tl = request.List ?? new TopListHomeSection();
+            bool poster = CollectionArtRenderer.IsStyle(tl.TopListPosterStyle);
+            bool background = CollectionArtRenderer.IsStyle(tl.TopListBackgroundStyle);
+            if (!poster && !background)
+                return new PreviewCollectionArtResponse { Message = "Choose a style for the poster or the background first." };
+            var tag = TopListArt.SourceTag(tl, Plugin.Instance?.Configuration);
+            if (tag.Length == 0)
+                return new PreviewCollectionArtResponse { Message = "Only a top-list fed by a tag has a page for its header to open, so this list has no art." };
+            var items = TopListArt.RankedTitles(tl, _libraryManager, _jsonSerializer);
+            if (items.Count == 0)
+                return new PreviewCollectionArtResponse { Message = $"No titles carry the tag '{tag}' yet. Run the sync once, then preview again." };
+            var result = DrawArtPreview(items, (tl.TagName ?? "").Trim(), tl.TopListArtTitle, tl.TopListPosterStyle, tl.TopListBackgroundStyle);
+            _logger.Info($"Top-list art preview: '{tl.TagName}' poster '{tl.TopListPosterStyle}' background '{tl.TopListBackgroundStyle}' -> "
+                + (result.Success ? $"drawn from {result.Titles} title(s)" : result.Message));
+            return result;
+        }
+
+        // Draws the poster / background (whichever has a style) from the titles in order, each
+        // film once, and returns them as data: URLs. Nothing is saved.
+        private PreviewCollectionArtResponse DrawArtPreview(List<BaseItem> items, string name, string artTitle, string posterStyle, string backgroundStyle)
+        {
+            bool poster = CollectionArtRenderer.IsStyle(posterStyle);
+            bool background = CollectionArtRenderer.IsStyle(backgroundStyle);
+            var title = CollectionArtRenderer.ArtTitle(artTitle, name);
             var tempDir = Path.Combine(Path.GetTempPath(), "hsc_art_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
             try
@@ -811,8 +914,8 @@ public class HomeScreenCompanionService : IService
                 {
                     Success = true,
                     Titles = items.Count,
-                    Poster = poster ? Draw(source.CollectionPosterStyle, false) : "",
-                    Background = background ? Draw(source.CollectionBackgroundStyle, true) : ""
+                    Poster = poster ? Draw(posterStyle, false) : "",
+                    Background = background ? Draw(backgroundStyle, true) : ""
                 };
             }
             catch (Exception ex)
@@ -2518,6 +2621,10 @@ public class HomeScreenCompanionService : IService
                 tl.HomeSectionUserIds = userIds;
                 tl.MaxItems = request.MaxItems > 0 ? Math.Min(request.MaxItems, ShowTopList.MaxRanks) : ShowTopList.MaxRanks;
                 tl.ShowSourceTag = sourceTag;
+                if (request.TopListPosterStyle != null) tl.TopListPosterStyle = request.TopListPosterStyle.Trim();
+                if (request.TopListBackgroundStyle != null) tl.TopListBackgroundStyle = request.TopListBackgroundStyle.Trim();
+                if (request.TopListArtTitle != null) tl.TopListArtTitle = request.TopListArtTitle.Trim();
+                if (request.TopListBackgroundPath != null) tl.TopListBackgroundPath = request.TopListBackgroundPath.Trim();
 
                 var settings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 try
@@ -2672,6 +2779,9 @@ public class HomeScreenCompanionService : IService
                     return new PrepareTopListHomeSectionsResponse { Success = false, Message = "HomeSectionLibraryId is not set — library may not be ready yet." };
 
                 var resolvedLibraryId = tl.HomeSectionLibraryId;
+                // Where the row header goes: the library, or the source tag's page when the list
+                // has art (TopListArt). The row's items come from the exclusions either way.
+                var headerParentId = TopListArt.HeaderTargetId(tl, _libraryManager) ?? resolvedLibraryId;
 
                 // Exclude everything except this top-list's own library. The section is shown to
                 // several users and each one's editor lists their own views (hidden libraries,
@@ -2717,7 +2827,7 @@ public class HomeScreenCompanionService : IService
                         string trackId;
                         if (ownedSection != null)
                         {
-                            var updatedSection = HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, settingsDict, resolvedLibraryId, ownedSection);
+                            var updatedSection = HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, settingsDict, headerParentId, ownedSection);
                             typeof(ContentSection).GetProperty("Id")?.SetValue(updatedSection, ownedSection.Id);
                             _userManager.UpdateHomeSection(userInternalId, updatedSection, CancellationToken.None);
                             trackId = ownedSection.Id ?? sectionMarker;
@@ -2728,7 +2838,7 @@ public class HomeScreenCompanionService : IService
                             var beforeIds = new HashSet<string>(
                                 allSections.Where(s => !string.IsNullOrEmpty(s.Id)).Select(s => s.Id));
                             _userManager.AddHomeSection(userInternalId,
-                                HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, settingsDict, resolvedLibraryId),
+                                HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, settingsDict, headerParentId),
                                 CancellationToken.None);
                             var afterSections = _userManager.GetHomeSections(userInternalId, CancellationToken.None);
                             var newId = (afterSections?.Sections ?? Array.Empty<ContentSection>())
@@ -2862,7 +2972,8 @@ public class HomeScreenCompanionService : IService
                                 var owned = secs.FirstOrDefault(s => s.Id == tracking.SectionId)
                                     ?? secs.FirstOrDefault(s => s.Subtitle == otherMarker);
                                 if (owned == null) continue;
-                                var updatedSec = HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, otherSettings, otherTl.HomeSectionLibraryId, owned);
+                                var updatedSec = HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, otherSettings,
+                                    TopListArt.HeaderTargetId(otherTl, _libraryManager) ?? otherTl.HomeSectionLibraryId, owned);
                                 typeof(ContentSection).GetProperty("Id")?.SetValue(updatedSec, owned.Id);
                                 _userManager.UpdateHomeSection(uid, updatedSec, CancellationToken.None);
                             }
@@ -3134,6 +3245,10 @@ public class HomeScreenCompanionService : IService
                         tl.HomeSectionUserIds ??= new List<string>();
                         tl.HomeSectionTracked ??= new List<HomeSectionTracking>();
                         if (string.IsNullOrEmpty(tl.HomeSectionSettings)) tl.HomeSectionSettings = "{}";
+                        tl.TopListPosterStyle     ??= "";
+                        tl.TopListBackgroundStyle ??= "";
+                        tl.TopListArtTitle        ??= "";
+                        tl.TopListBackgroundPath  ??= "";
                         PruneUnknownUsers(tl.HomeSectionUserIds, knownUsers, response.Warnings, $"Top-list '{tl.TagName}'");
                         tl.HomeSectionTracked.RemoveAll(x => !IsKnownUser(knownUsers, x.UserId));
 
@@ -3469,6 +3584,408 @@ public class HomeScreenCompanionService : IService
             var invalid = Path.GetInvalidFileNameChars();
             var safe = new string((name ?? "unknown").Select(c => Array.IndexOf(invalid, c) >= 0 ? '_' : c).ToArray()).Trim('.');
             return string.IsNullOrWhiteSpace(safe) ? "unknown" : safe;
+        }
+
+        // ── Copy / paste one source ───────────────────────────────────────────────────────
+        // Same TagConfig format as the backup's Tags section (and the same NormalizeTag on the
+        // way in). Ids that only mean something on this server travel with their names; images
+        // travel as base64. Run state (tracked home sections, playlist links, AI last run,
+        // LastModified) is left out: the pasted source is new on the other server.
+
+        private const int SourceFormatVersion = 1;
+        private const int MaxSourceImageBytes = 5 * 1024 * 1024;
+        private static readonly string[] UserCriterionProps = { "IsPlayed", "LastPlayed", "PlayCount" };
+        private const string SmartFilterUsers = "Smart filter rules";
+
+        private static string NormId(string? id) => (id ?? "").Replace("-", "").Trim().ToLowerInvariant();
+
+        private static void ClearSourceRunState(TagConfig t)
+        {
+            t.HomeSectionTracked = new List<HomeSectionTracking>();
+            t.PlaylistMappings   = new List<PlaylistMapping>();
+            t.AiLastRunDate      = DateTime.MinValue;
+            t.LastModified       = DateTime.MinValue;
+        }
+
+        // The user id inside a smart-filter rule (IsPlayed/LastPlayed/PlayCount:<userId>:<op>:<value>,
+        // optionally "!"-prefixed), or null when the rule has none ("Any user"/"All users" included).
+        private static string? CriterionUserId(string criterion)
+        {
+            var parts = (criterion ?? "").TrimStart('!').Split(':');
+            if (parts.Length != 4 || !UserCriterionProps.Contains(parts[0])) return null;
+            var uid = parts[1].Trim();
+            return uid.Length == 0 || uid.StartsWith("__") ? null : uid;
+        }
+
+        private static string WithCriterionUserId(string criterion, string userId)
+        {
+            var neg = criterion.StartsWith("!") ? "!" : "";
+            var parts = criterion.TrimStart('!').Split(':');
+            parts[1] = userId;
+            return neg + string.Join(":", parts);
+        }
+
+        private Dictionary<string, string> ParseSectionSettings(string? json)
+        {
+            var d = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(json) || json == "{}") return d;
+            try { d = _jsonSerializer.DeserializeFromString<Dictionary<string, string>>(json!) ?? d; } catch { }
+            return new Dictionary<string, string>(d, StringComparer.OrdinalIgnoreCase);
+        }
+
+        private static readonly string[] ExcludedLibraryKeys = { "_queryExcludeViewIds", "ExcludedFolders" };
+
+        private static IEnumerable<string> SplitIds(string? csv) =>
+            (csv ?? "").Split(',').Select(x => x.Trim()).Where(x => x.Length > 0);
+
+        private string? SourceImagesDir()
+        {
+            var dataPath = Plugin.Instance?.DataFolderPath;
+            return dataPath == null ? null : Path.Combine(dataPath, "collection_images");
+        }
+
+        public object Post(ExportSourceRequest request)
+        {
+            var file = new SourceFile
+            {
+                SourceVersion = SourceFormatVersion,
+                PluginVersion = Plugin.Instance?.Version.ToString() ?? "0.0.0",
+                CreatedUtc    = DateTime.UtcNow.ToString("o")
+            };
+            var tags = (request.Tags ?? new List<TagConfig>()).Where(t => t != null).Select(NormalizeTag).ToList();
+            file.Tags = tags;
+            if (tags.Count == 0) return file;
+
+            var userNames = new Dictionary<string, string>();
+            try { foreach (var u in _userManager.GetUserList(new UserQuery())) userNames[u.Id.ToString("N")] = u.Name ?? ""; } catch { }
+            var libraryNames = new Dictionary<string, string>();
+            try
+            {
+                foreach (var f in _libraryManager.GetVirtualFolders())
+                    if (!string.IsNullOrEmpty(f.ItemId)) libraryNames[NormId(f.ItemId)] = f.Name ?? "";
+            }
+            catch { }
+
+            void AddUser(string? id)
+            {
+                if (string.IsNullOrWhiteSpace(id) || file.Users.ContainsKey(id!)) return;
+                if (userNames.TryGetValue(NormId(id), out var name)) file.Users[id!] = name;
+            }
+            void AddLibrary(string? id)
+            {
+                if (string.IsNullOrWhiteSpace(id) || string.Equals(id, "auto", StringComparison.OrdinalIgnoreCase) || file.Libraries.ContainsKey(id!)) return;
+                if (libraryNames.TryGetValue(NormId(id), out var name)) file.Libraries[id!] = name;
+            }
+
+            var imagesDir = SourceImagesDir();
+            var fullImagesDir = imagesDir == null ? null : Path.GetFullPath(imagesDir) + Path.DirectorySeparatorChar;
+            void AddImage(string? path, string what)
+            {
+                if (string.IsNullOrWhiteSpace(path) || file.Images.ContainsKey(path!)) return;
+                string? problem = null;
+                try
+                {
+                    var full = Path.GetFullPath(path!);
+                    if (fullImagesDir == null || !full.StartsWith(fullImagesDir, StringComparison.OrdinalIgnoreCase) || !File.Exists(full))
+                        problem = "the image file was not found on this server";
+                    else
+                    {
+                        var len = new FileInfo(full).Length;
+                        if (len > MaxSourceImageBytes)
+                            problem = $"the image is too large to copy ({len / 1024.0 / 1024.0:0.0} MB, the limit is {MaxSourceImageBytes / 1024 / 1024} MB) – upload it again on the other server";
+                        else
+                            file.Images[path!] = new SourceImage { FileName = Path.GetFileName(full), Base64 = Convert.ToBase64String(File.ReadAllBytes(full)) };
+                    }
+                }
+                catch (Exception ex) { problem = "the image could not be read (" + ex.Message + ")"; }
+                if (problem != null)
+                {
+                    var msg = $"{what}: {problem}. The copy has no {what.ToLowerInvariant()}.";
+                    if (!file.Notices.Contains(msg)) file.Notices.Add(msg);
+                }
+            }
+
+            foreach (var t in tags)
+            {
+                ClearSourceRunState(t);
+                foreach (var id in t.HomeSectionUserIds) AddUser(id);
+                foreach (var id in t.PlaylistUserIds) AddUser(id);
+                AddUser(t.AiRecentlyWatchedUserId);
+                foreach (var f in t.MediaInfoFilters)
+                    foreach (var c in f.Criteria) AddUser(CriterionUserId(c));
+
+                AddLibrary(t.HomeSectionLibraryId);
+                var settings = ParseSectionSettings(t.HomeSectionSettings);
+                foreach (var key in ExcludedLibraryKeys)
+                    if (settings.TryGetValue(key, out var csv))
+                        foreach (var id in SplitIds(csv)) AddLibrary(id);
+
+                foreach (var id in t.ManualItemIds ?? new List<string>())
+                {
+                    if (string.IsNullOrWhiteSpace(id) || file.Items.ContainsKey(id)) continue;
+                    BaseItem? item = null;
+                    if (long.TryParse(id, out var internalId)) item = _libraryManager.GetItemById(internalId);
+                    else if (Guid.TryParse(id, out var guid)) item = _libraryManager.GetItemById(guid);
+                    if (item == null) continue; // already gone here; the import reports it as missing
+                    file.Items[id] = new SourceItemRef
+                    {
+                        Name = item.Name ?? "",
+                        Year = item.ProductionYear,
+                        Type = item.GetType().Name,
+                        Imdb = item.GetProviderId("Imdb") ?? "",
+                        Tmdb = item.GetProviderId("Tmdb") ?? "",
+                        Tvdb = item.GetProviderId("Tvdb") ?? ""
+                    };
+                }
+
+                AddImage(t.CollectionPosterPath, "Collection poster");
+                AddImage(t.CollectionBackgroundPath, "Collection background");
+                AddImage(t.TagBackgroundPath, "Tag background");
+            }
+
+            // Top-lists are configured separately (Top Lists tab) and are not part of a source.
+            var tagNames = new HashSet<string>(tags.Select(t => (t.Tag ?? "").Trim()).Where(s => s.Length > 0), StringComparer.OrdinalIgnoreCase);
+            foreach (var tl in Plugin.Instance?.Configuration?.TopLists ?? new List<TopListHomeSection>())
+            {
+                if (tl == null) continue;
+                if (tagNames.Contains((tl.TagName ?? "").Trim()) || tagNames.Contains((tl.ShowSourceTag ?? "").Trim()))
+                    file.Notices.Add($"This source feeds the top-list '{tl.TagName}'. Top-lists are not copied with a source – set it up in the Top Lists tab on the other server.");
+            }
+            return file;
+        }
+
+        public object Post(ImportSourceRequest request)
+        {
+            var response = new ImportSourceResponse();
+            try
+            {
+                var json = request.SourceJson ?? "";
+                if (string.IsNullOrWhiteSpace(json)) return FailSource(response, "Nothing was pasted.");
+                if (!System.Text.RegularExpressions.Regex.IsMatch(json, "\"hsc-source\"\\s*:\\s*\\d"))
+                    return FailSource(response, "This is not a copied Home Screen Companion source (the \"hsc-source\" header is missing). Use Copy on a source card and paste that text.");
+                SourceFile? file = null;
+                try { file = _jsonSerializer.DeserializeFromString<SourceFile>(json); } catch { }
+                if (file == null || file.Tags == null || file.Tags.Count(t => t != null) == 0)
+                    return FailSource(response, "The pasted text could not be read as a source.");
+                file.Users     ??= new Dictionary<string, string>();
+                file.Libraries ??= new Dictionary<string, string>();
+                file.Items     ??= new Dictionary<string, SourceItemRef>();
+                file.Images    ??= new Dictionary<string, SourceImage>();
+
+                var tags = file.Tags.Where(t => t != null).Select(NormalizeTag).ToList();
+                var notices = response.Notices;
+                void Notice(string msg) { if (!notices.Contains(msg)) notices.Add(msg); }
+                string Label(string id, Dictionary<string, string> names) =>
+                    names.TryGetValue(id, out var n) && !string.IsNullOrEmpty(n) ? n : "unknown (id " + id + ")";
+
+                // Users: by name, case-insensitive.
+                var localUsers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var u in _userManager.GetUserList(new UserQuery()))
+                    if (!string.IsNullOrEmpty(u.Name) && !localUsers.ContainsKey(u.Name)) localUsers[u.Name] = u.Id.ToString("N");
+                string? MapUser(string id) =>
+                    file.Users.TryGetValue(id, out var name) && !string.IsNullOrEmpty(name) && localUsers.TryGetValue(name, out var local) ? local : null;
+                var droppedUsers = new Dictionary<string, SortedSet<string>>();
+                void DropUser(string context, string id)
+                {
+                    if (!droppedUsers.TryGetValue(context, out var set)) droppedUsers[context] = set = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+                    set.Add(Label(id, file.Users));
+                }
+                List<string> MapUsers(List<string> ids, string context)
+                {
+                    var result = new List<string>();
+                    foreach (var id in ids.Where(x => !string.IsNullOrWhiteSpace(x)))
+                    {
+                        var local = MapUser(id);
+                        if (local == null) DropUser(context, id);
+                        else if (!result.Contains(local)) result.Add(local);
+                    }
+                    return result;
+                }
+
+                // Libraries: by name, case-insensitive.
+                var localLibraries = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var f in _libraryManager.GetVirtualFolders())
+                    if (!string.IsNullOrEmpty(f.Name) && !string.IsNullOrEmpty(f.ItemId) && !localLibraries.ContainsKey(f.Name)) localLibraries[f.Name] = f.ItemId;
+                string? MapLibrary(string id) =>
+                    file.Libraries.TryGetValue(id, out var name) && !string.IsNullOrEmpty(name) && localLibraries.TryGetValue(name, out var local) ? local : null;
+                var droppedLibraries = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                // Manual List items: by IMDb / TMDb / TVDb id, then name + year.
+                Func<SourceItemRef, BaseItem?>? findItem = null;
+                if (tags.Any(t => t.ManualItemIds.Count > 0)) findItem = BuildSourceItemFinder();
+                var missingItems = new List<string>();
+
+                // Images: uploaded once per distinct file, like the card's own upload button.
+                var newImagePaths = new Dictionary<string, string>();
+                string MapImage(string path, string what)
+                {
+                    if (string.IsNullOrWhiteSpace(path)) return "";
+                    if (newImagePaths.TryGetValue(path, out var done)) return done;
+                    var newPath = "";
+                    if (file.Images.TryGetValue(path, out var img) && img != null && !string.IsNullOrEmpty(img.Base64))
+                    {
+                        var r = Post(new UploadCollectionImageRequest { FileName = img.FileName ?? "", Base64Data = img.Base64 }) as UploadCollectionImageResponse;
+                        if (r != null && r.Success) newPath = r.FilePath;
+                        else Notice($"{what}: the copied image could not be saved ({r?.Message ?? "unknown error"}) – upload it again.");
+                    }
+                    else Notice($"{what}: the copied text has no image (too large or missing on the other server) – upload it again.");
+                    newImagePaths[path] = newPath;
+                    return newPath;
+                }
+
+                // Local collection / playlist sources are stored by name: just check they exist.
+                var localSourceNames = new Dictionary<string, HashSet<string>>();
+                bool LocalSourceExists(string type, string name)
+                {
+                    if (!localSourceNames.TryGetValue(type, out var set))
+                    {
+                        set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        try
+                        {
+                            foreach (var i in _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { type }, Recursive = true }))
+                                if (!string.IsNullOrEmpty(i.Name)) set.Add(i.Name);
+                        }
+                        catch { }
+                        localSourceNames[type] = set;
+                    }
+                    return set.Contains(name);
+                }
+
+                foreach (var t in tags)
+                {
+                    ClearSourceRunState(t);
+                    t.HomeSectionUserIds = MapUsers(t.HomeSectionUserIds, "Home section users");
+                    t.PlaylistUserIds    = MapUsers(t.PlaylistUserIds, "Playlist users");
+                    if (!string.IsNullOrWhiteSpace(t.AiRecentlyWatchedUserId))
+                    {
+                        var local = MapUser(t.AiRecentlyWatchedUserId);
+                        if (local == null) DropUser("AI recently-watched user", t.AiRecentlyWatchedUserId);
+                        t.AiRecentlyWatchedUserId = local ?? "";
+                    }
+                    foreach (var f in t.MediaInfoFilters)
+                    {
+                        for (int i = 0; i < f.Criteria.Count; i++)
+                        {
+                            var uid = CriterionUserId(f.Criteria[i]);
+                            if (uid == null) continue;
+                            var local = MapUser(uid);
+                            if (local == null) DropUser(SmartFilterUsers, uid);
+                            f.Criteria[i] = WithCriterionUserId(f.Criteria[i], local ?? "__any__");
+                        }
+                    }
+
+                    var libId = (t.HomeSectionLibraryId ?? "").Trim();
+                    if (libId.Length > 0 && !string.Equals(libId, "auto", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var local = MapLibrary(libId);
+                        if (local == null) droppedLibraries.Add(Label(libId, file.Libraries) + " (home section library, now auto)");
+                        t.HomeSectionLibraryId = local ?? "auto";
+                    }
+                    var settings = ParseSectionSettings(t.HomeSectionSettings);
+                    bool settingsChanged = false;
+                    foreach (var key in ExcludedLibraryKeys)
+                    {
+                        if (!settings.TryGetValue(key, out var csv)) continue;
+                        var mapped = new List<string>();
+                        foreach (var id in SplitIds(csv))
+                        {
+                            var local = MapLibrary(id);
+                            if (local == null) droppedLibraries.Add(Label(id, file.Libraries) + " (excluded library)");
+                            else if (!mapped.Contains(local)) mapped.Add(local);
+                        }
+                        // No key = the page's default (top-list libraries excluded).
+                        if (mapped.Count == 0) settings.Remove(key); else settings[key] = string.Join(",", mapped);
+                        settingsChanged = true;
+                    }
+                    if (settingsChanged) t.HomeSectionSettings = _jsonSerializer.SerializeToString(settings);
+
+                    if (t.ManualItemIds.Count > 0)
+                    {
+                        var mappedItems = new List<string>();
+                        foreach (var id in t.ManualItemIds.Where(x => !string.IsNullOrWhiteSpace(x)))
+                        {
+                            file.Items.TryGetValue(id, out var itemRef);
+                            var item = itemRef != null && findItem != null ? findItem(itemRef) : null;
+                            if (item == null)
+                            {
+                                var label = itemRef == null ? "unknown item (id " + id + ")"
+                                    : itemRef.Name + (itemRef.Year.HasValue ? " (" + itemRef.Year + ")" : "") + (string.IsNullOrEmpty(itemRef.Imdb) ? "" : " " + itemRef.Imdb);
+                                if (!missingItems.Contains(label)) missingItems.Add(label);
+                                continue;
+                            }
+                            var localId = item.InternalId.ToString();
+                            if (!mappedItems.Contains(localId)) mappedItems.Add(localId);
+                        }
+                        t.ManualItemIds = mappedItems;
+                    }
+
+                    t.CollectionPosterPath     = MapImage(t.CollectionPosterPath, "Collection poster");
+                    t.CollectionBackgroundPath = MapImage(t.CollectionBackgroundPath, "Collection background");
+                    t.TagBackgroundPath        = MapImage(t.TagBackgroundPath, "Tag background");
+
+                    if ((t.SourceType == "LocalCollection" || t.SourceType == "LocalPlaylist") && !string.IsNullOrWhiteSpace(t.LocalSourceId)
+                        && !LocalSourceExists(t.SourceType == "LocalPlaylist" ? "Playlist" : "BoxSet", t.LocalSourceId.Trim()))
+                        Notice($"{(t.SourceType == "LocalPlaylist" ? "Playlist" : "Collection")} '{t.LocalSourceId}' does not exist on this server – the source finds nothing until it does.");
+                }
+
+                foreach (var kv in droppedUsers)
+                    Notice(kv.Key == SmartFilterUsers
+                        ? $"{kv.Key}: users not on this server, set to Any user: {string.Join(", ", kv.Value)}."
+                        : $"{kv.Key} not on this server, left out: {string.Join(", ", kv.Value)}.");
+                if (droppedLibraries.Count > 0)
+                    Notice($"Libraries not on this server, left out: {string.Join(", ", droppedLibraries)}.");
+                if (missingItems.Count > 0)
+                    Notice($"Manual List: {missingItems.Count} title(s) not in this server's library, left out: {string.Join(", ", missingItems)}.");
+
+                response.Tags = tags;
+                response.Success = true;
+                response.Message = "Source ready.";
+                return response;
+            }
+            catch (Exception ex)
+            {
+                return FailSource(response, ex.Message);
+            }
+        }
+
+        private static ImportSourceResponse FailSource(ImportSourceResponse response, string message)
+        {
+            response.Success = false;
+            response.Message = message;
+            return response;
+        }
+
+        // Finds this server's movie or show for a copied Manual List entry. Top-list copies
+        // (.strm files in the top-list folders) are skipped, as in BuildImdbLookup.
+        private Func<SourceItemRef, BaseItem?> BuildSourceItemFinder()
+        {
+            var byProvider = new Dictionary<string, BaseItem>(StringComparer.OrdinalIgnoreCase);
+            var byNameYear = new Dictionary<string, BaseItem>(StringComparer.OrdinalIgnoreCase);
+            string? topListsFolder = null;
+            try { topListsFolder = Path.Combine(Plugin.Instance!.DataFolderPath, "toplists") + Path.DirectorySeparatorChar; } catch { }
+            foreach (var item in _libraryManager.GetItemList(new InternalItemsQuery
+            {
+                IncludeItemTypes = new[] { "Movie", "Series" },
+                Recursive = true,
+                IsVirtualItem = false
+            }))
+            {
+                if (topListsFolder != null && !string.IsNullOrEmpty(item.Path) && item.Path.StartsWith(topListsFolder, StringComparison.OrdinalIgnoreCase)) continue;
+                var type = item.GetType().Name;
+                foreach (var p in new[] { "Imdb", "Tmdb", "Tvdb" })
+                {
+                    var v = item.GetProviderId(p);
+                    // TMDb and TVDb numbers are only unique per type.
+                    if (!string.IsNullOrEmpty(v)) byProvider.TryAdd(type + ":" + p + ":" + v, item);
+                }
+                if (!string.IsNullOrEmpty(item.Name)) byNameYear.TryAdd(type + ":" + item.Name + ":" + item.ProductionYear, item);
+            }
+            return r =>
+            {
+                foreach (var (p, v) in new[] { ("Imdb", r.Imdb), ("Tmdb", r.Tmdb), ("Tvdb", r.Tvdb) })
+                    if (!string.IsNullOrEmpty(v) && byProvider.TryGetValue(r.Type + ":" + p + ":" + v, out var hit)) return hit;
+                return !string.IsNullOrEmpty(r.Name) && byNameYear.TryGetValue(r.Type + ":" + r.Name + ":" + r.Year, out var byName) ? byName : null;
+            };
         }
 
     }

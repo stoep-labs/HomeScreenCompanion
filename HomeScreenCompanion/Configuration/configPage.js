@@ -882,6 +882,71 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         };
     }
 
+    // Background upload (Custom): same endpoints as the poster upload. Wired once per block: the
+    // collection background, the tag background and the top-list header-page background.
+    function bgHeaders() {
+        var headers = { 'Content-Type': 'application/json' };
+        var token = window.ApiClient.accessToken();
+        if (token) headers['X-Emby-Token'] = token;
+        return headers;
+    }
+    function wireBgUpload(box) {
+        if (!box) return;
+        function bgUploaded(filePath, name, previewSrc) {
+            box.querySelector('.hiddenBgPath').value = filePath;
+            box.querySelector('.bg-filename').textContent = name;
+            box.querySelector('.bg-preview-container').style.display = 'block';
+            var img = box.querySelector('.bg-preview-img');
+            img.src = previewSrc;
+            img.style.display = 'block';
+            box.querySelector('.hiddenBgPath').dispatchEvent(new Event('change', { bubbles: true }));
+        }
+        box.querySelector('.btnChooseBg').addEventListener('click', function () {
+            box.querySelector('.inputBgFile').click();
+        });
+        box.querySelector('.inputBgFile').addEventListener('change', function () {
+            var file = this.files[0];
+            if (!file) return;
+            var reader = new FileReader();
+            reader.onload = function (e) {
+                var dataUrl = e.target.result;
+                fetch(window.ApiClient.getUrl('HomeScreenCompanion/UploadCollectionImage'), {
+                    method: 'POST',
+                    headers: bgHeaders(),
+                    body: JSON.stringify({ FileName: file.name, Base64Data: dataUrl.split(',')[1], OldFilePath: box.querySelector('.hiddenBgPath').value })
+                }).then(function (r) { return r.json(); })
+                .then(function (result) {
+                    if (result.Success) bgUploaded(result.FilePath, file.name, dataUrl);
+                    else window.Dashboard.alert('Upload failed: ' + (result.Message || 'Unknown error'));
+                }).catch(function () { window.Dashboard.alert('Upload error. Check server logs.'); });
+            };
+            reader.readAsDataURL(file);
+        });
+        box.querySelector('.btnRemoveBg').addEventListener('click', function () {
+            box.querySelector('.hiddenBgPath').value = '';
+            box.querySelector('.bg-filename').textContent = '';
+            box.querySelector('.bg-preview-container').style.display = 'none';
+            box.querySelector('.bg-preview-img').style.display = 'none';
+            box.querySelector('.inputBgFile').value = '';
+            box.querySelector('.hiddenBgPath').dispatchEvent(new Event('change', { bubbles: true }));
+        });
+        box.querySelector('.btnLoadBgUrl').addEventListener('click', function () {
+            var url = box.querySelector('.txtBgUrl').value.trim();
+            if (!url) return;
+            fetch(window.ApiClient.getUrl('HomeScreenCompanion/FetchCollectionImageFromUrl'), {
+                method: 'POST',
+                headers: bgHeaders(),
+                body: JSON.stringify({ Url: url, OldFilePath: box.querySelector('.hiddenBgPath').value })
+            }).then(function (r) { return r.json(); })
+            .then(function (result) {
+                if (result.Success) {
+                    bgUploaded(result.FilePath, url.split('/').pop().split('?')[0], url);
+                    box.querySelector('.txtBgUrl').value = '';
+                } else window.Dashboard.alert('Failed to load image: ' + (result.Message || 'Unknown error'));
+            }).catch(function () { window.Dashboard.alert('Error fetching image. Check the URL and server logs.'); });
+        });
+    }
+
     // Collection art style picker (cards like the top-list badge picker). '' = Custom (upload);
     // for the tag poster (scope 'tag') '' = Emby's own collage.
     var COLLECTION_ART_STYLES = [['', 'Custom'], ['collage', 'Collage'], ['grid', 'Grid'], ['fan', 'Fan'], ['wall', 'Wall'],
@@ -889,7 +954,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     var _collPickerSeq = 0;
     function buildCollStylePickerHtml(kind, selected, scope) {
         var sel = selected || '';
-        var embyOwn = scope === 'tag' && kind === 'poster';
+        var embyOwn = (scope === 'tag' || scope === 'toplist') && kind === 'poster';
         var name = 'collStyle_' + kind + '_' + (++_collPickerSeq);
         var cardBase = 'cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 12px;border-radius:6px;border:2px solid transparent;transition:border-color 0.15s;';
         var thumb = kind === 'poster' ? 'width:60px;height:90px;' : 'width:120px;height:68px;';
@@ -905,6 +970,123 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     '</label>';
             }).join('') +
             '</div>';
+    }
+
+    // Top-list header page art (TopListPosterStyle / TopListBackgroundStyle): the same pickers as
+    // the Tags tab. With a style set, the row header opens the list's source tag page, which shows
+    // this art. Used by every top-list form: the create dialogs and the inline edit forms.
+    // opts.noSourceTag: a manual list (no tag page) — only a note is shown.
+    function buildTopListArtHtml(art, opts) {
+        art = art || {};
+        opts = opts || {};
+        var head = '<span style="font-size:0.82em;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;opacity:0.65;display:block;margin-bottom:8px;">';
+        if (opts.noSourceTag)
+            return '<div class="tl-art-block" style="margin-bottom:16px;">' + head + 'Header page art</span>' +
+                '<div class="fieldDescription">Poster and background art is for top-lists fed by a tag: their row header can open the tag\'s page, which shows the art. A manual list has no such page, so its header keeps opening the list\'s own library.</div></div>';
+        var on = !!(art.TopListPosterStyle || art.TopListBackgroundStyle);
+        var bgPath = art.TopListBackgroundPath || '';
+        var escA = function (v) { return String(v || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;'); };
+        return '<div class="tl-art-block" style="margin-bottom:16px;">' +
+            head + 'Header page art</span>' +
+            '<div class="fieldDescription" style="margin-bottom:10px;">Clicking the row title (e.g. <b>' + escA(opts.title || 'Trending Movies') + ' &gt;</b>) opens a page. ' +
+            'With a poster or background chosen here, that page becomes the page of the tag <b>' + escA(opts.sourceTag || 'the list is fed by') + '</b> and shows this art, drawn from the list\'s ranked titles (each film once) on every sync. ' +
+            'Leave both on the first option and nothing changes.</div>' +
+            '<p style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Poster</p>' +
+            buildCollStylePickerHtml('poster', art.TopListPosterStyle, 'toplist') +
+            '<p style="margin:8px 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Background</p>' +
+            buildCollStylePickerHtml('background', art.TopListBackgroundStyle, 'toplist') +
+            '<div class="tl-art-bg-upload" style="display:' + (art.TopListBackgroundStyle ? 'none' : 'block') + ';">' +
+                '<div class="bg-preview-container" style="margin-bottom:8px; display:' + (bgPath ? 'block' : 'none') + ';">' +
+                    '<span class="bg-filename" style="font-size:0.85em; opacity:0.7;">' + escA(bgPath ? bgPath.split(/[\\/]/).pop() : '') + '</span>' +
+                    '<button type="button" class="btnRemoveBg" style="margin-left:10px; font-size:0.8em; background:transparent; border:none; color:#e55; cursor:pointer; vertical-align:middle;">✕ Remove</button>' +
+                '</div>' +
+                '<img class="bg-preview-img" src="" alt="" style="max-width:240px; max-height:135px; border-radius:4px; display:none; margin-bottom:8px;" />' +
+                '<input type="file" class="inputBgFile" accept="image/*" style="display:none;" />' +
+                '<input type="hidden" class="hiddenBgPath" value="' + escA(bgPath) + '" />' +
+                '<button type="button" is="emby-button" class="btnChooseBg raised" style="width:100%; background:transparent; border:2px dashed rgba(128,128,128,0.4); color:var(--theme-text-secondary);"><i class="md-icon" style="margin-right:5px;">image</i>Choose Background Image</button>' +
+                '<div style="display:flex; align-items:center; gap:6px; margin-top:8px; opacity:0.45;"><div style="flex:1; height:1px; background:currentColor;"></div><span style="font-size:0.75em;">or</span><div style="flex:1; height:1px; background:currentColor;"></div></div>' +
+                '<div style="display:flex; gap:6px; margin-top:6px;"><input class="txtBgUrl" is="emby-input" type="url" placeholder="https://example.com/background.jpg" style="flex:1;" />' +
+                '<button type="button" is="emby-button" class="btnLoadBgUrl raised btn-neutral">Load</button></div>' +
+                '<div class="fieldDescription">Leave empty for no background (Emby\'s default).</div>' +
+            '</div>' +
+            '<div class="tl-art-title-row" style="margin-top:12px; display:' + (on ? 'block' : 'none') + ';">' +
+                '<input type="text" class="txtTlArtTitle" style="background:var(--plugin-input-bg);border:1px solid var(--plugin-input-border);border-radius:4px;padding:6px 10px;font-size:0.9em;color:var(--plugin-popup-color);width:100%;box-sizing:border-box;" placeholder="Title on the art: {name}" value="' + escA(art.TopListArtTitle) + '" />' +
+                '<div class="fieldDescription">Title on the art. Leave empty to use the list name. <b>{name}</b> = list name, <b>{week}</b> = this week\'s number.</div>' +
+            '</div>' +
+            '<div class="tl-art-preview-row" style="margin-top:10px; display:' + (on ? 'block' : 'none') + ';">' +
+                '<button type="button" is="emby-button" class="btnTlArtPreview raised" style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">visibility</i><span>Preview art</span></button>' +
+            '</div>' +
+            '</div>';
+    }
+
+    // The art settings of a top-list form ('' everywhere when it has no art block, e.g. manual lists).
+    function readTopListArt(container) {
+        var block = container && container.querySelector('.tl-art-block');
+        var poster = block && block.querySelector('.coll-style-picker[data-kind="poster"] input:checked');
+        var bg = block && block.querySelector('.coll-style-picker[data-kind="background"] input:checked');
+        return {
+            TopListPosterStyle: poster ? poster.value : '',
+            TopListBackgroundStyle: bg ? bg.value : '',
+            TopListBackgroundPath: bg && !bg.value ? ((block.querySelector('.hiddenBgPath') || {}).value || '') : '',
+            TopListArtTitle: block ? ((block.querySelector('.txtTlArtTitle') || {}).value || '').trim() : ''
+        };
+    }
+
+    // getList(): the list as the server should see it for Preview art (TagName, ContentType,
+    // ShowSourceTag, MaxItems). onChange: called after any art change (dirty checks).
+    function wireTopListArt(container, getList, onChange) {
+        var block = container && container.querySelector('.tl-art-block');
+        if (!block || !block.querySelector('.coll-style-picker')) return;
+        function sync() {
+            var art = readTopListArt(container);
+            var on = !!(art.TopListPosterStyle || art.TopListBackgroundStyle);
+            block.querySelector('.tl-art-bg-upload').style.display = art.TopListBackgroundStyle ? 'none' : 'block';
+            block.querySelector('.tl-art-title-row').style.display = on ? 'block' : 'none';
+            block.querySelector('.tl-art-preview-row').style.display = on ? 'block' : 'none';
+            if (typeof onChange === 'function') onChange();
+        }
+        block.querySelectorAll('.coll-style-picker').forEach(function (picker) {
+            var opts = Array.from(picker.querySelectorAll('.coll-style-opt'));
+            opts.forEach(function (label) {
+                label.addEventListener('click', function () {
+                    opts.forEach(function (l) { l.style.borderColor = 'var(--line-color,rgba(255,255,255,0.12))'; });
+                    label.style.borderColor = '#52B54B';
+                });
+            });
+            picker.addEventListener('change', sync);
+        });
+        block.querySelector('.hiddenBgPath').addEventListener('change', sync);
+        block.querySelector('.txtTlArtTitle').addEventListener('input', sync);
+        wireBgUpload(block.querySelector('.tl-art-bg-upload'));
+        block.querySelector('.btnTlArtPreview').addEventListener('click', function () {
+            showTopListArtPreview(Object.assign({}, getList ? getList() : {}, readTopListArt(container)), this);
+        });
+        setTimeout(fillCollStyleThumbs, 0);
+    }
+
+    function showTopListArtPreview(list, btn) {
+        var overlay = document.querySelector('#miPreviewModalOverlay');
+        if (!overlay) return;
+        var body = overlay.querySelector('.mi-preview-body');
+        overlay.querySelector('.mi-preview-subtitle').textContent = (list.TagName || 'Top-list') + ' — header page art';
+        body.innerHTML = '<div style="padding:20px 0; text-align:center; opacity:0.8;">Drawing the art…</div>';
+        overlay.classList.add('modal-visible');
+        btn.disabled = true;
+        fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/PreviewArt'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
+            body: JSON.stringify({ List: list })
+        }).then(function (r) { return r.json(); })
+        .then(function (res) {
+            if (!res.Success) { body.innerHTML = '<div style="padding:12px 0;">' + escapeHtml(res.Message || 'Preview failed.') + '</div>'; return; }
+            var html = '<div style="display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap;">';
+            if (res.Poster) html += '<div><div class="fieldDescription" style="margin-bottom:6px;">Poster</div><img src="' + res.Poster + '" style="width:180px; border-radius:4px; display:block;" /></div>';
+            if (res.Background) html += '<div style="flex:1; min-width:260px;"><div class="fieldDescription" style="margin-bottom:6px;">Background</div><img src="' + res.Background + '" style="width:100%; border-radius:4px; display:block;" /></div>';
+            html += '</div>';
+            body.innerHTML = html;
+        }).catch(function (err) {
+            body.innerHTML = '<div style="padding:12px 0;">Preview failed: ' + escapeHtml(err.message) + '</div>';
+        }).finally(function () { btn.disabled = false; });
     }
 
     var _artSamplesPromise = null;
@@ -1803,6 +1985,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             </div>
             <div class="tag-body" style="${initialStyle} padding:15px; border-top:1px solid rgba(255,255,255,0.1);">
                 <div style="display:flex; justify-content:flex-end; margin-bottom:4px;">
+                    <button type="button" is="emby-button" class="btnCopySourceRow raised" style="background:transparent; color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0; box-shadow:none;" title="Copy this source to the clipboard, to paste it on another server"><i class="md-icon" style="font-size:1em; margin-right:4px;">share</i><span>Copy</span></button>
                     <button type="button" is="emby-button" class="btnDuplicateRow raised" style="background:transparent; color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0; box-shadow:none;" title="Duplicate this source"><i class="md-icon" style="font-size:1em; margin-right:4px;">content_copy</i><span>Duplicate</span></button>
                 </div>
                 <div class="tag-tabs" style="display: flex; gap: 20px; margin-bottom: 15px; border-bottom: 1px solid rgba(255,255,255,0.1);">
@@ -2889,17 +3072,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }, { passive: false });
 
         row.querySelector('.btnDuplicateRow').addEventListener('click', () => {
-            var config = readRowAsConfig(row);
-            // The copy gets its own tag, collection and playlist, so it never writes into (or
-            // removes from) the original's. Playlist links belong to the original's playlists.
-            config.Name = (config.Name || config.Tag || 'Source') + ' (copy)';
-            if (config.Tag) config.Tag = config.Tag + ' (copy)';
-            if (config.CollectionName) config.CollectionName = config.CollectionName + ' (copy)';
-            if (config.PlaylistName) config.PlaylistName = config.PlaylistName + ' (copy)';
-            config.PlaylistMappings = [];
+            var config = markAsCopy(readRowAsConfig(row));
             renderTagGroup(config, row.closest('#tagListContainer'), true, undefined, true);
             applyFilters(view);
             setTimeout(checkFormState, 0);
+        });
+
+        row.querySelector('.btnCopySourceRow').addEventListener('click', () => {
+            copySourceToClipboard(row);
         });
 
         row.addEventListener('dragstart', (e) => {
@@ -2961,70 +3141,6 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             row.querySelector('.tag-art-title-row').style.display = art.TagPosterStyle || art.TagBackgroundStyle ? 'block' : 'none';
         }
 
-        // Background upload (Custom): same endpoints as the poster upload. Wired once for the
-        // collection background and once for the tag background (each its own block).
-        function bgHeaders() {
-            var headers = { 'Content-Type': 'application/json' };
-            var token = window.ApiClient.accessToken();
-            if (token) headers['X-Emby-Token'] = token;
-            return headers;
-        }
-        function wireBgUpload(box) {
-            if (!box) return;
-            function bgUploaded(filePath, name, previewSrc) {
-                box.querySelector('.hiddenBgPath').value = filePath;
-                box.querySelector('.bg-filename').textContent = name;
-                box.querySelector('.bg-preview-container').style.display = 'block';
-                var img = box.querySelector('.bg-preview-img');
-                img.src = previewSrc;
-                img.style.display = 'block';
-                box.querySelector('.hiddenBgPath').dispatchEvent(new Event('change', { bubbles: true }));
-            }
-            box.querySelector('.btnChooseBg').addEventListener('click', function () {
-                box.querySelector('.inputBgFile').click();
-            });
-            box.querySelector('.inputBgFile').addEventListener('change', function () {
-                var file = this.files[0];
-                if (!file) return;
-                var reader = new FileReader();
-                reader.onload = function (e) {
-                    var dataUrl = e.target.result;
-                    fetch(window.ApiClient.getUrl('HomeScreenCompanion/UploadCollectionImage'), {
-                        method: 'POST',
-                        headers: bgHeaders(),
-                        body: JSON.stringify({ FileName: file.name, Base64Data: dataUrl.split(',')[1], OldFilePath: box.querySelector('.hiddenBgPath').value })
-                    }).then(function (r) { return r.json(); })
-                    .then(function (result) {
-                        if (result.Success) bgUploaded(result.FilePath, file.name, dataUrl);
-                        else window.Dashboard.alert('Upload failed: ' + (result.Message || 'Unknown error'));
-                    }).catch(function () { window.Dashboard.alert('Upload error. Check server logs.'); });
-                };
-                reader.readAsDataURL(file);
-            });
-            box.querySelector('.btnRemoveBg').addEventListener('click', function () {
-                box.querySelector('.hiddenBgPath').value = '';
-                box.querySelector('.bg-filename').textContent = '';
-                box.querySelector('.bg-preview-container').style.display = 'none';
-                box.querySelector('.bg-preview-img').style.display = 'none';
-                box.querySelector('.inputBgFile').value = '';
-                box.querySelector('.hiddenBgPath').dispatchEvent(new Event('change', { bubbles: true }));
-            });
-            box.querySelector('.btnLoadBgUrl').addEventListener('click', function () {
-                var url = box.querySelector('.txtBgUrl').value.trim();
-                if (!url) return;
-                fetch(window.ApiClient.getUrl('HomeScreenCompanion/FetchCollectionImageFromUrl'), {
-                    method: 'POST',
-                    headers: bgHeaders(),
-                    body: JSON.stringify({ Url: url, OldFilePath: box.querySelector('.hiddenBgPath').value })
-                }).then(function (r) { return r.json(); })
-                .then(function (result) {
-                    if (result.Success) {
-                        bgUploaded(result.FilePath, url.split('/').pop().split('?')[0], url);
-                        box.querySelector('.txtBgUrl').value = '';
-                    } else window.Dashboard.alert('Failed to load image: ' + (result.Message || 'Unknown error'));
-                }).catch(function () { window.Dashboard.alert('Error fetching image. Check the URL and server logs.'); });
-            });
-        }
         wireBgUpload(row.querySelector('.coll-bg-upload'));
         wireBgUpload(row.querySelector('.tag-bg-upload'));
         row.querySelector('.btnTagArtPreview').addEventListener('click', function () {
@@ -3815,9 +3931,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
     // ---- End Home Section Tab helpers ----
 
-    function getUiConfig(view, forComparison) {
+    // The flat TagConfig entries one source card saves (one per URL / local source). Used by
+    // Save and by Copy, so a copied source is exactly what Save would write.
+    function rowToFlatTags(row, forComparison) {
         var flatTags = [];
-        view.querySelectorAll('.tag-row').forEach(row => {
+        (function () {
             if (!row.querySelector('.txtEntryLabel')) return;
             var entryLabel = row.querySelector('.txtEntryLabel').value;
             var name = row.querySelector('.txtTagName').value || entryLabel;
@@ -3973,7 +4091,13 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var miLimitVal = parseInt((row.querySelector('.txtMediaInfoLimit') || {}).value, 10) || 0;
                 flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: miLimitVal, LocalSourceId: "" }));
             }
-        });
+        })();
+        return flatTags;
+    }
+
+    function getUiConfig(view, forComparison) {
+        var flatTags = [];
+        view.querySelectorAll('.tag-row').forEach(row => { flatTags.push.apply(flatTags, rowToFlatTags(row, forComparison)); });
 
         var hscEnabled      = view.querySelector('#chkHscEnabled');
         var hscSource       = view.querySelector('#selHscSourceUser');
@@ -4205,6 +4329,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     AiIncludeRecentlyWatched: t.AiIncludeRecentlyWatched || false,
                     AiRecentlyWatchedUserId: t.AiRecentlyWatchedUserId || '',
                     AiRecentlyWatchedCount: t.AiRecentlyWatchedCount || 20,
+                    AiRefreshIntervalDays: t.AiRefreshIntervalDays || 0,
                     TagTargetEpisode: t.TagTargetEpisode || false,
                     TagTargetSeason:  t.TagTargetSeason  || false,
                     TagTargetSeries:  t.TagTargetSeries  || false,
@@ -5276,14 +5401,23 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     existing.HomeSectionTracked = existing.HomeSectionTracked || [];
                     existing.MaxItems = maxItems;
                 } else {
-                    topLists.push({
+                    existing = {
                         TagName: tagName,
                         MaxItems: maxItems,
                         HomeSectionUserIds: selectedUserIds,
                         HomeSectionLibraryId: ctx.libraryItemId || 'auto',
                         HomeSectionSettings: hseSettings,
                         HomeSectionTracked: []
-                    });
+                    };
+                    topLists.push(existing);
+                }
+                // Header page art (only when the form had the art block; a backup restore keeps
+                // what the restored list already has).
+                if (ui.art) {
+                    existing.TopListPosterStyle     = ui.art.TopListPosterStyle || '';
+                    existing.TopListBackgroundStyle = ui.art.TopListBackgroundStyle || '';
+                    existing.TopListArtTitle        = ui.art.TopListArtTitle || '';
+                    existing.TopListBackgroundPath  = ui.art.TopListBackgroundPath || '';
                 }
                 config.TopLists = topLists;
                 return window.ApiClient.updatePluginConfiguration(pluginId, config)
@@ -5584,6 +5718,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '<input type="number" class="tlm-max-items" min="0" ' + (isShows ? 'max="10" ' : '') + 'step="1" style="' + inputStyle + '" placeholder="' + (isShows ? '10' : '0') + '" />' +
                 '</div>' +
 
+                buildTopListArtHtml(existingData ? existingData.art : null, { title: displayName, sourceTag: tagName }) +
+
                 '<div class="tlm-error" style="color:#cc3333;font-size:0.85em;min-height:1.2em;margin-bottom:4px;"></div>' +
                 '<div style="border-top:1px solid var(--line-color);padding-top:16px;display:flex;gap:10px;align-items:center;justify-content:flex-end;">' +
                 '<button type="button" class="btnTlmCancel" style="cursor:pointer;border:1px solid var(--line-color);background:transparent;color:var(--theme-text-primary);border-radius:3px;padding:8px 18px;font-size:0.9em;">Cancel</button>' +
@@ -5593,6 +5729,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
             renderBox(html);
             initBadgePicker(modal);
+            wireTopListArt(modal, function () {
+                return {
+                    TagName: listName, ContentType: isShows ? 'Shows' : 'Movies', ShowSourceTag: isShows ? tagName : '',
+                    MaxItems: Math.max(0, parseInt(modal.querySelector('.tlm-max-items').value, 10) || 0)
+                };
+            });
             modal.querySelectorAll('.mtlKindSwitch button').forEach(function (b) {
                 b.addEventListener('click', function () {
                     if ((b.dataset.kind === 'Shows') === !!isShows) return;
@@ -5630,6 +5772,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var cardSize      = normCardSize(modal.querySelector('.tlm-card-size').value);
                 var badgeStyle    = readBadgeStyle(modal);
                 var maxItems      = Math.max(0, parseInt(modal.querySelector('.tlm-max-items').value, 10) || 0);
+                var art           = readTopListArt(modal);
                 var tok = window.ApiClient.accessToken ? window.ApiClient.accessToken() : '';
 
                 saveBtn.disabled = true;
@@ -5642,7 +5785,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         body: JSON.stringify({
                             ListName: listName, CustomName: customName, DisplayMode: displayMode, ImageType: imageType,
                             CardSizeOffset: parseInt(cardSize, 10),
-                            UserIds: selectedUserIds, SourceTag: tagName, BadgeStyle: badgeStyle, MaxItems: maxItems
+                            UserIds: selectedUserIds, SourceTag: tagName, BadgeStyle: badgeStyle, MaxItems: maxItems,
+                            TopListPosterStyle: art.TopListPosterStyle, TopListBackgroundStyle: art.TopListBackgroundStyle,
+                            TopListArtTitle: art.TopListArtTitle, TopListBackgroundPath: art.TopListBackgroundPath
                         })
                     })
                     .then(function (r) { return r.json(); })
@@ -5670,7 +5815,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     if (!prepareResult.Success) throw new Error(prepareResult.Message || 'Failed to create folder.');
                     executeTopListCreationSteps(
                         tagName, displayName, selectedUserIds, displayMode, customName, imageType, maxItems,
-                        prepareResult, { saveBtn: saveBtn, errEl: errEl, modal: modal, badgeStyle: badgeStyle, cardSizeOffset: cardSize }, onSuccess
+                        prepareResult, { saveBtn: saveBtn, errEl: errEl, modal: modal, badgeStyle: badgeStyle, cardSizeOffset: cardSize, art: art }, onSuccess
                     );
                 })
                 .catch(function (err) {
@@ -5853,6 +5998,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                 '<div style="border-top:1px solid var(--line-color);padding-top:14px;margin-top:4px;">' +
                 buildBadgePickerHtml(presetBadgeStyle) +
+                buildTopListArtHtml(existingData ? existingData.art : null, { noSourceTag: !sourceTag, title: presetCustomName || presetName || 'this list', sourceTag: sourceTag }) +
                 '</div>' +
 
                 '<div class="mtl-error" style="color:#cc3333;font-size:0.85em;min-height:1.2em;margin-top:12px;margin-bottom:4px;"></div>' +
@@ -5864,6 +6010,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
             initBadgePicker(modal);
             wireUserMultiSelect(modal);
+            wireTopListArt(modal, function () {
+                return {
+                    TagName: (modal.querySelector('.mtlListName').value || '').trim() || sourceTag,
+                    ContentType: isShows ? 'Shows' : 'Movies', ShowSourceTag: sourceTag, MaxItems: 0
+                };
+            });
             modal.querySelectorAll('.mtlKindSwitch button').forEach(function (b) {
                 b.addEventListener('click', function () {
                     if ((b.dataset.kind === 'Shows') === isShows) return;
@@ -6009,6 +6161,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var imageType       = modal.querySelector('.mtlImageType').value;
                 var cardSize        = normCardSize(modal.querySelector('.mtlCardSize').value);
                 var badgeStyle      = readBadgeStyle(modal);
+                var art             = readTopListArt(modal);
                 var selectedUserIds = Array.from(modal.querySelectorAll('.chkMtlUser:checked')).map(function (c) { return c.value; });
 
                 if (!listName)                    { errEl.textContent = 'Please enter a name for the list.'; return; }
@@ -6028,6 +6181,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             UserIds: selectedUserIds,
                             SourceTag: sourceTag,
                             BadgeStyle: badgeStyle,
+                            TopListPosterStyle: art.TopListPosterStyle, TopListBackgroundStyle: art.TopListBackgroundStyle,
+                            TopListArtTitle: art.TopListArtTitle, TopListBackgroundPath: art.TopListBackgroundPath,
                             SeriesIds: sourceTag ? [] : selectedMovies.map(function (m) { return m.ItemId; })
                         })
                     })
@@ -6064,7 +6219,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     if (!prepareResult.Success) throw new Error(prepareResult.Message || 'Failed to create folder.');
                     executeTopListCreationSteps(
                         listName, customNameVal, selectedUserIds, displayMode, customNameVal, imageType, 0,
-                        prepareResult, { saveBtn: createBtn, errEl: errEl, modal: modal, badgeStyle: badgeStyle, cardSizeOffset: cardSize }, function () {
+                        prepareResult, { saveBtn: createBtn, errEl: errEl, modal: modal, badgeStyle: badgeStyle, cardSizeOffset: cardSize, art: art }, function () {
                             document.removeEventListener('keydown', onEsc);
                             if (typeof onSuccess === 'function') onSuccess();
                         }
@@ -6200,6 +6355,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                     '<div style="border-top:1px solid var(--line-color);padding-top:14px;margin-top:4px;">' +
                     buildBadgePickerHtml(presetBadgeStyle) +
+                    buildTopListArtHtml(null, { noSourceTag: true }) +
                     '</div>' +
 
                     '<div class="mtl-error" style="color:#cc3333;font-size:0.85em;min-height:1.2em;margin-top:12px;margin-bottom:4px;"></div>' +
@@ -6393,6 +6549,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var presetBadgeStyle = editJson.badgeStyle  || 'neutral';
                 var presetCustomName = editJson.customName  || '';
                 var presetMaxItems   = editJson.maxItems    || '0';
+                var presetArt        = editJson.art         || {};
 
                 var usersHtml = buildUserMultiSelectHtml(users, presetUserIds, 'chkTlmUser');
 
@@ -6435,6 +6592,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     '<input type="number" class="tlm-max-items" min="0" ' + (isShows ? 'max="10" ' : '') + 'step="1" style="' + inputStyle + '" placeholder="' + (isShows ? '10' : '0') + '" />' +
                     '</div>' +
 
+                    buildTopListArtHtml(presetArt, { title: displayName, sourceTag: isShows ? (editJson.sourceTag || tagName) : tagName }) +
+
                     '<div class="tlm-error" style="color:#cc3333;font-size:0.85em;min-height:1.2em;margin-bottom:4px;"></div>' +
                     '<div style="border-top:1px solid var(--line-color);padding-top:16px;display:flex;gap:10px;align-items:center;justify-content:flex-end;">' +
                     deleteHtml +
@@ -6458,6 +6617,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         cardSize: wrapper.querySelector('.tlm-card-size').value,
                         badgeStyle: readBadgeStyle(body),
                         maxItems: wrapper.querySelector('.tlm-max-items').value,
+                        art: readTopListArt(wrapper),
                         userIds: Array.from(wrapper.querySelectorAll('.chkTlmUser:checked')).map(function (c) { return c.value; }).sort()
                     });
                 }
@@ -6470,6 +6630,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 wrapper.querySelectorAll('input, select').forEach(function (el) {
                     el.addEventListener('change', updateRegularDirty);
                 });
+                // Art pickers, upload and title (the upload sets a hidden field, which fires no
+                // input event of its own).
+                wireTopListArt(wrapper, function () {
+                    return {
+                        TagName: tagName, ContentType: isShows ? 'Shows' : 'Movies', ShowSourceTag: isShows ? (editJson.sourceTag || tagName) : '',
+                        MaxItems: Math.max(0, parseInt(wrapper.querySelector('.tlm-max-items').value, 10) || 0),
+                        HomeSectionSettings: JSON.stringify({ MaxItems: String(Math.max(0, parseInt(wrapper.querySelector('.tlm-max-items').value, 10) || 0)) })
+                    };
+                }, updateRegularDirty);
                 wrapper.querySelectorAll('input[type="text"], input[type="number"]').forEach(function (el) {
                     el.addEventListener('input', updateRegularDirty);
                 });
@@ -6485,6 +6654,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         var cardSize      = normCardSize(wrapper.querySelector('.tlm-card-size').value);
                         var badgeStyle    = readBadgeStyle(body);
                         var maxItems      = Math.max(0, parseInt(wrapper.querySelector('.tlm-max-items').value, 10) || 0);
+                        var art           = readTopListArt(wrapper);
                         var tok2 = window.ApiClient.accessToken ? window.ApiClient.accessToken() : '';
 
                         if (isShows) {
@@ -6494,7 +6664,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                 body: JSON.stringify({
                                     ListName: tagName, CustomName: customNameVal, DisplayMode: displayMode, ImageType: imageType,
                                     CardSizeOffset: parseInt(cardSize, 10),
-                                    UserIds: userIds, SourceTag: editJson.sourceTag || tagName, BadgeStyle: badgeStyle, MaxItems: maxItems
+                                    UserIds: userIds, SourceTag: editJson.sourceTag || tagName, BadgeStyle: badgeStyle, MaxItems: maxItems,
+                                    TopListPosterStyle: art.TopListPosterStyle, TopListBackgroundStyle: art.TopListBackgroundStyle,
+                                    TopListArtTitle: art.TopListArtTitle, TopListBackgroundPath: art.TopListBackgroundPath
                                 })
                             })
                             .then(function (r) { return r.json(); })
@@ -6518,7 +6690,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             var errEl = wrapper.querySelector('.tlm-error');
                             executeTopListCreationSteps(
                                 tagName, customNameVal, userIds, displayMode, customNameVal, imageType, maxItems,
-                                prepareResult, { saveBtn: fakeBtn, errEl: errEl, modal: body, innerBox: wrapper, badgeStyle: badgeStyle, cardSizeOffset: cardSize, closeHandler: resolve, silent: true },
+                                prepareResult, { saveBtn: fakeBtn, errEl: errEl, modal: body, innerBox: wrapper, badgeStyle: badgeStyle, cardSizeOffset: cardSize, art: art, closeHandler: resolve, silent: true },
                                 resolve
                             );
                         })
@@ -6717,6 +6889,186 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     var _backupBtnSecondary = 'cursor:pointer;border:1px solid var(--line-color);background:transparent;color:var(--theme-text-primary);border-radius:3px;padding:8px 18px;font-size:0.9em;';
     var _backupTitleStyle = 'margin:0 0 6px;font-size:1.15em;font-weight:600;';
     var _backupHintStyle = 'font-size:0.88em;opacity:0.7;margin:0 0 14px;line-height:1.45;';
+
+    // ── Copy / Paste source (between servers) ──
+    // A copy gets its own name, tag, collection and playlist ("… (copy)"), so it never writes
+    // into (or removes from) the original's. Playlist links belong to the original's playlists.
+    function markAsCopy(config) {
+        config.Name = (config.Name || config.Tag || 'Source') + ' (copy)';
+        if (config.Tag) config.Tag = config.Tag + ' (copy)';
+        if (config.CollectionName) config.CollectionName = config.CollectionName + ' (copy)';
+        if (config.PlaylistName) config.PlaylistName = config.PlaylistName + ' (copy)';
+        config.PlaylistMappings = [];
+        return config;
+    }
+
+    function postSourceJson(path, body) {
+        var tok = window.ApiClient.accessToken ? window.ApiClient.accessToken() : '';
+        return fetch(window.ApiClient.getUrl(path), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Emby-Token': tok },
+            body: JSON.stringify(body)
+        }).then(function (r) { if (!r.ok) throw new Error('Server returned ' + r.status); return r.json(); });
+    }
+
+    // navigator.clipboard only exists on https (and localhost); over plain http on the LAN a
+    // selected textarea + execCommand('copy') still works.
+    function writeClipboard(text) {
+        function fallback() {
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.setAttribute('readonly', '');
+            ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;';
+            document.body.appendChild(ta);
+            ta.select();
+            var ok = false;
+            try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+            document.body.removeChild(ta);
+            return ok ? Promise.resolve() : Promise.reject(new Error('The browser blocked the copy.'));
+        }
+        if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text).catch(fallback);
+        return fallback();
+    }
+
+    function sourceNoticesHtml(notices) {
+        function escHtml(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+        if (!notices || notices.length === 0) return '';
+        return '<span style="font-size:0.78em;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;color:#e0a030;display:block;margin-bottom:4px;">Notices</span>' +
+            '<ul class="source-notices" style="margin:0 0 14px;padding-left:20px;font-size:0.9em;line-height:1.5;opacity:0.85;">' +
+            notices.map(function (n) { return '<li>' + escHtml(n) + '</li>'; }).join('') + '</ul>';
+    }
+
+    // Box with a check mark, the notices and a Close button (same look as "Backup restored").
+    function showSourceResult(modal, title, hint, notices) {
+        modal = modal || buildBackupModalShell();
+        modal.renderBox(
+            '<div style="text-align:center;padding:4px 0 14px;">' +
+            '<i class="md-icon" style="font-size:2.5em;color:#52B54B;display:block;margin-bottom:8px;">check_circle</i>' +
+            '<p style="margin:0;font-size:1.05em;font-weight:500;">' + title + '</p>' +
+            '</div>' + sourceNoticesHtml(notices) +
+            (hint ? '<p style="' + _backupHintStyle + '">' + hint + '</p>' : '') +
+            '<div style="display:flex;gap:10px;justify-content:flex-end;align-items:center;padding-top:14px;border-top:1px solid var(--line-color);">' +
+            '<button type="button" class="btnSourceDone" style="' + _backupBtnPrimary + '">Close</button></div>'
+        );
+        modal.querySelector('.btnSourceDone').addEventListener('click', modal.close);
+    }
+
+    // Copy: the card as Save would write it (saved or not), exported with names for the
+    // server-specific ids and the uploaded images, as text on the clipboard.
+    function copySourceToClipboard(row) {
+        var tags = rowToFlatTags(row, true);
+        if (tags.length === 0) return;
+        var btn = row.querySelector('.btnCopySourceRow');
+        if (btn) btn.disabled = true;
+        postSourceJson('HomeScreenCompanion/Source/Export', { Tags: tags })
+            .then(function (file) {
+                var out = { 'hsc-source': file.SourceVersion || 1 };
+                Object.keys(file).forEach(function (k) { if (k !== 'SourceVersion' && k !== 'Notices') out[k] = file[k]; });
+                var text = JSON.stringify(out);
+                var notices = file.Notices || [];
+                return writeClipboard(text).then(function () {
+                    showToast('Source copied');
+                    if (notices.length > 0)
+                        showSourceResult(null, 'Source copied', 'Paste it with <strong>Paste source</strong> (next to + Add New Source) on the other server.', notices);
+                }, function () { showCopySourceText(text, notices); });
+            })
+            .catch(function (err) { window.Dashboard.alert('Copy failed: ' + (err.message || err)); })
+            .finally(function () { if (btn) btn.disabled = false; });
+    }
+
+    // When the browser refuses the clipboard: show the text, selected, with its own Copy button.
+    function showCopySourceText(text, notices) {
+        var modal = buildBackupModalShell();
+        modal.renderBox(
+            '<h3 style="' + _backupTitleStyle + '">Copy Source</h3>' +
+            '<p style="' + _backupHintStyle + '">The browser did not allow copying automatically. Click <strong>Copy</strong>, or press Ctrl+C (Cmd+C) – the text is selected.</p>' +
+            '<textarea class="txtCopySource" readonly rows="8" style="width:100%;box-sizing:border-box;font-family:monospace;font-size:0.82em;background:transparent;color:inherit;border:1px solid var(--line-color,rgba(255,255,255,0.2));border-radius:4px;padding:8px;margin-bottom:12px;"></textarea>' +
+            sourceNoticesHtml(notices) +
+            '<div class="backup-error" style="color:#cc3333;font-size:0.85em;min-height:1.2em;margin-bottom:6px;"></div>' +
+            '<div style="display:flex;gap:10px;justify-content:flex-end;align-items:center;">' +
+            '<button type="button" class="btnCopySourceClose" style="' + _backupBtnSecondary + '">Close</button>' +
+            '<button type="button" class="btnCopySourceAgain" style="' + _backupBtnPrimary + '"><i class="md-icon" style="font-size:1em;vertical-align:middle;margin-right:6px;">share</i>Copy</button>' +
+            '</div>'
+        );
+        var ta = modal.querySelector('.txtCopySource');
+        ta.value = text;
+        ta.focus();
+        ta.select();
+        modal.querySelector('.btnCopySourceClose').addEventListener('click', modal.close);
+        modal.querySelector('.btnCopySourceAgain').addEventListener('click', function () {
+            writeClipboard(text).then(function () { showToast('Source copied'); modal.close(); }, function () {
+                ta.focus(); ta.select();
+                modal.querySelector('.backup-error').textContent = 'Still blocked – press Ctrl+C (Cmd+C) to copy the selected text.';
+            });
+        });
+    }
+
+    function sourceNameTaken(view, config) {
+        var names = [config.Name, config.Tag].filter(function (n) { return n; }).map(function (n) { return n.trim().toLowerCase(); });
+        return Array.from(view.querySelectorAll('#tagListContainer .tag-row')).some(function (r) {
+            var label = ((r.querySelector('.txtEntryLabel') || {}).value || '').trim().toLowerCase();
+            var tag = ((r.querySelector('.txtTagName') || {}).value || '').trim().toLowerCase();
+            return names.some(function (n) { return n === label || n === tag; });
+        });
+    }
+
+    // Paste: the server maps users, libraries, Manual List titles and images to this server and
+    // returns the source; it becomes a new unsaved card at the top for the user to check and save.
+    function showPasteSourceModal(view) {
+        var modal = buildBackupModalShell();
+        modal.renderBox(
+            '<h3 style="' + _backupTitleStyle + '">Paste Source</h3>' +
+            '<p style="' + _backupHintStyle + '">Paste a source copied with <strong>Copy</strong> on a source card – from this server or another one. It is added as a new card at the top; check it and click <strong>Save</strong>. Users and libraries are matched by name, Manual List titles by IMDb/TMDb/TVDb id (then name and year); anything this server does not have is listed afterwards.</p>' +
+            '<textarea class="txtPasteSource" rows="8" placeholder=\'{"hsc-source":1, …}\' style="width:100%;box-sizing:border-box;font-family:monospace;font-size:0.82em;background:transparent;color:inherit;border:1px solid var(--line-color,rgba(255,255,255,0.2));border-radius:4px;padding:8px;margin-bottom:8px;"></textarea>' +
+            '<div class="backup-error" style="color:#cc3333;font-size:0.85em;min-height:1.2em;margin-bottom:6px;"></div>' +
+            '<div style="display:flex;gap:10px;justify-content:flex-end;align-items:center;">' +
+            '<button type="button" class="btnPasteCancel" style="' + _backupBtnSecondary + '">Cancel</button>' +
+            '<button type="button" class="btnPasteApply" style="' + _backupBtnPrimary + '"><i class="md-icon" style="font-size:1em;vertical-align:middle;margin-right:6px;">content_paste</i>Add source</button>' +
+            '</div>'
+        );
+        var ta = modal.querySelector('.txtPasteSource');
+        ta.focus();
+        modal.querySelector('.btnPasteCancel').addEventListener('click', modal.close);
+        modal.querySelector('.btnPasteApply').addEventListener('click', function () {
+            var btn = this;
+            var errEl = modal.querySelector('.backup-error');
+            var text = ta.value.trim();
+            var parsed = null;
+            try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
+            if (!parsed || typeof parsed !== 'object' || !parsed['hsc-source'] || !Array.isArray(parsed.Tags)) {
+                errEl.textContent = text ? 'This is not a copied source. Use Copy on a source card and paste that text here.' : 'Paste a copied source first.';
+                return;
+            }
+            errEl.textContent = '';
+            btn.disabled = true;
+            btn.innerHTML = 'Adding <span class="tc-dot-loader"><span></span><span></span><span></span></span>';
+            modal.dataset.busy = '1';
+            postSourceJson('HomeScreenCompanion/Source/Import', { SourceJson: text })
+                .then(function (result) {
+                    if (!result || !result.Success) throw new Error((result && result.Message) || 'Unknown error');
+                    var groups = groupConfigTags(result.Tags || []);
+                    var keys = Object.keys(groups);
+                    if (keys.length === 0) throw new Error('The pasted source is empty.');
+                    var config = groups[keys[0]];
+                    config.HomeSectionTracked = [];
+                    config.PlaylistMappings = [];
+                    config.LastModified = new Date().toISOString();
+                    if (sourceNameTaken(view, config)) markAsCopy(config);
+                    renderTagGroup(config, view.querySelector('#tagListContainer'), true, undefined, true);
+                    applyFilters(view);
+                    setTimeout(checkFormState, 0);
+                    delete modal.dataset.busy;
+                    showSourceResult(modal, 'Source added: ' + String(config.Name || config.Tag).replace(/&/g, '&amp;').replace(/</g, '&lt;'),
+                        'It is not saved yet – check the new card at the top and click <strong>Save</strong>.', result.Notices || []);
+                })
+                .catch(function (err) {
+                    delete modal.dataset.busy;
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="md-icon" style="font-size:1em;vertical-align:middle;margin-right:6px;">content_paste</i>Add source';
+                    errEl.textContent = 'Paste failed: ' + (err.message || err);
+                });
+        });
+    }
 
     function showBackupModal() {
         var modal = buildBackupModalShell();
@@ -7015,7 +7367,13 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     imageType:   settings.ImageType   || '',
                     cardSizeOffset: normCardSize(settings.CardSizeOffset),
                     badgeStyle:  settings.BadgeStyle  || 'neutral',
-                    maxItems:    settings.MaxItems    || 0
+                    maxItems:    settings.MaxItems    || 0,
+                    art: {
+                        TopListPosterStyle:     tl.TopListPosterStyle     || '',
+                        TopListBackgroundStyle: tl.TopListBackgroundStyle || '',
+                        TopListArtTitle:        tl.TopListArtTitle        || '',
+                        TopListBackgroundPath:  tl.TopListBackgroundPath  || ''
+                    }
                 };
             });
 
@@ -7044,7 +7402,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         imageType:   item.imageType,
                         cardSizeOffset: item.cardSizeOffset,
                         badgeStyle:  item.badgeStyle,
-                        maxItems:    String(item.maxItems || '0')
+                        maxItems:    String(item.maxItems || '0'),
+                        art:         item.art
                     }));
                     return '<div class="tag-row" data-tlname="' + escAttr(item.tagName.toLowerCase()) + '" data-ismanual="' + (isManual ? '1' : '0') + '" data-count="' + item.count + '" data-editjson="' + editJson + '">' +
                         '<div class="tl-row-header tag-header" style="display:flex;align-items:center;justify-content:space-between;padding:10px;cursor:pointer;">' +
@@ -7734,6 +8093,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 view.querySelector('#btnAddTag').addEventListener('click', () => {
                     renderTagGroup({ Tag: '', Urls: [{ url: '', limit: 0 }], Active: true }, view.querySelector('#tagListContainer'), true, undefined, true);
                     applyFilters(view);
+                });
+
+                view.querySelector('#btnPasteSource').addEventListener('click', () => {
+                    showPasteSourceModal(view);
                 });
 
                 view.querySelector('#btnBackupConfig').addEventListener('click', function () {

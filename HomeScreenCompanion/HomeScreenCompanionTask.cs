@@ -5113,6 +5113,8 @@ namespace HomeScreenCompanion
                     .SelectMany(t => t.ShowEntries ?? new List<ShowTopListEntry>())
                     .Select(e => e.TagName);
                 if (showListTags.Contains(tagName, StringComparer.OrdinalIgnoreCase)) return;
+                // A top-list with art owns this tag's page (its row header opens it) — see TopListArt.
+                if (TopListArt.OwnsTag(tagName)) return;
 
                 bool wanted = CollectionArtRenderer.IsStyle(tc.TagPosterStyle) || CollectionArtRenderer.IsStyle(tc.TagBackgroundStyle)
                     || !string.IsNullOrWhiteSpace(tc.TagBackgroundPath);
@@ -5143,6 +5145,57 @@ namespace HomeScreenCompanion
             }
         }
 
+        // Art for the page a top-list's row header opens (TopListArt): the list's source tag gets
+        // the poster / background drawn from the list's ranked titles (each film once), cached in
+        // <plugin data>/toplist_art/<list>/. Set back to none, only the images this drew are
+        // removed (the poster goes back to Emby's own collage); the Tags tab art then applies again.
+        private void ApplyTopListArt(TopListHomeSection tl, IList<BaseItem> rankedTitles)
+        {
+            var listName = tl.TagName ?? "";
+            try
+            {
+                var tagName = TopListArt.SourceTag(tl, Plugin.Instance?.Configuration);
+                bool wanted = TopListArt.Wanted(tl);
+                if (tagName.Length == 0)
+                {
+                    if (wanted) _log.Warn($"Top-list '{listName}': art skipped — only a list fed by a tag has a page for its header to open");
+                    return;
+                }
+                var tagItem = TopListArt.TagItem(_libraryManager, tagName);
+                if (tagItem == null)
+                {
+                    if (wanted) _log.Warn($"Top-list '{listName}': art skipped — tag '{tagName}' does not exist yet");
+                    return;
+                }
+
+                if (!wanted)
+                {
+                    var images = (tagItem.ImageInfos ?? Array.Empty<ItemImageInfo>()).ToList();
+                    if (!images.Any(i => TopListArt.IsTopListArt(i.Path))) return;
+                    bool hadPoster = images.Any(i => i.Type == ImageType.Primary && TopListArt.IsTopListArt(i.Path));
+                    images = images.Where(i => !TopListArt.IsTopListArt(i.Path)).ToList();
+                    if (hadPoster && !images.Any(i => i.Type == ImageType.Primary))
+                        images.Add(new ItemImageInfo { Path = EmbyCollagePoster, Type = ImageType.Primary, DateModified = DateTime.UtcNow });
+                    tagItem.ImageInfos = images.ToArray();
+                    _libraryManager.UpdateItem(tagItem, tagItem.GetParent(), ItemUpdateType.ImageUpdate, null);
+                    _log.Ok($"Top-list '{listName}': art removed from tag '{tagName}'");
+                    return;
+                }
+
+                var titles = rankedTitles.Where(i => i != null).ToList();
+                if (SetGeneratedArt(tagItem, listName, TopListArt.ArtFolder, tl.TopListPosterStyle, tl.TopListBackgroundStyle,
+                        tl.TopListArtTitle, tl.TopListBackgroundPath, titles, true))
+                {
+                    _libraryManager.UpdateItem(tagItem, tagItem.GetParent(), ItemUpdateType.ImageUpdate, null);
+                    _log.Ok($"Top-list '{listName}': art applied to the page of tag '{tagName}'");
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.Warn($"Top-list '{listName}': art failed — {ex.Message}");
+            }
+        }
+
         private const string EmbyCollagePoster = "emby://playlistcollage";
 
         // Images this plugin put on a tag item: generated art or an uploaded background.
@@ -5151,6 +5204,7 @@ namespace HomeScreenCompanion
             if (string.IsNullOrEmpty(path) || Plugin.Instance == null) return false;
             var data = Plugin.Instance.DataFolderPath;
             return path!.StartsWith(Path.Combine(data, "tag_art"), StringComparison.OrdinalIgnoreCase)
+                || path.StartsWith(Path.Combine(data, TopListArt.ArtFolder), StringComparison.OrdinalIgnoreCase)
                 || path.StartsWith(Path.Combine(data, "collection_images"), StringComparison.OrdinalIgnoreCase);
         }
 
@@ -5367,6 +5421,7 @@ namespace HomeScreenCompanion
                             showListsUpdated = true;
                             _log.Ok($"Show top-list '{tl.TagName}': {ranked.Count} show(s) from tag '{tl.ShowSourceTag}'");
                             foreach (var line in lines) _log.Debug("    " + line);
+                            ApplyTopListArt(tl, ranked.Take(tl.MaxItems > 0 ? Math.Min(tl.MaxItems, ShowTopList.MaxRanks) : ShowTopList.MaxRanks).ToList());
                         }
                         catch (Exception ex)
                         {
@@ -5375,7 +5430,13 @@ namespace HomeScreenCompanion
                     }
                     continue;
                 }
-                if (!managedTagNames.Contains(tl.TagName)) continue;
+                if (!managedTagNames.Contains(tl.TagName))
+                {
+                    // Not rebuilt here (manual list, or a tag no source manages): art still follows
+                    // the tag of that name if there is one.
+                    ApplyTopListArt(tl, TopListArt.RankedTitles(tl, _libraryManager, _jsonSerializer));
+                    continue;
+                }
 
                 var sanitized = SanitizeTopListFolderName(tl.TagName);
                 var folderPath = Path.Combine(topListsPath, sanitized);
@@ -5538,6 +5599,7 @@ namespace HomeScreenCompanion
                 catch { }
 
                 _log.Ok($"Top-list '{tl.TagName}': {RunLog.Plural(count, "movie")} synced to its library folder");
+                ApplyTopListArt(tl, selected.Select(e => e.Item).ToList());
             }
 
             // Show lists keep their ranked shows and tracked rows in the configuration.

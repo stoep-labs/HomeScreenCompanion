@@ -1298,7 +1298,10 @@
 
                 <div class="sectionTitleContainer flex align-items-center" style="margin-bottom: 1em; margin-top: 2em;">
                     <h2 class="sectionTitle" style="margin-bottom:0;">Sources</h2>
-                    <button is="emby-button" type="button" id="btnAddTag" class="raised button-submit mb025" style="margin-left: auto;">
+                    <button is="emby-button" type="button" id="btnPasteSource" class="raised btn-neutral mb025" style="margin-left: auto; margin-right: 8px;" title="Add a source copied with Copy on a source card (this or another server)">
+                        <i class="md-icon" style="margin-right:5px;">content_paste</i><span>Paste source</span>
+                    </button>
+                    <button is="emby-button" type="button" id="btnAddTag" class="raised button-submit mb025">
                         <span>+ Add New Source</span>
                     </button>
                 </div>
@@ -1525,7 +1528,7 @@
                 </div>
                 <div class="help-step">
                     <div class="step-num">2</div>
-                    <div class="step-text"><strong>Add a Source</strong> — open the <strong>Tag &amp; Collection</strong> tab and click <strong>+ Add New Source</strong>. A source is simply the place the plugin fetches its movie list from.</div>
+                    <div class="step-text"><strong>Add a Source</strong> — open the <strong>Tag &amp; Collection</strong> tab and click <strong>+ Add New Source</strong>. A source is simply the place the plugin fetches its movie list from. Already set one up on another server? Use <strong>Copy</strong> on its card there and <strong>Paste source</strong> here.</div>
                 </div>
                 <div class="help-step">
                     <div class="step-num">3</div>
@@ -1596,6 +1599,14 @@
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">content_copy</i>
                     <div><strong>Duplicate</strong> — Makes a copy of the source. The copy gets its own name, tag, collection and playlist names, ending in <em>(copy)</em>, so it never changes the original's items.</div>
+                </div>
+                <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">share</i>
+                    <div><strong>Copy</strong> — Puts the source on the clipboard as text, exactly as the card shows it (unsaved changes included), so you can paste it on another server (for example from one Emby server to the other). Users, libraries and Manual List titles are copied with their names and IMDb/TMDb/TVDb ids, and an uploaded poster or background goes along with it (up to 5 MB per image). Tracked home sections, playlist links and run history are not copied, and neither is a top-list that uses the source's tag — set that up in the <strong>Top Lists</strong> tab. If the browser blocks the clipboard, the text is shown to copy by hand.</div>
+                </div>
+                <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">content_paste</i>
+                    <div><strong>Paste source</strong> — Next to <strong>+ Add New Source</strong>. Paste the copied text and click <em>Add source</em>: it becomes a new card at the top, not saved yet — check it and click <strong>Save</strong>. Users and libraries are matched by name, Manual List titles by IMDb/TMDb/TVDb id (then name and year), and the images are uploaded to this server. Anything this server does not have (a user, a library, a title, a local collection or playlist) is left out and listed when the source is added. If a source with the same name or tag already exists, the new one gets <em>(copy)</em> names, like <strong>Duplicate</strong>.</div>
                 </div>
                 <div class="help-feature-row" style="margin-bottom:12px;">
                     <i class="md-icon help-feat-icon">play_arrow</i>
@@ -1819,6 +1830,10 @@
                     <div><strong>Badge style &amp; Max items</strong> — Pick how the rank number looks (colour badges, <em>Top 10 tile</em>, or <em>No number</em>) for movie and show lists alike. <em>Top 10 tile</em> draws a big outlined number beside the poster on a flat background in the colour of Emby's dark theme, so the row reads as one strip, like Netflix. On a lighter or black theme the tile edges show faintly. <strong>Max items</strong> limits how many titles the list shows (0 = all for movies, up to 10 for shows). <strong>Card size</strong> works as on the Home Screen tab: <em>Smaller</em> fits more tiles on screen.</div>
                 </div>
                 <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">wallpaper</i>
+                    <div><strong>Header page art</strong> — In every top-list form (create and edit, movies and shows) you can pick a <em>Poster</em> and a <em>Background</em> with the same styles as on the Tags tab (Collage, Grid, Fan, Wall, Hero strip, Spotlight, Ranked, or your own background), plus <em>Title on the art</em> ({name}, {week}) and <em>Preview art</em>. By default a movie list's row title (e.g. "Trending Movies &gt;") opens the top-list library, which Emby shows without a background, and a show list's title opens a plain list. With a poster or background chosen, the row title opens the page of the tag the list is fed by instead, and that page shows the art. The row itself does not change. The art is drawn from the list's ranked titles, each film once, on the next sync. Set both back to the first option and the art is removed and the title opens its old page again. While a top-list has art, it replaces that tag's art from the Tags tab. Only lists fed by a tag have such a page, so manual lists have no art.</div>
+                </div>
+                <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">visibility_off</i>
                     <div><strong>Hide top-list libraries</strong> — On by default, in the <strong>Settings</strong> tab. Keeps the libraries of movie top-lists out of every user's sidebar, "My Media" tiles and "Latest" rows; only the top-list row shows them.</div>
                 </div>
@@ -1882,7 +1897,7 @@
                 </div>
                 <div class="help-feature-row" style="margin-bottom:0;">
                     <i class="md-icon help-feat-icon">save</i>
-                    <div><strong>Backup &amp; Restore</strong> — Export your plugin configuration (settings, API keys, tag &amp; collection groups, saved filters, top lists and home screen sync) to a file, or restore any selection of those sections from a previous backup. Found at the bottom of the <strong>Settings</strong> tab. Recommended before making large changes.</div>
+                    <div><strong>Backup &amp; Restore</strong> — Export your plugin configuration (settings, API keys, tag &amp; collection groups, saved filters, top lists and home screen sync) to a file, or restore any selection of those sections from a previous backup. Found at the bottom of the <strong>Settings</strong> tab. Recommended before making large changes. To move just one source to another server, use <strong>Copy</strong> on its card and <strong>Paste source</strong> on the other server instead.</div>
                 </div>
 
                 <div style="text-align:right; margin-top:24px; padding-top:16px; border-top:1px solid #333;">
