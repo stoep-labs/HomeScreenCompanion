@@ -369,9 +369,6 @@ namespace HomeScreenCompanion
             settings.Remove("ExcludedFolders");
             tl.HomeSectionSettings = _jsonSerializer.SerializeToString(settings);
 
-            // The header: no parent (a plain list page), or the source tag's page when the list has
-            // art (TopListArt). Emby does not narrow a Tag row by a Tag parent, so the row is unchanged.
-            var headerParentId = TopListArt.HeaderTargetId(tl, _libraryManager);
             var targets = new HashSet<string>(tl.HomeSectionUserIds ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
             var tracked = tl.HomeSectionTracked ?? new List<HomeSectionTracking>();
 
@@ -394,18 +391,12 @@ namespace HomeScreenCompanion
                     {
                         var updated = HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, settings, null!, owned);
                         updated.Id = owned.Id;
-                        updated.ParentId = headerParentId;
-                        // Emby stores the ParentItem it was handed and only re-resolves it for a
-                        // non-empty ParentId, so a stale one would keep the old header link.
-                        updated.ParentItem = null;
                         _userManager.UpdateHomeSection(internalId, updated, CancellationToken.None);
                         continue;
                     }
 
                     var before = new HashSet<string>(sections.Select(s => s.Id ?? ""));
-                    var added = HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, settings, null!);
-                    added.ParentId = headerParentId;
-                    _userManager.AddHomeSection(internalId, added, CancellationToken.None);
+                    _userManager.AddHomeSection(internalId, HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, settings, null!), CancellationToken.None);
                     var newId = (_userManager.GetHomeSections(internalId, CancellationToken.None)?.Sections ?? Array.Empty<ContentSection>())
                         .Select(s => s.Id).FirstOrDefault(id => !string.IsNullOrEmpty(id) && !before.Contains(id)) ?? "";
 

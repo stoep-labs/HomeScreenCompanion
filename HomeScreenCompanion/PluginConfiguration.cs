@@ -160,19 +160,6 @@ namespace HomeScreenCompanion
         // Shows only: when set, the list is rebuilt on every sync from the series carrying this
         // tag, in the source list's order (tag_ranks). Empty = shows picked by hand.
         public string ShowSourceTag { get; set; } = "";
-
-        // Art for the page the row header opens. With any of these set, the header opens the
-        // page of the list's source tag (movies: the tag named TagName; shows: ShowSourceTag)
-        // instead of the top-list library, and that tag item gets this poster / background,
-        // drawn from the list's ranked titles (see TopListArt). Lists without a source tag
-        // (manual lists) have no such page. Same styles as TagPosterStyle / TagBackgroundStyle;
-        // "" = none (nothing changes).
-        public string TopListPosterStyle { get; set; } = "";
-        public string TopListBackgroundStyle { get; set; } = "";
-        // "" = the list's name; supports {name} and {week} like TagArtTitle.
-        public string TopListArtTitle { get; set; } = "";
-        // Uploaded background (used when TopListBackgroundStyle is "", i.e. Custom).
-        public string TopListBackgroundPath { get; set; } = "";
     }
 
     public class ShowTopListEntry

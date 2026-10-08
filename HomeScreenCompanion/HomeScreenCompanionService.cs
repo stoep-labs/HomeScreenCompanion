@@ -124,15 +124,6 @@ namespace HomeScreenCompanion
         public int Titles { get; set; }
     }
 
-    // The art a top-list's header page would get (TopListArt), from the list's unsaved settings:
-    // TagName, ContentType, ShowSourceTag, MaxItems and the TopList* art fields. Changes nothing.
-    [Route("/HomeScreenCompanion/TopList/PreviewArt", "POST")]
-    [Authenticated(Roles = "Admin")]
-    public class PreviewTopListArtRequest : IReturn<PreviewCollectionArtResponse>
-    {
-        public TopListHomeSection List { get; set; } = new TopListHomeSection();
-    }
-
     // What a Local Media Information source would tag, from its unsaved settings. Changes nothing.
     [Route("/HomeScreenCompanion/PreviewSource", "POST")]
     [Authenticated(Roles = "Admin")]
@@ -291,11 +282,6 @@ namespace HomeScreenCompanion
         public int MaxItems { get; set; }   // 1–10; 0 = 10
         // Emby's ContentSection.CardSizeOffset (-1 = smaller cards); null keeps the stored value.
         public int? CardSizeOffset { get; set; }
-        // Header page art (TopListArt); null keeps the stored value.
-        public string? TopListPosterStyle { get; set; }
-        public string? TopListBackgroundStyle { get; set; }
-        public string? TopListArtTitle { get; set; }
-        public string? TopListBackgroundPath { get; set; }
     }
 
     public class PrepareShowTopListResponse
@@ -603,6 +589,73 @@ namespace HomeScreenCompanion
         public List<string> Notices { get; set; } = new List<string>();
     }
 
+    // ── Copy / paste one top-list (Top Lists tab) ──
+    // Same idea as a source: the saved list with names for the server-specific ids (users, the
+    // ranked titles). The page adds the "hsc-toplist" header. Run state (tracked sections,
+    // generated files, the list's own library and the per-show tags) is left out: the other
+    // server makes those when the list is created there.
+    [Route("/HomeScreenCompanion/TopList/Export", "POST")]
+    [Authenticated(Roles = "Admin")]
+    public class ExportTopListRequest : IReturn<TopListCopyFile>
+    {
+        public string TagName { get; set; } = "";
+    }
+
+    public class TopListCopyFile
+    {
+        public int TopListVersion { get; set; }
+        public string PluginVersion { get; set; } = "";
+        public string CreatedUtc { get; set; } = "";
+        public string ListName { get; set; } = "";
+        public string ContentType { get; set; } = "Movies";
+        // Manual = titles picked by hand (Items); otherwise the list is fed by SourceTag.
+        public bool IsManual { get; set; }
+        public string SourceTag { get; set; } = "";
+        public string CustomName { get; set; } = "";
+        public string DisplayMode { get; set; } = "";
+        public string ImageType { get; set; } = "";
+        public string CardSizeOffset { get; set; } = "0";
+        public string BadgeStyle { get; set; } = "";
+        public int MaxItems { get; set; }
+        public List<string> UserIds { get; set; } = new List<string>();
+        // Manual lists: the ranked titles, in order.
+        public List<SourceItemRef> Items { get; set; } = new List<SourceItemRef>();
+        // user id on the exporting server → name
+        public Dictionary<string, string> Users { get; set; } = new Dictionary<string, string>();
+        // Export only (not part of the pasted text).
+        public List<string> Notices { get; set; } = new List<string>();
+    }
+
+    // Import maps the list to this server and returns what the page's create dialog needs to
+    // open pre-filled. Nothing is saved: the user reviews the dialog and clicks Create.
+    [Route("/HomeScreenCompanion/TopList/Import", "POST")]
+    [Authenticated(Roles = "Admin")]
+    public class ImportTopListRequest : IReturn<ImportTopListResponse>
+    {
+        public string TopListJson { get; set; } = "";
+    }
+
+    public class ImportTopListResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = "";
+        public string ListName { get; set; } = "";
+        public string ContentType { get; set; } = "Movies";
+        public bool IsManual { get; set; }
+        public string SourceTag { get; set; } = "";
+        public bool SourceTagExists { get; set; }
+        public string CustomName { get; set; } = "";
+        public string DisplayMode { get; set; } = "";
+        public string ImageType { get; set; } = "";
+        public string CardSizeOffset { get; set; } = "0";
+        public string BadgeStyle { get; set; } = "";
+        public int MaxItems { get; set; }
+        public List<string> UserIds { get; set; } = new List<string>();
+        // Same shape as the create dialog's own picks (movies: Guid ItemId; shows: internal id).
+        public List<MovieItem> Items { get; set; } = new List<MovieItem>();
+        public List<string> Notices { get; set; } = new List<string>();
+    }
+
 public class HomeScreenCompanionService : IService
     {
         private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, List<PolicySnapshot>> _policySnapshots
@@ -862,35 +915,7 @@ public class HomeScreenCompanionService : IService
 
             var name = !string.IsNullOrWhiteSpace(source.CollectionName) ? source.CollectionName.Trim()
                 : !string.IsNullOrWhiteSpace(source.Name) ? source.Name.Trim() : (source.Tag ?? "").Trim();
-            return DrawArtPreview(items, name, source.CollectionArtTitle, source.CollectionPosterStyle, source.CollectionBackgroundStyle);
-        }
-
-        public object Post(PreviewTopListArtRequest request)
-        {
-            var tl = request.List ?? new TopListHomeSection();
-            bool poster = CollectionArtRenderer.IsStyle(tl.TopListPosterStyle);
-            bool background = CollectionArtRenderer.IsStyle(tl.TopListBackgroundStyle);
-            if (!poster && !background)
-                return new PreviewCollectionArtResponse { Message = "Choose a style for the poster or the background first." };
-            var tag = TopListArt.SourceTag(tl, Plugin.Instance?.Configuration);
-            if (tag.Length == 0)
-                return new PreviewCollectionArtResponse { Message = "Only a top-list fed by a tag has a page for its header to open, so this list has no art." };
-            var items = TopListArt.RankedTitles(tl, _libraryManager, _jsonSerializer);
-            if (items.Count == 0)
-                return new PreviewCollectionArtResponse { Message = $"No titles carry the tag '{tag}' yet. Run the sync once, then preview again." };
-            var result = DrawArtPreview(items, (tl.TagName ?? "").Trim(), tl.TopListArtTitle, tl.TopListPosterStyle, tl.TopListBackgroundStyle);
-            _logger.Info($"Top-list art preview: '{tl.TagName}' poster '{tl.TopListPosterStyle}' background '{tl.TopListBackgroundStyle}' -> "
-                + (result.Success ? $"drawn from {result.Titles} title(s)" : result.Message));
-            return result;
-        }
-
-        // Draws the poster / background (whichever has a style) from the titles in order, each
-        // film once, and returns them as data: URLs. Nothing is saved.
-        private PreviewCollectionArtResponse DrawArtPreview(List<BaseItem> items, string name, string artTitle, string posterStyle, string backgroundStyle)
-        {
-            bool poster = CollectionArtRenderer.IsStyle(posterStyle);
-            bool background = CollectionArtRenderer.IsStyle(backgroundStyle);
-            var title = CollectionArtRenderer.ArtTitle(artTitle, name);
+            var title = CollectionArtRenderer.ArtTitle(source.CollectionArtTitle, name);
             var tempDir = Path.Combine(Path.GetTempPath(), "hsc_art_" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(tempDir);
             try
@@ -914,8 +939,8 @@ public class HomeScreenCompanionService : IService
                 {
                     Success = true,
                     Titles = items.Count,
-                    Poster = poster ? Draw(posterStyle, false) : "",
-                    Background = background ? Draw(backgroundStyle, true) : ""
+                    Poster = poster ? Draw(source.CollectionPosterStyle, false) : "",
+                    Background = background ? Draw(source.CollectionBackgroundStyle, true) : ""
                 };
             }
             catch (Exception ex)
@@ -2621,10 +2646,6 @@ public class HomeScreenCompanionService : IService
                 tl.HomeSectionUserIds = userIds;
                 tl.MaxItems = request.MaxItems > 0 ? Math.Min(request.MaxItems, ShowTopList.MaxRanks) : ShowTopList.MaxRanks;
                 tl.ShowSourceTag = sourceTag;
-                if (request.TopListPosterStyle != null) tl.TopListPosterStyle = request.TopListPosterStyle.Trim();
-                if (request.TopListBackgroundStyle != null) tl.TopListBackgroundStyle = request.TopListBackgroundStyle.Trim();
-                if (request.TopListArtTitle != null) tl.TopListArtTitle = request.TopListArtTitle.Trim();
-                if (request.TopListBackgroundPath != null) tl.TopListBackgroundPath = request.TopListBackgroundPath.Trim();
 
                 var settings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 try
@@ -2779,9 +2800,6 @@ public class HomeScreenCompanionService : IService
                     return new PrepareTopListHomeSectionsResponse { Success = false, Message = "HomeSectionLibraryId is not set — library may not be ready yet." };
 
                 var resolvedLibraryId = tl.HomeSectionLibraryId;
-                // Where the row header goes: the library, or the source tag's page when the list
-                // has art (TopListArt). The row's items come from the exclusions either way.
-                var headerParentId = TopListArt.HeaderTargetId(tl, _libraryManager) ?? resolvedLibraryId;
 
                 // Exclude everything except this top-list's own library. The section is shown to
                 // several users and each one's editor lists their own views (hidden libraries,
@@ -2827,7 +2845,7 @@ public class HomeScreenCompanionService : IService
                         string trackId;
                         if (ownedSection != null)
                         {
-                            var updatedSection = HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, settingsDict, headerParentId, ownedSection);
+                            var updatedSection = HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, settingsDict, resolvedLibraryId, ownedSection);
                             typeof(ContentSection).GetProperty("Id")?.SetValue(updatedSection, ownedSection.Id);
                             _userManager.UpdateHomeSection(userInternalId, updatedSection, CancellationToken.None);
                             trackId = ownedSection.Id ?? sectionMarker;
@@ -2838,7 +2856,7 @@ public class HomeScreenCompanionService : IService
                             var beforeIds = new HashSet<string>(
                                 allSections.Where(s => !string.IsNullOrEmpty(s.Id)).Select(s => s.Id));
                             _userManager.AddHomeSection(userInternalId,
-                                HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, settingsDict, headerParentId),
+                                HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, settingsDict, resolvedLibraryId),
                                 CancellationToken.None);
                             var afterSections = _userManager.GetHomeSections(userInternalId, CancellationToken.None);
                             var newId = (afterSections?.Sections ?? Array.Empty<ContentSection>())
@@ -2972,8 +2990,7 @@ public class HomeScreenCompanionService : IService
                                 var owned = secs.FirstOrDefault(s => s.Id == tracking.SectionId)
                                     ?? secs.FirstOrDefault(s => s.Subtitle == otherMarker);
                                 if (owned == null) continue;
-                                var updatedSec = HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, otherSettings,
-                                    TopListArt.HeaderTargetId(otherTl, _libraryManager) ?? otherTl.HomeSectionLibraryId, owned);
+                                var updatedSec = HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, otherSettings, otherTl.HomeSectionLibraryId, owned);
                                 typeof(ContentSection).GetProperty("Id")?.SetValue(updatedSec, owned.Id);
                                 _userManager.UpdateHomeSection(uid, updatedSec, CancellationToken.None);
                             }
@@ -3245,10 +3262,6 @@ public class HomeScreenCompanionService : IService
                         tl.HomeSectionUserIds ??= new List<string>();
                         tl.HomeSectionTracked ??= new List<HomeSectionTracking>();
                         if (string.IsNullOrEmpty(tl.HomeSectionSettings)) tl.HomeSectionSettings = "{}";
-                        tl.TopListPosterStyle     ??= "";
-                        tl.TopListBackgroundStyle ??= "";
-                        tl.TopListArtTitle        ??= "";
-                        tl.TopListBackgroundPath  ??= "";
                         PruneUnknownUsers(tl.HomeSectionUserIds, knownUsers, response.Warnings, $"Top-list '{tl.TagName}'");
                         tl.HomeSectionTracked.RemoveAll(x => !IsKnownUser(knownUsers, x.UserId));
 
@@ -3656,8 +3669,7 @@ public class HomeScreenCompanionService : IService
             file.Tags = tags;
             if (tags.Count == 0) return file;
 
-            var userNames = new Dictionary<string, string>();
-            try { foreach (var u in _userManager.GetUserList(new UserQuery())) userNames[u.Id.ToString("N")] = u.Name ?? ""; } catch { }
+            var userNames = UserNamesById();
             var libraryNames = new Dictionary<string, string>();
             try
             {
@@ -3727,15 +3739,7 @@ public class HomeScreenCompanionService : IService
                     if (long.TryParse(id, out var internalId)) item = _libraryManager.GetItemById(internalId);
                     else if (Guid.TryParse(id, out var guid)) item = _libraryManager.GetItemById(guid);
                     if (item == null) continue; // already gone here; the import reports it as missing
-                    file.Items[id] = new SourceItemRef
-                    {
-                        Name = item.Name ?? "",
-                        Year = item.ProductionYear,
-                        Type = item.GetType().Name,
-                        Imdb = item.GetProviderId("Imdb") ?? "",
-                        Tmdb = item.GetProviderId("Tmdb") ?? "",
-                        Tvdb = item.GetProviderId("Tvdb") ?? ""
-                    };
+                    file.Items[id] = ItemRefFor(item);
                 }
 
                 AddImage(t.CollectionPosterPath, "Collection poster");
@@ -3749,7 +3753,7 @@ public class HomeScreenCompanionService : IService
             {
                 if (tl == null) continue;
                 if (tagNames.Contains((tl.TagName ?? "").Trim()) || tagNames.Contains((tl.ShowSourceTag ?? "").Trim()))
-                    file.Notices.Add($"This source feeds the top-list '{tl.TagName}'. Top-lists are not copied with a source – set it up in the Top Lists tab on the other server.");
+                    file.Notices.Add($"This source feeds the top-list '{tl.TagName}'. Top-lists are not copied with a source – copy it with Copy on the top-list in the Top Lists tab and paste it there after this source.");
             }
             return file;
         }
@@ -3779,9 +3783,7 @@ public class HomeScreenCompanionService : IService
                     names.TryGetValue(id, out var n) && !string.IsNullOrEmpty(n) ? n : "unknown (id " + id + ")";
 
                 // Users: by name, case-insensitive.
-                var localUsers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var u in _userManager.GetUserList(new UserQuery()))
-                    if (!string.IsNullOrEmpty(u.Name) && !localUsers.ContainsKey(u.Name)) localUsers[u.Name] = u.Id.ToString("N");
+                var localUsers = LocalUserIdsByName();
                 string? MapUser(string id) =>
                     file.Users.TryGetValue(id, out var name) && !string.IsNullOrEmpty(name) && localUsers.TryGetValue(name, out var local) ? local : null;
                 var droppedUsers = new Dictionary<string, SortedSet<string>>();
@@ -3908,8 +3910,7 @@ public class HomeScreenCompanionService : IService
                             var item = itemRef != null && findItem != null ? findItem(itemRef) : null;
                             if (item == null)
                             {
-                                var label = itemRef == null ? "unknown item (id " + id + ")"
-                                    : itemRef.Name + (itemRef.Year.HasValue ? " (" + itemRef.Year + ")" : "") + (string.IsNullOrEmpty(itemRef.Imdb) ? "" : " " + itemRef.Imdb);
+                                var label = itemRef == null ? "unknown item (id " + id + ")" : ItemRefLabel(itemRef);
                                 if (!missingItems.Contains(label)) missingItems.Add(label);
                                 continue;
                             }
@@ -3986,6 +3987,245 @@ public class HomeScreenCompanionService : IService
                     if (!string.IsNullOrEmpty(v) && byProvider.TryGetValue(r.Type + ":" + p + ":" + v, out var hit)) return hit;
                 return !string.IsNullOrEmpty(r.Name) && byNameYear.TryGetValue(r.Type + ":" + r.Name + ":" + r.Year, out var byName) ? byName : null;
             };
+        }
+
+        // ── Shared by Copy / Paste of sources and top-lists ──
+
+        private Dictionary<string, string> UserNamesById()
+        {
+            var names = new Dictionary<string, string>();
+            try { foreach (var u in _userManager.GetUserList(new UserQuery())) names[u.Id.ToString("N")] = u.Name ?? ""; } catch { }
+            return names;
+        }
+
+        private Dictionary<string, string> LocalUserIdsByName()
+        {
+            var ids = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var u in _userManager.GetUserList(new UserQuery()))
+                if (!string.IsNullOrEmpty(u.Name) && !ids.ContainsKey(u.Name)) ids[u.Name] = u.Id.ToString("N");
+            return ids;
+        }
+
+        private static SourceItemRef ItemRefFor(BaseItem item) => new SourceItemRef
+        {
+            Name = item.Name ?? "",
+            Year = item.ProductionYear,
+            Type = item.GetType().Name,
+            Imdb = item.GetProviderId("Imdb") ?? "",
+            Tmdb = item.GetProviderId("Tmdb") ?? "",
+            Tvdb = item.GetProviderId("Tvdb") ?? ""
+        };
+
+        private static string ItemRefLabel(SourceItemRef r) =>
+            r.Name + (r.Year.HasValue ? " (" + r.Year + ")" : "") + (string.IsNullOrEmpty(r.Imdb) ? "" : " " + r.Imdb);
+
+        // A tag "exists" here when an HSC source makes it or any item carries it.
+        private bool TagExistsHere(string tag)
+        {
+            if (string.IsNullOrWhiteSpace(tag)) return false;
+            if ((Plugin.Instance?.Configuration?.Tags ?? new List<TagConfig>()).Any(t => string.Equals((t.Tag ?? "").Trim(), tag.Trim(), StringComparison.OrdinalIgnoreCase)))
+                return true;
+            try { return _libraryManager.GetItemList(new InternalItemsQuery { Tags = new[] { tag.Trim() }, Recursive = true, Limit = 1 }).Length > 0; }
+            catch { return false; }
+        }
+
+        // ── Copy / paste one top-list ─────────────────────────────────────────────────────
+
+        private const int TopListFormatVersion = 1;
+
+        public object Post(ExportTopListRequest request)
+        {
+            var file = new TopListCopyFile
+            {
+                TopListVersion = TopListFormatVersion,
+                PluginVersion = Plugin.Instance?.Version.ToString() ?? "0.0.0",
+                CreatedUtc = DateTime.UtcNow.ToString("o")
+            };
+            var name = (request.TagName ?? "").Trim();
+            var tl = (Plugin.Instance?.Configuration?.TopLists ?? new List<TopListHomeSection>())
+                .FirstOrDefault(t => t != null && string.Equals((t.TagName ?? "").Trim(), name, StringComparison.OrdinalIgnoreCase));
+            if (tl == null)
+            {
+                file.Notices.Add($"The top-list '{name}' was not found – save it first.");
+                return file;
+            }
+
+            bool isShows = ShowTopList.IsShowList(tl);
+            var settings = ParseSectionSettings(tl.HomeSectionSettings);
+            string Setting(string key) => settings.TryGetValue(key, out var v) ? v ?? "" : "";
+
+            file.ListName    = tl.TagName ?? "";
+            file.ContentType = isShows ? "Shows" : "Movies";
+            file.CustomName  = Setting("CustomName");
+            file.DisplayMode = Setting("DisplayMode");
+            file.ImageType   = Setting("ImageType");
+            file.CardSizeOffset = Setting("CardSizeOffset").Length > 0 ? Setting("CardSizeOffset") : "0";
+            file.BadgeStyle  = Setting("BadgeStyle");
+            file.MaxItems    = tl.MaxItems;
+            file.UserIds     = (tl.HomeSectionUserIds ?? new List<string>()).Where(u => !string.IsNullOrWhiteSpace(u)).ToList();
+
+            var userNames = UserNamesById();
+            foreach (var id in file.UserIds)
+                if (!file.Users.ContainsKey(id) && userNames.TryGetValue(NormId(id), out var uname)) file.Users[id] = uname;
+
+            if (isShows)
+            {
+                file.SourceTag = (tl.ShowSourceTag ?? "").Trim();
+                file.IsManual = file.SourceTag.Length == 0;
+                if (file.IsManual)
+                    foreach (var e in tl.ShowEntries ?? new List<ShowTopListEntry>())
+                    {
+                        var item = Guid.TryParse(e.SeriesId, out var g) ? _libraryManager.GetItemById(g) : null;
+                        if (item != null) file.Items.Add(ItemRefFor(item));
+                    }
+            }
+            else
+            {
+                // Same rule as the Top Lists tab: a movie list is fed by a tag when titles carry its name.
+                bool byTag = false;
+                try { byTag = _libraryManager.GetItemList(new InternalItemsQuery { Tags = new[] { file.ListName }, Recursive = true, Limit = 1 }).Length > 0; } catch { }
+                file.IsManual = !byTag;
+                if (byTag) file.SourceTag = file.ListName;
+                else
+                {
+                    var folder = Path.Combine(Plugin.Instance!.DataFolderPath, "toplists", SanitizeFolderName(file.ListName));
+                    foreach (var m in ReadTopListMovies(folder))
+                    {
+                        var item = Guid.TryParse(m.ItemId, out var g) ? _libraryManager.GetItemById(g) : null;
+                        if (item != null) file.Items.Add(ItemRefFor(item));
+                    }
+                    if (file.Items.Count == 0)
+                        file.Notices.Add("This manual list has no titles in its library folder – the copy has an empty list.");
+                }
+            }
+            return file;
+        }
+
+        public object Post(ImportTopListRequest request)
+        {
+            var response = new ImportTopListResponse();
+            try
+            {
+                var json = request.TopListJson ?? "";
+                if (string.IsNullOrWhiteSpace(json)) return FailTopList(response, "Nothing was pasted.");
+                if (!System.Text.RegularExpressions.Regex.IsMatch(json, "\"hsc-toplist\"\\s*:\\s*\\d"))
+                    return FailTopList(response, "This is not a copied Home Screen Companion top-list (the \"hsc-toplist\" header is missing). Use Copy on a top-list and paste that text.");
+                TopListCopyFile? file = null;
+                try { file = _jsonSerializer.DeserializeFromString<TopListCopyFile>(json); } catch { }
+                if (file == null || string.IsNullOrWhiteSpace(file.ListName))
+                    return FailTopList(response, "The pasted text could not be read as a top-list.");
+                file.Users ??= new Dictionary<string, string>();
+                file.Items ??= new List<SourceItemRef>();
+                file.UserIds ??= new List<string>();
+
+                var notices = response.Notices;
+                void Notice(string msg) { if (!notices.Contains(msg)) notices.Add(msg); }
+                var config = Plugin.Instance!.Configuration;
+                var topLists = config.TopLists ?? new List<TopListHomeSection>();
+                bool isShows = string.Equals(file.ContentType, "Shows", StringComparison.OrdinalIgnoreCase);
+
+                response.ContentType = isShows ? "Shows" : "Movies";
+                response.IsManual    = file.IsManual;
+                response.SourceTag   = file.IsManual ? "" : (file.SourceTag ?? "").Trim();
+                response.CustomName  = file.CustomName ?? "";
+                response.DisplayMode = file.DisplayMode ?? "";
+                response.ImageType   = file.ImageType ?? "";
+                response.CardSizeOffset = string.IsNullOrWhiteSpace(file.CardSizeOffset) ? "0" : file.CardSizeOffset;
+                response.BadgeStyle  = file.BadgeStyle ?? "";
+                response.MaxItems    = Math.Max(0, file.MaxItems);
+
+                // Users: by name, case-insensitive (as for sources).
+                var localUsers = LocalUserIdsByName();
+                var dropped = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var id in file.UserIds.Where(x => !string.IsNullOrWhiteSpace(x)))
+                {
+                    var local = file.Users.TryGetValue(id, out var uname) && !string.IsNullOrEmpty(uname) && localUsers.TryGetValue(uname, out var l) ? l : null;
+                    if (local == null) dropped.Add(file.Users.TryGetValue(id, out var n) && !string.IsNullOrEmpty(n) ? n : "unknown (id " + id + ")");
+                    else if (!response.UserIds.Contains(local)) response.UserIds.Add(local);
+                }
+                if (dropped.Count > 0)
+                    Notice($"Target users not on this server, left out: {string.Join(", ", dropped)}." + (response.UserIds.Count == 0 ? " Tick at least one user before you create the list." : ""));
+
+                // Name: a clash gets "(copy)", except for a movie list fed by a tag – its name is the tag.
+                bool NameTaken(string n) => topLists.Any(t => string.Equals(SanitizeFolderName(t.TagName), SanitizeFolderName(n), StringComparison.OrdinalIgnoreCase))
+                    || Directory.Exists(Path.Combine(Plugin.Instance.DataFolderPath, "toplists", SanitizeFolderName(n)));
+                var listName = file.ListName.Trim();
+                if (!isShows && !file.IsManual)
+                {
+                    listName = response.SourceTag.Length > 0 ? response.SourceTag : listName;
+                    if (NameTaken(listName))
+                        Notice($"This server already has a top-list for the tag '{listName}'. A movie list fed by a tag is named after the tag, so Create updates that list's settings instead of adding a second one.");
+                }
+                else if (NameTaken(listName))
+                {
+                    var baseName = listName + " (copy)";
+                    listName = baseName;
+                    for (int i = 2; NameTaken(listName); i++) listName = baseName + " " + i;
+                    if (response.CustomName.Length > 0) response.CustomName += " (copy)";
+                }
+                response.ListName = listName;
+
+                if (!file.IsManual)
+                {
+                    response.SourceTagExists = TagExistsHere(response.SourceTag);
+                    if (!response.SourceTagExists)
+                        Notice($"Create or paste the source '{response.SourceTag}' first: no source and no title on this server has that tag yet, so the list stays empty until one does.");
+                }
+                else
+                {
+                    // Ranked titles: by IMDb / TMDb / TVDb id, then name + year (as for Manual List sources).
+                    var findItem = file.Items.Count > 0 ? BuildSourceItemFinder() : null;
+                    var missing = new List<string>();
+                    var seen = new HashSet<string>();
+                    foreach (var r in file.Items.Where(x => x != null))
+                    {
+                        var item = findItem?.Invoke(r);
+                        if (item == null || (isShows ? !(item is MediaBrowser.Controller.Entities.TV.Series) : item is MediaBrowser.Controller.Entities.TV.Series))
+                        {
+                            var label = ItemRefLabel(r);
+                            if (!missing.Contains(label)) missing.Add(label);
+                            continue;
+                        }
+                        var id = isShows ? item.InternalId.ToString() : item.Id.ToString("N");
+                        if (!seen.Add(id)) continue;
+                        response.Items.Add(new MovieItem { ItemId = id, Name = item.Name ?? "", Year = item.ProductionYear, ImdbId = item.GetProviderId("Imdb") ?? "" });
+                    }
+                    if (isShows && response.Items.Count > ShowTopList.MaxRanks)
+                    {
+                        Notice($"A show top-list holds up to {ShowTopList.MaxRanks} shows; the rest were left out.");
+                        response.Items = response.Items.Take(ShowTopList.MaxRanks).ToList();
+                    }
+                    if (missing.Count > 0)
+                        Notice($"{missing.Count} title(s) not in this server's library, left out: {string.Join(", ", missing)}.");
+                    if (response.Items.Count == 0)
+                        Notice($"None of the list's {(isShows ? "shows" : "movies")} are on this server – add some before you create it.");
+                }
+
+                if (isShows && response.UserIds.Count > 0)
+                {
+                    var clash = ShowTopList.UsersInOtherShowLists(config, listName, response.UserIds);
+                    if (clash.Count > 0)
+                    {
+                        var names = clash.Select(id => Guid.TryParse(id, out var g) ? _userManager.GetUserById(g)?.Name ?? id : id);
+                        Notice("Each user can have only one show top-list. Untick these users (they are on another show top-list) or Create fails: " + string.Join(", ", names) + ".");
+                    }
+                }
+
+                response.Success = true;
+                response.Message = "Top-list ready.";
+                return response;
+            }
+            catch (Exception ex)
+            {
+                return FailTopList(response, ex.Message);
+            }
+        }
+
+        private static ImportTopListResponse FailTopList(ImportTopListResponse response, string message)
+        {
+            response.Success = false;
+            response.Message = message;
+            return response;
         }
 
     }
