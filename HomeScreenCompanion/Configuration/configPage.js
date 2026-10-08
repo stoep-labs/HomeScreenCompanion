@@ -6887,14 +6887,63 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         });
     }
 
-    // Paste box shared by sources and top-lists: checks the kind's header, sends the text to
-    // opts.path and hands the server's mapped result to opts.onResult(result, modal).
+    // Paste shared by sources and top-lists. Called only from the Paste button's click: where the
+    // browser allows it (https or localhost) the clipboard is read first, and if it holds a copy of
+    // this kind it is imported straight away. Otherwise (no permission, plain http, other text) the
+    // paste box opens; it checks the kind's header, sends the text to opts.path and hands the
+    // server's mapped result to opts.onResult(result, modal) – modal is null for a direct paste.
+    function parsePasteText(kind, opts, text) {
+        var parsed = null;
+        try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
+        if (!parsed || typeof parsed !== 'object') return { parsed: null, ok: false };
+        return { parsed: parsed, ok: !!parsed[kind.header] && opts.isValid(parsed) };
+    }
+
+    function importPasteText(opts, text) {
+        var body = {};
+        body[opts.bodyKey] = text;
+        return postSourceJson(opts.path, body).then(function (result) {
+            if (!result || !result.Success) throw new Error((result && result.Message) || 'Unknown error');
+            return result;
+        });
+    }
+
+    function readClipboardForPaste() {
+        try {
+            if (!(window.isSecureContext && navigator.clipboard && navigator.clipboard.readText)) return Promise.resolve('');
+            return Promise.resolve(navigator.clipboard.readText()).then(function (t) { return typeof t === 'string' ? t.trim() : ''; }, function () { return ''; });
+        } catch (e) { return Promise.resolve(''); }
+    }
+
     function showPasteModal(kind, opts) {
+        readClipboardForPaste().then(function (clip) {
+            var check = clip ? parsePasteText(kind, opts, clip) : { parsed: null, ok: false };
+            if (check.ok) {
+                importPasteText(opts, clip)
+                    .then(function (result) { opts.onResult(result, null); })
+                    .catch(function (err) { openPasteModal(kind, opts, { text: clip, error: 'Paste failed: ' + (err.message || err) }); });
+                return;
+            }
+            var other = null;
+            if (check.parsed) {
+                Object.keys(_copyKinds).forEach(function (k) {
+                    if (_copyKinds[k] !== kind && check.parsed[_copyKinds[k].header]) other = _copyKinds[k];
+                });
+            }
+            openPasteModal(kind, opts, other ? {
+                clipHint: 'The clipboard holds a copied ' + other.label.toLowerCase() + ' – use <strong>Paste ' + other.label.toLowerCase() + '</strong> for that.'
+            } : null);
+        });
+    }
+
+    function openPasteModal(kind, opts, state) {
+        state = state || {};
         var modal = buildBackupModalShell();
         var applyHtml = '<i class="md-icon" style="font-size:1em;vertical-align:middle;margin-right:6px;">content_paste</i>' + opts.applyLabel;
         modal.renderBox(
             '<h3 style="' + _backupTitleStyle + '">Paste ' + kind.label + '</h3>' +
             '<p style="' + _backupHintStyle + '">' + opts.hint + '</p>' +
+            (state.clipHint ? '<p class="paste-clip-hint" style="' + _backupHintStyle + 'color:#e0a030;">' + state.clipHint + '</p>' : '') +
             '<textarea class="txtPasteSource" rows="8" placeholder=\'{"' + kind.header + '":1, …}\' style="width:100%;box-sizing:border-box;font-family:monospace;font-size:0.82em;background:transparent;color:inherit;border:1px solid var(--line-color,rgba(255,255,255,0.2));border-radius:4px;padding:8px;margin-bottom:8px;"></textarea>' +
             '<div class="backup-error" style="color:#cc3333;font-size:0.85em;min-height:1.2em;margin-bottom:6px;"></div>' +
             '<div style="display:flex;gap:10px;justify-content:flex-end;align-items:center;">' +
@@ -6903,15 +6952,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             '</div>'
         );
         var ta = modal.querySelector('.txtPasteSource');
+        if (state.text) ta.value = state.text;
+        if (state.error) modal.querySelector('.backup-error').textContent = state.error;
         ta.focus();
         modal.querySelector('.btnPasteCancel').addEventListener('click', modal.close);
         modal.querySelector('.btnPasteApply').addEventListener('click', function () {
             var btn = this;
             var errEl = modal.querySelector('.backup-error');
             var text = ta.value.trim();
-            var parsed = null;
-            try { parsed = JSON.parse(text); } catch (e) { parsed = null; }
-            if (!parsed || typeof parsed !== 'object' || !parsed[kind.header] || !opts.isValid(parsed)) {
+            if (!parsePasteText(kind, opts, text).ok) {
                 errEl.textContent = text ? opts.notMsg : 'Paste a copied ' + kind.label.toLowerCase() + ' first.';
                 return;
             }
@@ -6919,11 +6968,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             btn.disabled = true;
             btn.innerHTML = 'Adding <span class="tc-dot-loader"><span></span><span></span><span></span></span>';
             modal.dataset.busy = '1';
-            var body = {};
-            body[opts.bodyKey] = text;
-            postSourceJson(opts.path, body)
+            importPasteText(opts, text)
                 .then(function (result) {
-                    if (!result || !result.Success) throw new Error((result && result.Message) || 'Unknown error');
                     opts.onResult(result, modal);
                     delete modal.dataset.busy;
                 })
@@ -6976,7 +7022,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             path: 'HomeScreenCompanion/TopList/Import',
             bodyKey: 'TopListJson',
             onResult: function (result, modal) {
-                modal.close();
+                if (modal) modal.close();
                 openPastedTopList(result, onSuccess);
             }
         });
