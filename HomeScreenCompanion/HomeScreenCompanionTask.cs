@@ -587,10 +587,7 @@ namespace HomeScreenCompanion
                     if (tagConfig.EnableCollection)
                     {
                         activeCollections.Add(cName);
-                        if (!string.IsNullOrWhiteSpace(tagConfig.CollectionDescription))
-                            collectionDescriptions[cName] = tagConfig.CollectionDescription;
-                        if (!string.IsNullOrWhiteSpace(tagConfig.CollectionPosterPath) && File.Exists(tagConfig.CollectionPosterPath))
-                            collectionPosters[cName] = tagConfig.CollectionPosterPath;
+                        CollectCollectionMeta(tagConfig, cName, collectionDescriptions, collectionPosters);
                         collectionSources[cName] = tagConfig;
                     }
 
@@ -2543,7 +2540,16 @@ namespace HomeScreenCompanion
                         }
                     }
                     var _artColl = _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "BoxSet" }, Name = cName, Recursive = true }).FirstOrDefault();
-                    if (_artColl != null) ApplyCollectionArt(_artColl, cName, tagConfig, collectionOutputItems);
+                    if (_artColl != null)
+                    {
+                        // Same description / uploaded poster handling as the full sync.
+                        var _collDescs = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        var _collPosters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                        CollectCollectionMeta(tagConfig, cName, _collDescs, _collPosters);
+                        if (_collDescs.Count > 0 || _collPosters.Count > 0)
+                            ApplyCollectionMeta(_artColl, cName, _collDescs, _collPosters, debug);
+                        ApplyCollectionArt(_artColl, cName, tagConfig, collectionOutputItems);
+                    }
                     gs.CollectionCreated = _collCreated;
                     gs.CollectionItemsAdded = _collItemsAdded;
                     gs.CollectionItemsRemoved = _collItemsRemoved;
@@ -5252,6 +5258,17 @@ namespace HomeScreenCompanion
             {
                 try { Directory.Delete(tempDir, true); } catch { }
             }
+        }
+
+        // Shared by the full sync and Run Group: records a source's collection description and
+        // uploaded poster (when set) for ApplyCollectionMeta.
+        private static void CollectCollectionMeta(TagConfig tc, string cName,
+            Dictionary<string, string> descriptions, Dictionary<string, string> posters)
+        {
+            if (!string.IsNullOrWhiteSpace(tc.CollectionDescription))
+                descriptions[cName] = tc.CollectionDescription;
+            if (!string.IsNullOrWhiteSpace(tc.CollectionPosterPath) && File.Exists(tc.CollectionPosterPath))
+                posters[cName] = tc.CollectionPosterPath;
         }
 
         private void ApplyCollectionMeta(BaseItem item, string cName,
