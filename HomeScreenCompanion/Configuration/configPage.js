@@ -40,6 +40,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         return (_activeView && _activeView.isConnected) ? _activeView : document.querySelector('#HomeScreenCompanionConfigPage');
     }
 
+    // The element that scrolls this page: the nearest scrolling ancestor, else the document.
+    function pageScroller(view) {
+        for (var el = view; el && el !== document.body && el !== document.documentElement; el = el.parentElement) {
+            var oy = getComputedStyle(el).overflowY;
+            if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight) return el;
+        }
+        return document.scrollingElement || document.documentElement;
+    }
+
     function applyPluginTheme() {
         var candidates = ['.skinHeader', '.mainDrawer', '.contentScrollSlider', 'body'];
         var bg = null;
@@ -2136,6 +2145,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var tagName = tagConfig.Tag || '';
         var labelName = tagConfig.Name || '';
         var urls = tagConfig.Urls || (tagConfig.Url ? [{ url: tagConfig.Url, limit: tagConfig.Limit !== undefined ? tagConfig.Limit : 0 }] : [{ url: '', limit: 0 }]);
+        if (!urls.length) urls = [{ url: '', limit: 0 }]; // e.g. a restored draft row with no URL yet
         var blacklist = migrateCommaSeparated((tagConfig.Blacklist || []).join('\n'));
         var intervals = tagConfig.ActiveIntervals || [];
         var idx = typeof index !== 'undefined' ? index : 9999;
@@ -2811,6 +2821,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 row.querySelectorAll('.tag-tab').forEach(t => { t.style.opacity = "0.6"; t.style.borderBottomColor = "transparent"; });
                 this.style.opacity = "1"; this.style.borderBottomColor = "#52B54B";
                 var target = this.getAttribute('data-tab');
+                row.dataset.activeTab = target;
                 row.querySelector('.general-tab').style.display = target === 'general' ? 'block' : 'none';
                 row.querySelector('.tagname-tab').style.display = target === 'tag' ? 'block' : 'none';
                 row.querySelector('.schedule-tab').style.display = target === 'schedule' ? 'block' : 'none';
@@ -8454,7 +8465,16 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 ta.style.height = 'auto';
                 ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
                 ta.style.overflowY = ta.scrollHeight > 120 ? 'auto' : 'hidden';
-            });
+            }, { signal: _signal });
+            // Remember how far down the page is scrolled while it is on screen (by the time
+            // viewhide fires the scroller may already have been reset).
+            document.addEventListener('scroll', function (e) {
+                if (_activeView !== view || view.classList.contains('hide')) return;
+                var sc = pageScroller(view);
+                if (e.target === sc || (e.target === document && sc === document.scrollingElement)) view._hscScroll = sc.scrollTop;
+            }, { capture: true, passive: true, signal: _signal });
+            window.addEventListener('beforeunload', beforeUnloadHandler);
+            document.addEventListener('click', closeSpeedDial);
             var settingsTab = view.querySelector('#tabSettings');
             settingsTab.addEventListener('input',  changeHandler, { signal: _signal });
             settingsTab.addEventListener('change', changeHandler, { signal: _signal });
@@ -8720,11 +8740,142 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 cachedPlaylists = responses[1].Items || [];
                 cachedTags = ((responses[2] && responses[2].Tags) || []).slice().sort();
 
-                loadConfig();
+                // Only the copy of the page being shown picks up what was left behind on leaving.
+                loadConfig({ leaveState: readLeaveState() || { ui: null } });
             });
         });
 
         view.addEventListener('viewhide', stopStatusPolling);
+
+        // ---- Unsaved changes and open rows survive leaving the page ----
+        // Emby either re-shows this copy (Back) or builds a brand-new copy (sidebar/hash), and
+        // either way loadConfig() re-renders from the server. So on leaving, this copy writes its
+        // unsaved settings (if any) and which rows/tabs were open to sessionStorage; the copy that
+        // is shown next reads it back. Each copy writes only on its own viewhide, and only while it
+        // is the copy on screen, so a hidden old copy can never overwrite a newer state.
+        function leaveStateKey() {
+            var sid = '', uid = '';
+            try { sid = window.ApiClient.serverId ? window.ApiClient.serverId() : ''; } catch (e) { }
+            try { uid = window.ApiClient.getCurrentUserId(); } catch (e) { }
+            return 'hsc-draft-' + sid + '-' + uid;
+        }
+        function readLeaveState() {
+            try { var s = sessionStorage.getItem(leaveStateKey()); return s ? JSON.parse(s) : null; } catch (e) { return null; }
+        }
+        function writeLeaveState(obj) {
+            try {
+                if (obj) sessionStorage.setItem(leaveStateKey(), JSON.stringify(obj));
+                else sessionStorage.removeItem(leaveStateKey());
+            } catch (e) { }
+        }
+        // What the server sent, minus the parts the sync tasks rewrite on their own (Save re-reads
+        // those from the server anyway), so a background sync does not count as "changed".
+        function serverStamp(config) {
+            var c = Object.assign({}, config);
+            delete c.TopLists;
+            c.Tags = (config.Tags || []).map(function (t) {
+                var x = Object.assign({}, t);
+                delete x.HomeSectionTracked; delete x.PlaylistMappings;
+                return x;
+            });
+            return JSON.stringify(c);
+        }
+        function rowKey(row) {
+            var lbl = row.querySelector('.txtEntryLabel'), tn = row.querySelector('.txtTagName');
+            var name = lbl ? lbl.value : '';
+            var tag = (tn && tn.value) || name;
+            return name ? name + '\x1F' + tag : tag;
+        }
+        function captureUi() {
+            var rows = [];
+            view.querySelectorAll('#tagListContainer .tag-row').forEach(function (row, i) {
+                var body = row.querySelector('.tag-body');
+                if (!body || body.style.display === 'none') return;
+                rows.push({ key: rowKey(row), index: i, expanded: true, tab: row.dataset.activeTab || 'general' });
+            });
+            var pt = view.querySelector('.page-tab-btn.active');
+            var st = view.querySelector('.hsc-sub-tab-btn.active');
+            return {
+                rows: rows,
+                pageTab: pt ? pt.getAttribute('data-page-tab') : '',
+                subTab: st ? st.getAttribute('data-hsc-tab') : '',
+                scroll: view._hscScroll || 0
+            };
+        }
+        function applyUiRows(ui) {
+            if (!ui || !ui.rows || !ui.rows.length) return;
+            var rows = Array.from(view.querySelectorAll('#tagListContainer .tag-row'));
+            var keys = rows.map(rowKey);
+            var used = new Set();
+            ui.rows.forEach(function (r) {
+                // Rows are matched by name; a new, still unnamed source by its place in the list.
+                var i = (!r.key && keys[r.index] === '' && !used.has(r.index)) ? r.index
+                    : keys.findIndex(function (k, j) { return k === r.key && !used.has(j); });
+                if (i < 0 || !r.expanded) return;
+                used.add(i);
+                var row = rows[i];
+                var body = row.querySelector('.tag-body'), icon = row.querySelector('.expand-icon');
+                if (body && body.style.display === 'none') {
+                    body.style.display = 'block';
+                    if (icon) icon.innerText = 'expand_less';
+                }
+                // Clicking the tab runs its lazy set-up (Home Screen, Playlist) like a user click.
+                var tab = row.querySelector('.tag-tab[data-tab="' + (r.tab || 'general') + '"]');
+                if (tab) tab.click();
+            });
+        }
+        function restoreScroll(y) {
+            if (!y) return;
+            var sc = pageScroller(view);
+            sc.scrollTop = y;
+            view._hscScroll = y;
+            // Lazy tabs can grow the page a moment later; try once more.
+            setTimeout(function () { if (_activeView === view && sc.scrollTop < y) sc.scrollTop = y; }, 400);
+        }
+        function showDraftBar(serverChanged) {
+            var bar = view.querySelector('.hsc-draft-bar');
+            if (!bar) {
+                bar = document.createElement('div');
+                bar.className = 'hsc-draft-bar';
+                bar.style.cssText = 'max-width:900px;box-sizing:border-box;display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 14px;margin-bottom:16px;border-radius:5px;background:rgba(82,181,75,0.15);border:1px solid #52B54B;';
+                bar.innerHTML = '<i class="md-icon" style="font-size:1.3em;">restore</i><span class="hsc-draft-text" style="flex:1;min-width:200px;"></span>' +
+                    '<button type="button" is="emby-button" class="raised button-cancel hsc-draft-discard" style="margin:0;"><span>Discard</span></button>';
+                // Above every page tab, since restored settings can live on any of them.
+                var firstTab = view.querySelector('.page-tab-content');
+                firstTab.parentNode.insertBefore(bar, firstTab);
+                bar.querySelector('.hsc-draft-discard').addEventListener('click', function () {
+                    writeLeaveState(null);
+                    hideDraftBar();
+                    loadConfig();
+                });
+            }
+            bar.style.background = serverChanged ? 'rgba(230,126,34,0.18)' : 'rgba(82,181,75,0.15)';
+            bar.style.borderColor = serverChanged ? '#E67E22' : '#52B54B';
+            bar.querySelector('.hsc-draft-text').textContent = serverChanged
+                ? 'Unsaved changes restored. Settings changed on the server while you were away — saving will overwrite them.'
+                : 'Unsaved changes restored.';
+            bar.style.display = 'flex';
+        }
+        function hideDraftBar() {
+            var bar = view.querySelector('.hsc-draft-bar');
+            if (bar) bar.style.display = 'none';
+        }
+
+        view.addEventListener('viewhide', function () {
+            document.removeEventListener('click', closeSpeedDial);
+            window.removeEventListener('beforeunload', beforeUnloadHandler);
+            // Another copy of the page is already on screen, or this one never finished loading
+            // (then whatever was stored is still there, untouched).
+            if (_activeView !== view || view._hscLoading || !originalConfigState) return;
+            var ui = captureUi();
+            var current = null, dirty = false;
+            try {
+                current = getUiConfig(view, true);
+                dirty = JSON.stringify(current) !== originalConfigState;
+            } catch (e) { }
+            if (dirty) writeLeaveState({ draft: current, serverStamp: view._hscServerStamp || '', ui: ui });
+            else writeLeaveState({ ui: ui });
+        });
 
         // Save submits this copy's own form. (A form="…" attribute would submit the first form with
         // that id in the document, which can be an old hidden copy of this page.)
@@ -8874,6 +9025,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 originalConfigState = JSON.stringify(getUiConfig(view, true));
                 checkFormState();
                 updateDryRunWarning();
+                writeLeaveState(null);
+                hideDraftBar();
+                // The server now holds what was just saved: that is the new "as fetched" state.
+                window.ApiClient.getPluginConfiguration(pluginId).then(function (c) { view._hscServerStamp = serverStamp(c); }).catch(function () { });
 
                 // Apply home section settings immediately for existing tracked sections (fire-and-forget)
                 configObj.Tags.forEach(function(tc) {
@@ -8908,8 +9063,6 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             speedDial.classList.remove('open');
             syncMenu.classList.remove('open');
         }
-        document.addEventListener('click', closeSpeedDial);
-
         function runTask(key, label) {
             window.ApiClient.getScheduledTasks().then(function (tasks) {
                 var t = tasks.find(function (x) { return x.Key === key; });
@@ -8952,18 +9105,57 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 e.returnValue = '';
             }
         }
-        window.addEventListener('beforeunload', beforeUnloadHandler);
+        // Added on every viewshow and removed on every viewhide (see the leave-state handler).
 
-        view.addEventListener('viewhide', function () {
-            document.removeEventListener('click', closeSpeedDial);
-            window.removeEventListener('beforeunload', beforeUnloadHandler);
-        }, { once: true });
-
-        function loadConfig() {
+        // Fetches the settings and shows them. opts.leaveState (only from viewshow) is what this page
+        // left in sessionStorage: unsaved settings to put back on top, and open rows/tabs. Every
+        // other caller keeps the rows and tabs that are open right now.
+        function loadConfig(opts) {
+            opts = opts || {};
+            var leave = opts.leaveState || null;
+            var ui = leave ? leave.ui : captureUi();
             _hseLibraryCachePromise = null; // återställ cache så nya bibliotek (t.ex. ny top-list) hämtas
             preFetchLibraryData();          // starta hämtning direkt vid sidladdning
             view._hscLoading = true;
             return window.ApiClient.getPluginConfiguration(pluginId).then(config => {
+                var fetchedStamp = serverStamp(config);
+                renderConfig(view, config);
+                return new Promise(function (resolve) { requestAnimationFrame(resolve); }).then(function () {
+                    try {
+                        originalConfigState = JSON.stringify(getUiConfig(view, true));
+                    } catch (err) {
+                        originalConfigState = null;
+                    }
+                    view._hscServerStamp = fetchedStamp;
+                    var restored = false, serverChanged = false;
+                    if (leave && leave.draft) {
+                        renderConfig(view, Object.assign({}, config, leave.draft));
+                        restored = true;
+                        serverChanged = !!leave.serverStamp && leave.serverStamp !== fetchedStamp;
+                        // Keep the stamp the draft was based on, so the warning stays until Save/Discard.
+                        if (leave.serverStamp) view._hscServerStamp = leave.serverStamp;
+                    }
+                    view._hscLoading = false;
+                    replayLoadEdits(view);
+                    checkFormState();
+                    updateDryRunWarning();
+                    if (restored && JSON.stringify(getUiConfig(view, true)) !== originalConfigState) showDraftBar(serverChanged);
+                    else { hideDraftBar(); view._hscServerStamp = fetchedStamp; }
+                    if (leave) writeLeaveState(null); // picked up; written again on the next viewhide
+                    if (ui) {
+                        // Top tab / sub-tab only on return to the page; other callers never move them.
+                        if (leave && ui.pageTab) showPageTab(ui.pageTab);
+                        if (leave && ui.subTab) showSubTab(ui.subTab);
+                        applyUiRows(ui);
+                        if (leave) requestAnimationFrame(function () { restoreScroll(ui.scroll); });
+                    }
+                });
+            }).catch(function () { view._hscLoading = false; });
+        }
+
+        // Clears and rebuilds every settings field and source row from a config object (the
+        // server's, or the server's with an unsaved draft on top).
+        function renderConfig(view, config) {
                 lastHscConfig = {
                     HomeSyncEnabled:       config.HomeSyncEnabled       || false,
                     HomeSyncLibraryOrder:  config.HomeSyncLibraryOrder  || false,
@@ -9018,18 +9210,6 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var savedSort = localStorage.getItem('HomeScreenCompanion_SortBy') || 'Manual';
                 sortRows(container, savedSort);
                 applyFilters(view);
-                requestAnimationFrame(function () {
-                    try {
-                        originalConfigState = JSON.stringify(getUiConfig(view, true));
-                    } catch (err) {
-                        originalConfigState = null;
-                    }
-                    view._hscLoading = false;
-                    replayLoadEdits(view);
-                    checkFormState();
-                    updateDryRunWarning();
-                });
-            }).catch(function () { view._hscLoading = false; });
         }
 
         function hasDirtyState() {
@@ -9040,16 +9220,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             return false;
         }
 
-        view.querySelectorAll('.page-tab-btn').forEach(function (btn) {
-            btn.addEventListener('click', function () {
-                var target = this.getAttribute('data-page-tab');
-                var wasDirty = hasDirtyState();
-                if (wasDirty && !confirm('You have unsaved changes. Leave this tab and discard changes?')) return;
-                if (wasDirty) loadConfig();
+        // Shows a top page tab (and runs its lazy loader), without the unsaved-changes question.
+        function showPageTab(target) {
+                var tabBtn = view.querySelector('.page-tab-btn[data-page-tab="' + target + '"]');
+                var tabEl = view.querySelector('#tab' + target);
+                if (!tabBtn || !tabEl) return;
                 view.querySelectorAll('.page-tab-btn').forEach(function (b) { b.classList.remove('active'); });
-                this.classList.add('active');
+                tabBtn.classList.add('active');
                 view.querySelectorAll('.page-tab-content').forEach(function (c) { c.style.display = 'none'; });
-                view.querySelector('#tab' + target).style.display = '';
+                tabEl.style.display = '';
 
                 if (target === 'HomeCompanion') {
                     var hscContainer = view.querySelector('#hscContainer');
@@ -9067,6 +9246,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     var tlContainer = view.querySelector('#tlContainer');
                     if (tlContainer && !tlContainer.dataset.loaded) loadTopListsTab(view);
                 }
+        }
+
+        view.querySelectorAll('.page-tab-btn').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                var target = this.getAttribute('data-page-tab');
+                var wasDirty = hasDirtyState();
+                if (wasDirty && !confirm('You have unsaved changes. Leave this tab and discard changes?')) return;
+                if (wasDirty) { writeLeaveState(null); hideDraftBar(); loadConfig(); }
+                showPageTab(target);
             });
         });
 
@@ -9096,8 +9284,13 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
         view.addEventListener('click', function (e) {
             var btn = e.target.closest('.hsc-sub-tab-btn');
+            if (btn) showSubTab(btn.getAttribute('data-hsc-tab'));
+        });
+
+        // Shows a Home Screen sub-tab (and runs its lazy loader).
+        function showSubTab(target) {
+            var btn = view.querySelector('.hsc-sub-tab-btn[data-hsc-tab="' + target + '"]');
             if (!btn) return;
-            var target = btn.getAttribute('data-hsc-tab');
             view.querySelectorAll('.hsc-sub-tab-btn').forEach(function (b) { b.classList.remove('active'); });
             btn.classList.add('active');
             view.querySelectorAll('.hsc-sub-tab-content').forEach(function (c) { c.style.display = 'none'; });
@@ -9114,7 +9307,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var manageContainer = view.querySelector('#hscManageContainer');
                 if (manageContainer && !manageContainer.dataset.loaded) loadHscManageTab(view);
             }
-        });
+        }
 
 
         startStatusPolling(view);
