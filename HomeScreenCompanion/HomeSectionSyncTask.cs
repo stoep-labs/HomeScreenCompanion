@@ -152,26 +152,20 @@ namespace HomeScreenCompanion
                         var existing = _userManager.GetHomeSections(targetInternalId, cancellationToken);
                         string targetKey = NormId(targetIdStr);
 
-                        // Rows HSC manages per user that an earlier sync copied here although they
-                        // are not this user's: say what is removed or re-pointed.
+                        // Per-user HSC playlist rows (e.g. Your Next Watch) that an earlier sync copied
+                        // here pointing at another user's playlist: say what is re-pointed or removed.
+                        // Shared rows (top lists, tag/collection/items rows) are never removed.
                         foreach (var s in existing?.Sections ?? Array.Empty<ContentSection>())
                         {
-                            var row = managed.Match(s, null);
+                            var row = managed.PlaylistRow(s);
                             if (row == null) continue;
                             string label = s.CustomName ?? s.Name ?? row.Name;
-                            if (row.IsPlaylist)
-                            {
-                                if (string.IsNullOrEmpty(s.ParentId) || !managed.PlaylistOwners.TryGetValue(s.ParentId, out var owner) || owner == targetKey) continue;
-                                string ownerName = UserName(owner);
-                                if (row.PlaylistFor(targetKey) != null)
-                                    _log.Info($"  {targetName}: '{label}' row pointed at {ownerName}'s playlist — now points at {targetName}'s own");
-                                else
-                                    _log.Skip($"{targetName}: removed copied '{label}' row (belongs to {ownerName})");
-                            }
-                            else if (!row.Targets.Contains(targetKey))
-                            {
-                                _log.Skip($"{targetName}: removed copied '{label}' row (not one of that row's target users)");
-                            }
+                            if (!managed.PlaylistOwners.TryGetValue(s.ParentId, out var owner) || owner == targetKey) continue;
+                            string ownerName = UserName(owner);
+                            if (row.PlaylistFor(targetKey) != null)
+                                _log.Info($"  {targetName}: '{label}' row pointed at {ownerName}'s playlist — now points at {targetName}'s own");
+                            else
+                                _log.Skip($"{targetName}: removed copied '{label}' row (belongs to {ownerName})");
                         }
 
                         if (existing?.Sections?.Length > 0)
@@ -189,8 +183,10 @@ namespace HomeScreenCompanion
                         foreach (var section in sourceSections.Sections)
                         {
                             var copy = CopySection(section);
-                            var row = managed.Match(section, sourceKey);
-                            if (row != null && row.IsPlaylist)
+                            // Only per-user HSC playlist rows are personalised; every other row
+                            // (top lists, tag/collection/items rows) is shared and copied to all targets.
+                            var row = managed.PlaylistRow(section);
+                            if (row != null)
                             {
                                 // A per-user playlist row: same place, but this user's own playlist.
                                 var own = row.PlaylistFor(targetKey);
@@ -200,11 +196,6 @@ namespace HomeScreenCompanion
                                     continue;
                                 }
                                 copy.ParentId = own;
-                            }
-                            else if (row != null && !row.Targets.Contains(targetKey))
-                            {
-                                _log.Debug($"  {targetName}: – '{section.CustomName ?? section.Name}' skipped (not one of that row's target users)");
-                                continue;
                             }
                             _log.Debug($"  {targetName}: + [{section.SectionType}] \"{section.CustomName ?? section.Name}\"");
                             _userManager.AddHomeSection(targetInternalId, copy, cancellationToken);
@@ -371,6 +362,10 @@ namespace HomeScreenCompanion
 
             // The HSC row a home section belongs to: a playlist row by the playlist it shows, else
             // the row tracked under this section id, else (HSC's own fallback) the row's name.
+            // A per-user HSC playlist row: the section shows one of HSC's per-user playlists.
+            public ManagedRow? PlaylistRow(ContentSection s)
+                => !string.IsNullOrEmpty(s.ParentId) && _byPlaylist.TryGetValue(s.ParentId, out var pr) ? pr : null;
+
             public ManagedRow? Match(ContentSection s, string? ownerKey)
             {
                 if (string.Equals(s.SectionType, "playlist", StringComparison.OrdinalIgnoreCase)
