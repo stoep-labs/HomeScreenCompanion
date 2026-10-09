@@ -157,6 +157,7 @@ namespace HomeScreenCompanion
     public class BadgeCustomiseInfoResponse
     {
         public List<ArtFontInfo> Fonts { get; set; } = new List<ArtFontInfo>();
+        public Dictionary<string, string> ShapeSamples { get; set; } = new Dictionary<string, string>();   // shape id -> JPEG data: URL
     }
 
     [Route("/HomeScreenCompanion/BadgeCustomPreview", "POST")]
@@ -166,6 +167,7 @@ namespace HomeScreenCompanion
         public string BadgeStyle { get; set; } = "";
         public string Options { get; set; } = "";
         public string TagName { get; set; } = "";
+        public string Variant { get; set; } = "";   // "primary" / "thumb": only that image; "" = both
     }
 
     // The collection art a source would get, from its unsaved settings. Changes nothing.
@@ -999,8 +1001,21 @@ public class HomeScreenCompanionService : IService
             {
                 string sample = "";
                 try { sample = BadgeFonts.Sample(f.Id); } catch (Exception ex) { _logger.Warn($"Badge font sample '{f.Id}' failed: {ex.Message}"); }
-                res.Fonts.Add(new ArtFontInfo { Id = f.Id, Name = f.Name, Group = "", Sample = sample });
+                res.Fonts.Add(new ArtFontInfo { Id = f.Id, Name = f.Name, Group = BadgeFonts.Group(f.Id), Sample = sample });
             }
+            try
+            {
+                var dir = Path.Combine(Plugin.Instance!.DataFolderPath, "collection_art", "_samples");
+                Directory.CreateDirectory(dir);
+                var standIn = Path.Combine(dir, "stand-in-0.jpg");
+                if (!File.Exists(standIn)) CollectionArtRenderer.DrawStandInPoster(0, standIn);
+                foreach (var shape in BadgeOptions.Shapes)
+                {
+                    try { res.ShapeSamples[shape] = BadgeRenderer.ShapeSample(shape, standIn, dir); }
+                    catch (Exception ex) { _logger.Warn($"Badge shape sample '{shape}' failed: {ex.Message}"); }
+                }
+            }
+            catch (Exception ex) { _logger.Warn($"Badge shape samples failed: {ex.Message}"); }
             return res;
         }
 
@@ -1033,7 +1048,7 @@ public class HomeScreenCompanionService : IService
                         if (!File.Exists(path)) CollectionArtRenderer.DrawStandInPoster(i, path);
                         posters.Add(path);
                     }
-                    var image = BadgeRenderer.Preview(BadgeLook.Combine(request.BadgeStyle, request.Options), posters, null, tempDir);
+                    var image = BadgeRenderer.Preview(BadgeLook.Combine(request.BadgeStyle, request.Options), posters, null, tempDir, (request.Variant ?? "").Trim().ToLowerInvariant());
                     return new ArtCustomPreviewResponse { Success = true, Image = image };
                 }
                 finally { try { Directory.Delete(tempDir, true); } catch { } }

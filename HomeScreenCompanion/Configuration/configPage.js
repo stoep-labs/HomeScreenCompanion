@@ -1094,6 +1094,18 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             '</div>';
     }
 
+    // The top-list badge's one Customise button is greyed (with a tooltip) when the choice has nothing to customise.
+    function custDisabledAttrs(disabled, tip) {
+        return disabled ? ' disabled title="' + escapeHtml(tip) + '"' : ' title="Customise"';
+    }
+    function setCustomiseEnabled(btn, enabled, tip) {
+        if (!btn) return;
+        btn.disabled = !enabled;
+        btn.title = enabled ? 'Customise' : tip;
+        btn.style.opacity = enabled ? '' : '0.45';
+        btn.style.cursor = enabled ? 'pointer' : 'not-allowed';
+    }
+
     // ── Customise popup (generated art) ──────────────────────────────────────────────
     // One screen for every poster and background picker (collection, tag, playlist): the same
     // fields for every style, starting at that style's own look (from the server). The live
@@ -1205,20 +1217,23 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var t = hints[field] || extra || '';
                 return '<div class="artc-hint"' + (t ? '' : ' style="display:none;"') + '>' + escapeHtml(t) + '</div>';
             }
+            // Only fields that change the art are shown: Ranked keeps its own rows, posters and
+            // background (the server's hint for those says so), and the title fields need the title on.
+            function shown(f) {
+                if ((f === 'rows' || f === 'posters' || f === 'darken') && hints[f]) return false;
+                if (!state.title && ['font', 'pos', 'size', 'case', 'colour'].indexOf(f) >= 0) return false;
+                // Bebas Neue and Luckiest Guy have capitals only: UPPER / As typed look the same.
+                if (f === 'case' && ['bebas', 'luckiestguy'].indexOf(state.font) >= 0) return false;
+                return true;
+            }
             function field(label, html, f, extra) {
+                if (!shown(f)) return '';
                 if (f === 'posters') extra = postersHintText();
                 return '<div class="artc-field" data-f="' + f + '"><div class="artc-label">' + label + '</div>' + html + hint(f, extra) + '</div>';
             }
             function render() {
                 var titleOff = state.title ? '' : 'The title is off.';
-                var groups = {};
-                info.Fonts.forEach(function (f) { (groups[f.Group] = groups[f.Group] || []).push(f); });
-                var fonts = '<div class="artc-fonts">' + Object.keys(groups).map(function (g) {
-                    return '<div class="artc-fontgroup">' + escapeHtml(g) + '</div>' + groups[g].map(function (f) {
-                        return '<button type="button" class="artc-font' + (state.font === f.Id ? ' artc-on' : '') + '" data-value="' + f.Id + '" title="' + escapeHtml(f.Name) + '">'
-                            + (f.Sample ? '<img src="' + f.Sample + '" alt="' + escapeHtml(f.Name) + '" />' : escapeHtml(f.Name)) + '</button>';
-                    }).join('');
-                }).join('') + '</div>';
+                var fonts = fontTilesHtml(info.Fonts, state.font);
                 var dots = '<div class="artc-pos">' + ['tl', 'tc', 'tr', 'ml', 'mc', 'mr', 'bl', 'bc', 'br'].map(function (p) {
                     return '<button type="button" class="artc-dot' + (state.pos === p ? ' artc-on' : '') + '" data-value="' + p + '" title="' + p + '"><span></span></button>';
                 }).join('') + '</div>';
@@ -1244,7 +1259,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         field('Size', seg('size', [['s', 'S'], ['m', 'M'], ['l', 'L']]), 'size', titleOff) +
                         field('Case', seg('case', [['upper', 'UPPER'], ['typed', 'As typed']]), 'case', titleOff) +
                         field('Colour', swatches, 'colour', titleOff) +
-                        '<div class="artc-section">Darken</div>' +
+                        (shown('darken') ? '<div class="artc-section">Darken</div>' : '') +
                         field('Darken <span class="artc-darkval">' + state.darken + '%</span>', '<input type="range" class="artc-darken" min="0" max="80" step="1" value="' + state.darken + '" />', 'darken') +
                       '</div>' +
                     '</div>';
@@ -1281,7 +1296,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 body.querySelectorAll('.artc-dot').forEach(function (b) { b.addEventListener('click', function () { set('pos', b.dataset.value); }); });
                 body.querySelectorAll('.artc-swatch').forEach(function (b) { b.addEventListener('click', function () { set('colour', b.dataset.value); }); });
                 var hex = body.querySelector('.artc-hex');
-                hex.addEventListener('input', function () {
+                if (hex) hex.addEventListener('input', function () {
                     var v = hex.value.trim().toLowerCase();
                     if (v && v[0] !== '#') v = '#' + v;
                     if (/^#[0-9a-f]{6}$/.test(v)) {
@@ -1291,7 +1306,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     }
                 });
                 var dark = body.querySelector('.artc-darken');
-                dark.addEventListener('input', function () {
+                if (dark) dark.addEventListener('input', function () {
                     state.darken = parseInt(dark.value, 10) || 0;
                     body.querySelector('.artc-darkval').textContent = state.darken + '%';
                     refreshPreview();
@@ -6233,9 +6248,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var esc = function (v) { return String(v || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); };
         var cardBase = 'cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 12px;border-radius:6px;border:2px solid transparent;transition:border-color 0.15s;min-width:96px;';
         var on = 'border-color:#52B54B;', off = 'border-color:var(--line-color,rgba(255,255,255,0.12));';
-        var custBtn = function (k) {
-            return '<button type="button" class="btnBadgeCustomise" data-kind="' + k + '" style="cursor:pointer;background:transparent;border:1px solid rgba(128,128,128,0.35);color:var(--theme-text-secondary);font-size:0.78em;padding:3px 8px;border-radius:4px;display:inline-flex;align-items:center;gap:3px;"><i class="md-icon" style="font-size:1.1em;">settings</i>Customise</button>';
-        };
+        // Same Customise chip as the art pickers, under the tiles (greyed for No number).
+        var custBtn = '<button type="button" is="emby-button" class="btnBadgeCustomise raised"' + custDisabledAttrs(kind === 'none', BADGE_NOTHING_TIP) + ' style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;' + (kind === 'none' ? 'opacity:0.45;cursor:not-allowed;' : '') + '"><i class="md-icon" style="font-size:1em; margin-right:4px;">settings</i><span>Customise</span></button>';
         var opts = [
             { k: 'badge', label: 'Number badge', art: '<div class="tl-badge-swatch" style="width:46px;height:46px;border-radius:50%;background:' + presetBg + ';display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;color:#fff;font-family:sans-serif;">7</div>' },
             { k: 'top10', label: 'Top 10 tile', art: '<div style="width:82px;height:46px;border-radius:4px;background:#141414;display:flex;align-items:flex-end;justify-content:center;gap:2px;overflow:hidden;"><span style="font-size:44px;line-height:40px;font-weight:900;color:#141414;-webkit-text-stroke:1.5px #9696a0;font-family:Impact,sans-serif;">7</span><span style="width:24px;height:36px;margin-bottom:5px;border-radius:2px;background:linear-gradient(160deg,#6b7a8f,#2c3440);"></span></div>' },
@@ -6248,18 +6262,18 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:stretch;">' +
             opts.map(function (o) {
                 var active = o.k === kind;
-                return '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;">' +
-                    '<label class="tl-badge-opt" data-kind="' + o.k + '" style="' + cardBase + (active ? on : off) + '">' +
+                return '<label class="tl-badge-opt" data-kind="' + o.k + '" style="' + cardBase + (active ? on : off) + '">' +
                     '<input type="radio" name="tlBadgeStyle" value="' + o.k + '" style="position:absolute;opacity:0;pointer-events:none;"' + (active ? ' checked' : '') + '>' +
-                    o.art + '<span style="font-size:0.78em;opacity:0.8;white-space:nowrap;">' + o.label + '</span></label>' +
-                    (o.k !== 'none' ? custBtn(o.k) : '') +
-                    '</div>';
+                    o.art + '<span style="font-size:0.78em;opacity:0.8;white-space:nowrap;">' + o.label + '</span></label>';
             }).join('') +
             '</div>' +
-            '<div class="tl-badge-custom-note fieldDescription" style="margin-top:6px;' + (optionsJson ? '' : 'display:none;') + '">Customised (⚙ Customise to change or reset).</div>' +
+            '<div class="tl-badge-custom-row" style="display:flex;align-items:center;gap:8px;margin-top:8px;">' + custBtn +
+                '<span class="tl-badge-custom-note fieldDescription" style="margin:0;' + (optionsJson ? '' : 'display:none;') + '">Customised</span>' +
+            '</div>' +
             '</div>';
     }
 
+    var BADGE_NOTHING_TIP = 'Nothing to customise for No number';
     function initBadgePicker(container, tagName) {
         if (container && container.dataset) container.dataset.tlTag = tagName || '';
         var opts = Array.from(container.querySelectorAll('.tl-badge-opt'));
@@ -6269,26 +6283,24 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 label.style.borderColor = '#52B54B';
             });
         });
-        container.querySelectorAll('.btnBadgeCustomise').forEach(function (btn) {
+        // One Customise button: opens the popup for the selected type; greyed for No number.
+        container.querySelectorAll('.tl-badge-picker').forEach(function (picker) {
+            var btn = picker.querySelector('.btnBadgeCustomise');
+            if (!btn) return;
+            function sync() {
+                var checked = picker.querySelector('input[name="tlBadgeStyle"]:checked');
+                setCustomiseEnabled(btn, !!checked && checked.value !== 'none', BADGE_NOTHING_TIP);
+                // "Customised" only for the type the options were made for.
+                var note = picker.querySelector('.tl-badge-custom-note'), optsIn = picker.querySelector('.tl-badge-opts');
+                if (note && optsIn) note.style.display = checked && checked.value !== 'none' && optsIn.value && (!optsIn.dataset.optkind || optsIn.dataset.optkind === checked.value) ? '' : 'none';
+            }
+            picker.addEventListener('change', sync);
+            sync();
             btn.addEventListener('click', function (e) {
                 e.preventDefault(); e.stopPropagation();
-                var picker = btn.closest('.tl-badge-picker');
-                // Customise also picks that type.
-                var radio = picker.querySelector('input[name="tlBadgeStyle"][value="' + btn.dataset.kind + '"]');
-                var before = picker.querySelector('input[name="tlBadgeStyle"]:checked');
-                var undo = null;
-                if (radio && !radio.checked) {
-                    undo = function () {
-                        if (!before) return;
-                        before.checked = true;
-                        before.dispatchEvent(new Event('change', { bubbles: true }));
-                        opts.forEach(function (l) { l.style.borderColor = l.dataset.kind === before.value ? '#52B54B' : 'var(--line-color,rgba(255,255,255,0.12))'; });
-                    };
-                    radio.checked = true;
-                    radio.dispatchEvent(new Event('change', { bubbles: true }));
-                    opts.forEach(function (l) { l.style.borderColor = l.dataset.kind === btn.dataset.kind ? '#52B54B' : 'var(--line-color,rgba(255,255,255,0.12))'; });
-                }
-                openBadgeCustomise(picker, btn.dataset.kind, container, undo);
+                var checked = picker.querySelector('input[name="tlBadgeStyle"]:checked');
+                if (!checked || checked.value === 'none') return;
+                openBadgeCustomise(picker, checked.value, container, null);
             });
         });
     }
@@ -6329,6 +6341,23 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         if (kind === 'top10') return num === 'outline' ? '#141414' : num === 'gradient' ? '#52b54b' : '#ececf0';
         return num === 'gradient' ? '#52b54b' : '#ffffff';
     }
+    // Font tiles for both Customise popups, grouped (General / Horror / …); each tile is the
+    // server's sample of the font (its name drawn in the font). The list sits in the popup's
+    // normal flow — no inner scroll box.
+    function fontTilesHtml(fonts, selected) {
+        var groups = {}, order = [];
+        fonts.forEach(function (f) {
+            var g = f.Group || 'General';
+            if (!groups[g]) { groups[g] = []; order.push(g); }
+            groups[g].push(f);
+        });
+        return '<div class="artc-fonts">' + order.map(function (g) {
+            return '<div class="artc-fontgroup">' + escapeHtml(g) + '</div>' + groups[g].map(function (f) {
+                return '<button type="button" class="artc-font' + (selected === f.Id ? ' artc-on' : '') + '" data-value="' + f.Id + '" title="' + escapeHtml(f.Name) + '" aria-label="' + escapeHtml(f.Name) + '">'
+                    + (f.Sample ? '<img src="' + f.Sample + '" alt="' + escapeHtml(f.Name) + '" />' : '<span class="artc-fontname">' + escapeHtml(f.Name) + '</span>') + '</button>';
+            }).join('');
+        }).join('') + '</div>';
+    }
     var _badgeInfoPromise = null;
     function getBadgeCustomiseInfo() {
         if (!_badgeInfoPromise)
@@ -6364,14 +6393,30 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var preset = presetInput.value || 'neutral';
             state.colour = stored.colour || preset;
             if (stored.numcolour == null) state.numcolour = badgeNumDefault(kind, state.num);
+            // Big numeral's own look for the number fields it was saved without.
+            var BIG_KEYS = ['font', 'num', 'numcolour', 'outcolour'];
+            var BIG_LOOK = { font: 'anton', num: 'outline', numcolour: '#000000', outcolour: '#ffffff' };
+            if (!tile && state.shape === 'bigoutline') BIG_KEYS.forEach(function (k) { if (stored[k] == null) state[k] = BIG_LOOK[k]; });
+            // Two previews, one per image the row can use; the list's Image Type picks the one in use.
+            var imgSel = container && container.querySelector && container.querySelector('.tlm-image-type, .mtlImageType');
+            var imageType = imgSel ? imgSel.value : '';
+            var inUse = imageType === 'Thumb' ? 'thumb' : 'primary';
+            var imageTypeLabel = imageType ? imageType : 'Auto (Primary)';
+            var VARIANTS = tile
+                ? [{ id: 'thumb', label: 'Thumb (landscape) — used when the list\'s Image Type is Thumb' }, { id: 'primary', label: 'Primary (poster card) — used when the list\'s Image Type is Primary' }]
+                : [{ id: 'primary', label: 'Primary (poster) — used when the list\'s Image Type is Primary' }, { id: 'thumb', label: 'Thumb (landscape) — used when the list\'s Image Type is Thumb' }];
+            VARIANTS.sort(function (a, b) { return (a.id === inUse ? 0 : 1) - (b.id === inUse ? 0 : 1); });
             render();
 
             function toOptions() {
                 var out = {}, any = false;
                 BADGE_FIELDS.forEach(function (k) {
                     if (k === 'colour') { if (state.colour && state.colour[0] === '#') { out.colour = state.colour; any = true; } return; }
-                    if (k === 'numcolour' && state.numcolour === badgeNumDefault(kind, state.num)) return;
-                    if (state[k] === def[k]) return;
+                    // Big numeral draws its own look (Anton, outline, white edge) for unset fields, so
+                    // its number fields are always stored: the preview shows what is selected.
+                    var big = !tile && state.shape === 'bigoutline' && BIG_KEYS.indexOf(k) >= 0;
+                    if (!big && k === 'numcolour' && state.numcolour === badgeNumDefault(kind, state.num)) return;
+                    if (!big && state[k] === def[k]) return;
                     out[k] = state[k]; any = true;
                 });
                 return any ? JSON.stringify(out) : '';
@@ -6383,57 +6428,103 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     return '<button type="button" class="artc-segbtn' + (String(state[f]) === String(o[0]) ? ' artc-on' : '') + '" data-value="' + o[0] + '">' + o[1] + '</button>';
                 }).join('') + '</div>';
             }
+            // Longer option lists: an even grid of equal-width buttons (wraps cleanly).
+            function segGrid(f, opts) {
+                return '<div class="artc-seg artc-grid" data-field="' + f + '">' + opts.map(function (o) {
+                    return '<button type="button" class="artc-segbtn' + (String(state[f]) === String(o[0]) ? ' artc-on' : '') + '" data-value="' + o[0] + '">' + o[1] + '</button>';
+                }).join('') + '</div>';
+            }
             function colours(f, list) {
                 return '<div class="artc-colours" data-field="' + f + '">' + list.map(function (c) {
                     return '<button type="button" class="artc-swatch' + (state[f] === c[0] ? ' artc-on' : '') + '" data-value="' + c[0] + '" title="' + c[1] + '" style="background:' + (c[2] || c[0]) + ';"></button>';
                 }).join('') + '<input type="text" class="artc-hex" data-field="' + f + '" maxlength="7" value="' + escapeHtml(state[f] && state[f][0] === '#' ? state[f] : '') + '" placeholder="#rrggbb" spellcheck="false" /></div>';
             }
+            // Only fields that change the picture for this type (and shape) are shown.
+            function shown(f) {
+                var noNumber = !tile && state.shape === 'hidden';
+                var backed = ['circle', 'roundsq', 'pill', 'ribbon', 'banner', 'diag', 'netflix'].indexOf(state.shape) >= 0;
+                switch (f) {
+                    case 'font': case 'num': case 'medal': case 'special': return !noNumber;
+                    case 'numcolour': return !noNumber && state.num !== 'metallic';
+                    case 'outcolour': case 'outline': return !noNumber && (state.num === 'outline' || (!tile && state.shape === 'bigoutline' && state.num === 'filled'));
+                    case 'size': return !tile && !noNumber && state.shape !== 'bigoutline';
+                    case 'shape': return !tile;
+                    case 'colour': return !tile && backed;
+                    case 'shadow': return tile || (!noNumber && state.shape !== 'numonly');
+                    case 'pos': return !tile && (!noNumber || state.move || state.logo);
+                    case 'tilepos': case 'tilebg': return tile;
+                    case 'tilebgcolour': return tile && state.tilebg === 'solid';
+                    default: return true;
+                }
+            }
+            function specialOpts() {
+                var o = [['', 'None']];
+                if (tile || state.shape !== 'bigoutline') o.push(['bigger', 'Bigger']);
+                o.push(['crown', 'Crown']);
+                if (tile || (state.shape !== 'numonly' && state.shape !== 'bigoutline')) o.push(['glow', 'Glow']);
+                return o;
+            }
+            function section(title, inner) { return inner ? '<div class="artc-section">' + title + '</div>' + inner : ''; }
             function field(label, html, f, note) {
+                if (!shown(f)) return '';
                 return '<div class="artc-field" data-f="' + f + '"><div class="artc-label">' + label + '</div>' + html +
                     '<div class="artc-hint"' + (note ? '' : ' style="display:none;"') + '>' + escapeHtml(note || '') + '</div></div>';
             }
             function render() {
-                var badgeOnly = tile ? 'Number badge only.' : '';
-                var tileOnly = tile ? '' : 'Top 10 tile only.';
-                var fonts = '<div class="artc-fonts">' + info.Fonts.map(function (f) {
-                    return '<button type="button" class="artc-font' + (state.font === f.Id ? ' artc-on' : '') + '" data-value="' + f.Id + '" title="' + escapeHtml(f.Name) + '">' +
-                        (f.Sample ? '<img src="' + f.Sample + '" alt="' + escapeHtml(f.Name) + '" />' : escapeHtml(f.Name)) + '</button>';
+                var fonts = fontTilesHtml(info.Fonts, state.font);
+                var SHAPES = [['circle', 'Circle'], ['roundsq', 'Rounded square'], ['pill', 'Pill #1'], ['ribbon', 'Ribbon'], ['banner', 'Flag'], ['diag', 'Diagonal'], ['netflix', 'TOP 10 square'], ['numonly', 'Number only'], ['bigoutline', 'Big numeral'], ['hidden', 'None (extras only)']];
+                var shapes = '<div class="artc-shapes" data-field="shape">' + SHAPES.map(function (o) {
+                    var img = info.ShapeSamples && info.ShapeSamples[o[0]];
+                    return '<button type="button" class="artc-shape' + (state.shape === o[0] ? ' artc-on' : '') + '" data-value="' + o[0] + '" title="' + escapeHtml(o[1]) + '">' +
+                        (img ? '<img src="' + img + '" alt="" />' : '<span class="artc-shape-noimg"></span>') + '<span class="artc-shape-name">' + escapeHtml(o[1]) + '</span></button>';
                 }).join('') + '</div>';
+                // Mini poster with a dot at each place the number can go.
+                var POS = [['tl', 'Top left'], ['tr', 'Top right'], ['bl', 'Bottom left'], ['bc', 'Bottom centre'], ['br', 'Bottom right']];
+                // Flag and diagonal sit on an edge: no bottom-centre spot.
+                if (state.shape === 'banner' || state.shape === 'diag') POS = POS.filter(function (p) { return p[0] !== 'bc'; });
+                var posOn = POS.some(function (p) { return p[0] === state.pos; }) ? state.pos : 'bl';   // bc draws as bottom left there
+                var posName = POS.filter(function (p) { return p[0] === posOn; })[0][1];
+                var posPicker = '<div class="artc-posrow"><div class="artc-posposter" data-field="pos">' + POS.map(function (p) {
+                    return '<button type="button" class="artc-posdot artc-pos-' + p[0] + (posOn === p[0] ? ' artc-on' : '') + '" data-value="' + p[0] + '" title="' + p[1] + '" aria-label="' + p[1] + '"><span></span></button>';
+                }).join('') + '</div><span class="artc-posname">' + escapeHtml(posName) + '</span></div>';
                 var badgeCols = BADGE_PRESETS.map(function (p) { return [p.val, p.label, p.bg]; });
                 var shapeNote = ['ribbon', 'diag', 'banner'].indexOf(state.shape) >= 0 ? 'This shape uses the left or right edge (top or bottom for flag/diagonal).' : state.shape === 'netflix' ? 'Red unless you pick a hex colour.' : '';
                 body.innerHTML =
                     '<div class="artc-wrap">' +
                       '<div class="artc-previewcol" style="width:420px;">' +
-                        '<div class="artc-preview" style="width:100%;min-height:120px;"><img class="artc-img" alt="" style="height:auto;" /><div class="artc-busy">Drawing…</div></div>' +
-                        '<div class="fieldDescription" style="margin-top:6px;">Ranks #1, #3 and #10 drawn by the server' + (tile ? ' (landscape tile above, poster-row card below)' : '') + '. Movement, weeks and plays show sample values.</div>' +
+                        VARIANTS.map(function (v) {
+                            return '<div class="artc-variant" data-variant="' + v.id + '">' +
+                                '<div class="artc-variant-label">' + escapeHtml(v.label) + (v.id === inUse ? ' <span class="artc-inuse">In use</span>' : '') + '</div>' +
+                                '<div class="artc-preview" style="width:100%;min-height:90px;"><img class="artc-img" alt="" style="height:auto;" /><div class="artc-busy">Drawing…</div></div>' +
+                            '</div>';
+                        }).join('') +
+                        '<div class="fieldDescription" style="margin-top:6px;">Ranks #1, #3 and #10 drawn by the server. This list\'s Image Type is ' + escapeHtml(imageTypeLabel) + '. Movement, weeks and plays show sample values.</div>' +
                       '</div>' +
                       '<div class="artc-fieldscol">' +
-                        '<div class="artc-section">Number</div>' +
-                        field('Font', fonts, 'font') +
-                        field('Style', seg('num', [['filled', 'Filled'], ['outline', 'Outline'], ['gradient', 'Gradient'], ['metallic', 'Metallic']]), 'num') +
-                        field('Number colour', colours('numcolour', NUM_COLOURS), 'numcolour', state.num === 'metallic' ? 'Metallic uses chrome.' : '') +
-                        field('Outline colour', colours('outcolour', OUT_COLOURS), 'outcolour', state.num !== 'outline' ? 'Used by the Outline style.' : '') +
-                        field('Outline', seg('outline', [['thin', 'Thin'], ['normal', 'Normal'], ['thick', 'Thick']]), 'outline', state.num !== 'outline' ? 'Used by the Outline style.' : '') +
-                        field('Size', seg('size', [['s', 'S'], ['m', 'M'], ['l', 'L'], ['xl', 'XL']]), 'size', badgeOnly || (tile ? '' : '')) +
-                        '<div class="artc-section">Shape</div>' +
-                        field('Shape', seg('shape', [['circle', 'Circle'], ['roundsq', 'Rounded square'], ['pill', 'Pill #1'], ['ribbon', 'Ribbon'], ['banner', 'Flag'], ['diag', 'Diagonal'], ['netflix', 'TOP 10 square'], ['numonly', 'Number only'], ['bigoutline', 'Big numeral'], ['hidden', 'None (extras only)']]), 'shape', badgeOnly || shapeNote) +
-                        '<div class="artc-section">Colours</div>' +
-                        field('Badge colour', colours('colour', badgeCols), 'colour', badgeOnly) +
-                        field('Medal colours for 1–3', seg('medal', [['', 'Off'], ['flat', 'Flat'], ['metal', 'Metallic']]), 'medal') +
-                        field('Shadow', seg('shadow', [[false, 'Off'], [true, 'On']]), 'shadow') +
-                        '<div class="artc-section">Position</div>' +
-                        field('Number badge', seg('pos', [['tl', 'Top left'], ['tr', 'Top right'], ['bl', 'Bottom left'], ['br', 'Bottom right'], ['bc', 'Bottom centre']]), 'pos', badgeOnly) +
-                        field('Top 10 tile', seg('tilepos', [['beside', 'Beside the poster'], ['behind', 'Tucked behind']]), 'tilepos', tileOnly) +
-                        '<div class="artc-section">Tile background</div>' +
-                        field('Background', seg('tilebg', [['flat', 'Flat #141414'], ['solid', 'Solid colour'], ['blur', 'Blurred poster']]), 'tilebg', tileOnly) +
-                        field('Solid colour', colours('tilebgcolour', [['#16223a', 'Navy'], ['#1e1e22', 'Charcoal'], ['#2a0a0a', 'Dark red'], ['#0f2a16', 'Dark green']]), 'tilebgcolour', tileOnly || (state.tilebg !== 'solid' ? 'Used by Solid colour.' : '')) +
-                        '<div class="artc-section">#1 special</div>' +
-                        field('Rank 1', seg('special', [['', 'None'], ['bigger', 'Bigger'], ['crown', 'Crown'], ['glow', 'Glow']]), 'special') +
-                        '<div class="artc-section">Extras</div>' +
-                        field('Rank movement ▲▼ / NEW', seg('move', [[false, 'Off'], [true, 'On']]), 'move', 'Compared with the list\'s previous ranking; shows after the list has been ranked twice.') +
-                        field('Weeks in the list', seg('weeks', [[false, 'Off'], [true, 'On']]), 'weeks', '"N wks in list" at the bottom of the poster.') +
-                        field('Plays', seg('plays', [[false, 'Off'], [true, 'On']]), 'plays', 'All users\' plays of the title (all time).') +
-                        field('TOP 10 logo', seg('logo', [[false, 'Off'], [true, 'On']]), 'logo', 'Red TOP 10 corner logo; with shape "None" it is the only mark.') +
+                        section('Number',
+                            field('Font', fonts, 'font') +
+                            field('Style', seg('num', [['filled', 'Filled'], ['outline', 'Outline'], ['gradient', 'Gradient'], ['metallic', 'Metallic']]), 'num') +
+                            field('Number colour', colours('numcolour', NUM_COLOURS), 'numcolour') +
+                            field('Outline colour', colours('outcolour', OUT_COLOURS), 'outcolour') +
+                            field('Outline', seg('outline', [['thin', 'Thin'], ['normal', 'Normal'], ['thick', 'Thick']]), 'outline') +
+                            field('Size', seg('size', [['s', 'S'], ['m', 'M'], ['l', 'L'], ['xl', 'XL']]), 'size')) +
+                        section('Shape', field('Shape', shapes, 'shape', shapeNote)) +
+                        section('Colours',
+                            field('Badge colour', colours('colour', state.shape === 'netflix' ? [] : badgeCols), 'colour', state.shape === 'netflix' ? 'The TOP 10 square is red unless you type a hex colour.' : '') +
+                            field('Medal colours for 1–3', seg('medal', [['', 'Off'], ['flat', 'Flat'], ['metal', 'Metallic']]), 'medal') +
+                            field('Shadow', seg('shadow', [[false, 'Off'], [true, 'On']]), 'shadow')) +
+                        section('Position',
+                            field('Number badge', posPicker, 'pos') +
+                            field('Top 10 tile', seg('tilepos', [['beside', 'Beside the poster'], ['behind', 'Tucked behind']]), 'tilepos')) +
+                        section('Tile background',
+                            field('Background', segGrid('tilebg', [['flat', 'Flat #141414'], ['solid', 'Solid colour'], ['blur', 'Blurred poster']]), 'tilebg') +
+                            field('Solid colour', colours('tilebgcolour', [['#16223a', 'Navy'], ['#1e1e22', 'Charcoal'], ['#2a0a0a', 'Dark red'], ['#0f2a16', 'Dark green']]), 'tilebgcolour')) +
+                        section('#1 special', field('Rank 1', seg('special', specialOpts()), 'special')) +
+                        section('Extras',
+                            field('Rank movement ▲▼ / NEW', seg('move', [[false, 'Off'], [true, 'On']]), 'move', 'Compared with the list\'s previous ranking; shows after the list has been ranked twice.') +
+                            field('Weeks in the list', seg('weeks', [[false, 'Off'], [true, 'On']]), 'weeks', '"N wks in list" at the bottom of the poster.') +
+                            field('Plays', seg('plays', [[false, 'Off'], [true, 'On']]), 'plays', 'All users\' plays of the title (all time).') +
+                            field('TOP 10 logo', seg('logo', [[false, 'Off'], [true, 'On']]), 'logo', tile ? 'Red TOP 10 logo in the corner of the poster card.' : 'Red TOP 10 corner logo; with shape "None" it is the only mark.')) +
                       '</div>' +
                     '</div>';
                 wire();
@@ -6441,8 +6532,16 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             }
             function set(f, v) {
                 if (f === 'num') { if (state.numcolour === badgeNumDefault(kind, state.num)) state.numcolour = badgeNumDefault(kind, v); }
+                // Switching to / from Big numeral moves untouched number fields to that shape's look.
+                if (f === 'shape' && !tile && (v === 'bigoutline') !== (state.shape === 'bigoutline')) {
+                    var toBig = v === 'bigoutline';
+                    var from = toBig ? normalLook() : BIG_LOOK, to = toBig ? BIG_LOOK : normalLook();
+                    BIG_KEYS.forEach(function (k) { if (state[k] === from[k]) state[k] = to[k]; });
+                    if (!toBig && state.numcolour === BIG_LOOK.numcolour) state.numcolour = badgeNumDefault(kind, state.num);
+                }
                 state[f] = v; render();
             }
+            function normalLook() { return { font: def.font, num: def.num, numcolour: badgeNumDefault(kind, def.num), outcolour: def.outcolour }; }
             function wire() {
                 body.querySelectorAll('.artc-seg').forEach(function (g) {
                     g.querySelectorAll('.artc-segbtn').forEach(function (b) {
@@ -6453,6 +6552,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     });
                 });
                 body.querySelectorAll('.artc-font').forEach(function (b) { b.addEventListener('click', function () { set('font', b.dataset.value); }); });
+                body.querySelectorAll('.artc-shape').forEach(function (b) { b.addEventListener('click', function () { set('shape', b.dataset.value); }); });
+                body.querySelectorAll('.artc-posdot').forEach(function (b) { b.addEventListener('click', function () { set('pos', b.dataset.value); }); });
                 body.querySelectorAll('.artc-colours').forEach(function (g) {
                     var f = g.dataset.field;
                     g.querySelectorAll('.artc-swatch').forEach(function (b) { b.addEventListener('click', function () { set(f, b.dataset.value); }); });
@@ -6471,22 +6572,24 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var timer = null, seq = 0;
             function refreshPreview() {
                 clearTimeout(timer);
-                var busy = body.querySelector('.artc-busy');
-                if (busy) { busy.style.display = 'block'; busy.textContent = 'Drawing…'; }
+                body.querySelectorAll('.artc-variant .artc-busy').forEach(function (b) { b.style.display = 'block'; b.textContent = 'Drawing…'; });
                 timer = setTimeout(function () {
                     var mine = ++seq;
-                    fetch(window.ApiClient.getUrl('HomeScreenCompanion/BadgeCustomPreview'), {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
-                        body: JSON.stringify({ BadgeStyle: previewStyle(), Options: toOptions(), TagName: tagName })
-                    }).then(function (r) { return r.json(); }).then(function (res) {
-                        if (mine !== seq) return;
-                        var img = body.querySelector('.artc-img'), b = body.querySelector('.artc-busy');
-                        if (res.Success && img) { img.src = res.Image; if (b) b.style.display = 'none'; }
-                        else if (b) b.textContent = res.Message || 'Preview failed.';
-                    }).catch(function (e) {
-                        if (mine !== seq) return;
-                        var b = body.querySelector('.artc-busy'); if (b) b.textContent = 'Preview failed: ' + e.message;
+                    VARIANTS.forEach(function (v) {
+                        var box = function () { return body.querySelector('.artc-variant[data-variant="' + v.id + '"]'); };
+                        fetch(window.ApiClient.getUrl('HomeScreenCompanion/BadgeCustomPreview'), {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
+                            body: JSON.stringify({ BadgeStyle: previewStyle(), Options: toOptions(), TagName: tagName, Variant: v.id })
+                        }).then(function (r) { return r.json(); }).then(function (res) {
+                            if (mine !== seq || !box()) return;
+                            var img = box().querySelector('.artc-img'), b = box().querySelector('.artc-busy');
+                            if (res.Success && img) { img.src = res.Image; if (b) b.style.display = 'none'; }
+                            else if (b) b.textContent = res.Message || 'Preview failed.';
+                        }).catch(function (e) {
+                            if (mine !== seq || !box()) return;
+                            var b = box().querySelector('.artc-busy'); if (b) b.textContent = 'Preview failed: ' + e.message;
+                        });
                     });
                 }, 300);
             }

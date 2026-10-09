@@ -171,18 +171,29 @@ namespace HomeScreenCompanion
             }
         }
 
-        /// <summary>"1 3 10" drawn in the font (PNG data: URL) for the popup's font buttons.</summary>
+        /// <summary>The font's group in the art popup (Lemon Milk, the badge's own font, is General).</summary>
+        public static string Group(string id) => ArtFonts.All.FirstOrDefault(f => f.Id == id)?.Group ?? "General";
+
+        private static readonly Dictionary<string, string> SampleCache = new Dictionary<string, string>();
+
+        /// <summary>The font's name (small) over "1234567890", both drawn in the font (PNG data: URL), for the popup's font tiles.</summary>
         public static string Sample(string id)
         {
-            const int w = 240, h = 56;
+            lock (SampleCache) if (SampleCache.TryGetValue(id, out var cached)) return cached;
+            var name = All.FirstOrDefault(f => f.Id == id).Name ?? id;
+            const int w = 360, h = 100;
             using var surface = SKSurface.Create(new SKImageInfo(w, h, SKColorType.Rgba8888, SKAlphaType.Premul));
             var c = surface.Canvas;
             c.Clear(SKColors.Transparent);
             using var p = new SKPaint { Typeface = Face(id), Color = SKColors.White, IsAntialias = true, TextAlign = SKTextAlign.Center };
-            BadgeRenderer.DrawFit(c, "1 3 10", p, w / 2f, h / 2f, w - 16, h - 18);
+            BadgeRenderer.DrawFit(c, name, p, w / 2f, 20, w - 40, 22);
+            using var d = new SKPaint { Typeface = Face(id), Color = new SKColor(0xF5, 0xC5, 0x18), IsAntialias = true, TextAlign = SKTextAlign.Center };
+            BadgeRenderer.DrawFit(c, "1234567890", d, w / 2f, 66, w - 16, 40);
             using var img = surface.Snapshot();
             using var data = img.Encode(SKEncodedImageFormat.Png, 100);
-            return "data:image/png;base64," + Convert.ToBase64String(data.ToArray());
+            var url = "data:image/png;base64," + Convert.ToBase64String(data.ToArray());
+            lock (SampleCache) SampleCache[id] = url;
+            return url;
         }
     }
 
@@ -833,13 +844,52 @@ namespace HomeScreenCompanion
             DrawFit(c, "10", t2, box.MidX, box.Top + box.Height * 0.66f, box.Width * 0.7f, box.Height * 0.36f);
         }
 
+        private static readonly Dictionary<string, string> ShapeCache = new Dictionary<string, string>();
+
+        /// <summary>Rank #1 in the given shape on a stand-in poster, small (JPEG data: URL), for the popup's shape tiles.</summary>
+        internal static string ShapeSample(string shape, string standInPoster, string tempDir)
+        {
+            lock (ShapeCache) if (ShapeCache.TryGetValue(shape, out var cached)) return cached;
+            Directory.CreateDirectory(tempDir);
+            var outPath = Path.Combine(tempDir, "shape-" + shape + "-" + Guid.NewGuid().ToString("N") + ".jpg");
+            try
+            {
+                CustomBadge(standInPoster, 1, outPath, "neutral", BadgeOptions.Parse("{\"shape\":\"" + shape + "\",\"size\":\"l\"}"), null);
+                using var full = SKBitmap.Decode(outPath);
+                int w = 120, h = full.Height * w / full.Width;
+                using var surface = SKSurface.Create(new SKImageInfo(w, h));
+                using (var paint = new SKPaint { FilterQuality = SKFilterQuality.High, IsAntialias = true })
+                    surface.Canvas.DrawBitmap(full, SKRect.Create(0, 0, w, h), paint);
+                using var img = surface.Snapshot();
+                using var data = img.Encode(SKEncodedImageFormat.Jpeg, 85);
+                var url = "data:image/jpeg;base64," + Convert.ToBase64String(data.ToArray());
+                lock (ShapeCache) ShapeCache[shape] = url;
+                return url;
+            }
+            finally { try { if (File.Exists(outPath)) File.Delete(outPath); } catch { } }
+        }
+
+        // A 16:9 stand-in landscape cut from the middle of a poster (preview of a Thumb row).
+        private static string LandscapeFromPoster(string poster, string outPath)
+        {
+            using var src = SKBitmap.Decode(poster);
+            int w = src.Width, h = w * 9 / 16, y = Math.Max(0, (src.Height - h) / 2);
+            using var surface = SKSurface.Create(new SKImageInfo(w, h));
+            using (var paint = new SKPaint { FilterQuality = SKFilterQuality.High })
+                surface.Canvas.DrawBitmap(src, new SKRect(0, y, w, y + h), new SKRect(0, 0, w, h), paint);
+            using var img = surface.Snapshot();
+            using var data = img.Encode(SKEncodedImageFormat.Jpeg, 90);
+            File.WriteAllBytes(outPath, data.ToArray());
+            return outPath;
+        }
+
         // ── popup preview ────────────────────────────────────────────────────────────────
         /// <summary>
         /// Ranks #1, #3 and #10 drawn by the real code with the popup's look on the given posters
         /// (and a landscape image for the Number badge's thumb row). Returns a JPEG data: URL.
         /// Number badge: three posters. Top 10 tile: three tiles over three 4:3 cards.
         /// </summary>
-        internal static string Preview(string look, IList<string> posters, string? landscape, string tempDir)
+        internal static string Preview(string look, IList<string> posters, string? landscape, string tempDir, string? variant = null)
         {
             var (style, _) = BadgeLook.Split(look);
             bool tile = string.Equals(style, "top10", StringComparison.OrdinalIgnoreCase);
@@ -854,10 +904,14 @@ namespace HomeScreenCompanion
                 {
                     var p = posters[i % posters.Count];
                     var ob = Path.Combine(tempDir, "badge-preview-" + Guid.NewGuid().ToString("N"));
-                    RenderRanked(p, tile ? null : landscape, ranks[i], ob, look, samples[i], (w, ex) => throw ex);
+                    // variant "thumb" / "primary": only the image the list uses (Image Type); else both.
+                    string? land = landscape;
+                    if (!tile && variant == "thumb") land = LandscapeFromPoster(p, ob + "-land.jpg");
+                    RenderRanked(p, tile ? null : land, ranks[i], ob, look, samples[i], (w, ex) => throw ex);
                     if (tile)
                     {
-                        top.Add(SKBitmap.Decode(ob + "-thumb.jpg"));
+                        if (variant != "primary") top.Add(SKBitmap.Decode(ob + "-thumb.jpg"));
+                        if (variant == "thumb") { foreach (var f in new[] { ob + ".jpg", ob + "-thumb.jpg" }) try { if (File.Exists(f)) File.Delete(f); } catch { } continue; }
                         using var card = SKBitmap.Decode(ob + ".jpg");
                         int ch = card.Width * 3 / 4, cy = (card.Height - ch) / 2;
                         var cropped = new SKBitmap(card.Width, ch);
@@ -866,12 +920,16 @@ namespace HomeScreenCompanion
                     }
                     else
                     {
-                        top.Add(SKBitmap.Decode(ob + ".jpg"));
-                        if (landscape != null && File.Exists(ob + "-thumb.jpg")) bottom.Add(SKBitmap.Decode(ob + "-thumb.jpg"));
+                        if (variant == "thumb") top.Add(SKBitmap.Decode(ob + "-thumb.jpg"));
+                        else
+                        {
+                            top.Add(SKBitmap.Decode(ob + ".jpg"));
+                            if (land != null && File.Exists(ob + "-thumb.jpg")) bottom.Add(SKBitmap.Decode(ob + "-thumb.jpg"));
+                        }
                     }
-                    foreach (var f in new[] { ob + ".jpg", ob + "-thumb.jpg" }) try { if (File.Exists(f)) File.Delete(f); } catch { }
+                    foreach (var f in new[] { ob + ".jpg", ob + "-thumb.jpg", ob + "-land.jpg" }) try { if (File.Exists(f)) File.Delete(f); } catch { }
                 }
-                rows.Add(top);
+                if (top.Count > 0) rows.Add(top);
                 if (bottom.Count > 0) rows.Add(bottom);
 
                 const int W = 900, gap = 10;
