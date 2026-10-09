@@ -6364,6 +6364,60 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         });
     }
 
+    // Customised tile icons: when a type has saved options, its Number badge / Top 10 tile icon is
+    // drawn by the server with them (the popup's stand-in poster, small) in the same box as the
+    // default icon. One request per distinct look, cached for the page; no options = the default icon.
+    var _badgeIconCache = {};
+    function badgeIconImage(style, options, variant) {
+        var key = style + '|' + variant + '|' + options;
+        if (!_badgeIconCache[key])
+            _badgeIconCache[key] = fetch(window.ApiClient.getUrl('HomeScreenCompanion/BadgeCustomPreview'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
+                body: JSON.stringify({ BadgeStyle: style, Options: options, Variant: variant })
+            }).then(function (r) { return r.json(); }).then(function (res) {
+                if (!res.Success) throw new Error(res.Message || 'Preview failed');
+                return res.Image;
+            }).catch(function (e) { delete _badgeIconCache[key]; throw e; });
+        return _badgeIconCache[key];
+    }
+    function refreshBadgeTileIcons(picker, container) {
+        var optsIn = picker.querySelector('.tl-badge-opts'), presetIn = picker.querySelector('.tl-badge-preset');
+        if (!optsIn) return;
+        var imgSel = container && container.querySelector && container.querySelector('.tlm-image-type, .mtlImageType');
+        var variant = imgSel && imgSel.value === 'Thumb' ? 'thumb' : 'primary';
+        [['badge', 46], ['top10', 82]].forEach(function (t) {
+            var label = picker.querySelector('.tl-badge-opt[data-kind="' + t[0] + '"]');
+            if (!label) return;
+            var radio = label.querySelector('input[type="radio"]'), art = radio && radio.nextElementSibling;
+            if (!art) return;
+            var icon = label.querySelector('.tl-badge-custom-icon');
+            var options = optsIn.value && optsIn.dataset.optkind === t[0] ? optsIn.value : '';
+            if (!options) {
+                label.dataset.iconFor = '';
+                if (icon) icon.remove();
+                if (art.dataset.origDisplay != null) { art.style.display = art.dataset.origDisplay; delete art.dataset.origDisplay; }
+                return;
+            }
+            var style = t[0] === 'top10' ? 'top10' : (presetIn && presetIn.value) || 'neutral';
+            var token = style + '|' + variant + '|' + options;
+            label.dataset.iconFor = token;
+            badgeIconImage(style, options, variant).then(function (src) {
+                if (label.dataset.iconFor !== token) return;   // changed again meanwhile
+                var img = label.querySelector('.tl-badge-custom-icon');
+                if (!img) {
+                    img = document.createElement('img');
+                    img.className = 'tl-badge-custom-icon';
+                    img.alt = '';
+                    img.style.cssText = 'width:' + t[1] + 'px;height:46px;object-fit:contain;display:block;';
+                    art.parentNode.insertBefore(img, art.nextSibling);
+                }
+                img.src = src;
+                if (art.dataset.origDisplay == null) { art.dataset.origDisplay = art.style.display; art.style.display = 'none'; }
+            }).catch(function () { /* keep the default icon */ });
+        });
+    }
+
     var BADGE_NOTHING_TIP = 'Nothing to customise for No number';
     function initBadgePicker(container, tagName) {
         if (container && container.dataset) container.dataset.tlTag = tagName || '';
@@ -6388,6 +6442,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             }
             picker.addEventListener('change', sync);
             sync();
+            refreshBadgeTileIcons(picker, container);
             btn.addEventListener('click', function (e) {
                 e.preventDefault(); e.stopPropagation();
                 var checked = picker.querySelector('input[name^="tlBadgeStyle"]:checked');
@@ -6702,6 +6757,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 if (sw) sw.style.background = state.colour && state.colour[0] === '#' ? state.colour : (p ? p.bg : sw.style.background);
                 var note = picker.querySelector('.tl-badge-custom-note');
                 if (note) note.style.display = val ? '' : 'none';
+                refreshBadgeTileIcons(picker, container);
                 if (changed) {
                     optsInput.dispatchEvent(new Event('change', { bubbles: true }));
                     setTimeout(checkFormState, 0);
