@@ -771,11 +771,13 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         if (forPlaylist) { forTag = false; source = Object.assign({}, source, {
             CollectionName: source.PlaylistName || source.Name || source.Tag, CollectionPosterStyle: source.PlaylistPosterStyle,
             CollectionBackgroundStyle: source.PlaylistBackgroundStyle, CollectionArtTitle: source.PlaylistArtTitle,
-            CollectionBackgroundPath: source.PlaylistBackgroundPath
+            CollectionBackgroundPath: source.PlaylistBackgroundPath,
+            CollectionPosterOptions: source.PlaylistPosterOptions, CollectionBackgroundOptions: source.PlaylistBackgroundOptions
         }); }
         if (forTag) source = Object.assign({}, source, {
             CollectionName: source.Tag, CollectionPosterStyle: source.TagPosterStyle, CollectionBackgroundStyle: source.TagBackgroundStyle,
-            CollectionArtTitle: source.TagArtTitle, CollectionBackgroundPath: source.TagBackgroundPath
+            CollectionArtTitle: source.TagArtTitle, CollectionBackgroundPath: source.TagBackgroundPath,
+            CollectionPosterOptions: source.TagPosterOptions, CollectionBackgroundOptions: source.TagBackgroundOptions
         });
         var overlay = view.querySelector('#miPreviewModalOverlay');
         var body = overlay.querySelector('.mi-preview-body');
@@ -936,7 +938,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             CollectionBackgroundStyle: bg ? bg.value : '',
             CollectionBackgroundPath: (row.querySelector('.collection-tab .hiddenBgPath') || {}).value || '',
             CollectionSortToTop: !!(row.querySelector('.chkCollSortToTop') || {}).checked,
-            CollectionArtTitle: ((row.querySelector('.txtCollArtTitle') || {}).value || '').trim()
+            CollectionArtTitle: ((row.querySelector('.txtCollArtTitle') || {}).value || '').trim(),
+            CollectionPosterOptions: artOptsOf(row.querySelector('.collection-tab .coll-style-picker[data-kind="poster"]')),
+            CollectionBackgroundOptions: artOptsOf(row.querySelector('.collection-tab .coll-style-picker[data-kind="background"]'))
         };
     }
 
@@ -944,7 +948,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     // description, put on every playlist the source makes (also each Your Next Watch playlist).
     function readPlaylistLook(row) {
         var box = row.querySelector('.playlist-tab .pl-look');
-        if (!box) return { PlaylistDescription: '', PlaylistPosterPath: '', PlaylistPosterStyle: '', PlaylistBackgroundStyle: '', PlaylistBackgroundPath: '', PlaylistArtTitle: '' };
+        if (!box) return { PlaylistDescription: '', PlaylistPosterPath: '', PlaylistPosterStyle: '', PlaylistBackgroundStyle: '', PlaylistBackgroundPath: '', PlaylistArtTitle: '', PlaylistPosterOptions: '', PlaylistBackgroundOptions: '' };
         var poster = box.querySelector('.coll-style-picker[data-kind="poster"] input:checked');
         var bg = box.querySelector('.coll-style-picker[data-kind="background"] input:checked');
         return {
@@ -953,7 +957,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             PlaylistPosterStyle: poster ? poster.value : '',
             PlaylistBackgroundStyle: bg ? bg.value : '',
             PlaylistBackgroundPath: (box.querySelector('.hiddenBgPath') || {}).value || '',
-            PlaylistArtTitle: ((box.querySelector('.txtPlArtTitle') || {}).value || '').trim()
+            PlaylistArtTitle: ((box.querySelector('.txtPlArtTitle') || {}).value || '').trim(),
+            PlaylistPosterOptions: artOptsOf(box.querySelector('.coll-style-picker[data-kind="poster"]')),
+            PlaylistBackgroundOptions: artOptsOf(box.querySelector('.coll-style-picker[data-kind="background"]'))
         };
     }
 
@@ -965,8 +971,16 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             TagPosterStyle: poster ? poster.value : '',
             TagBackgroundStyle: bg ? bg.value : '',
             TagBackgroundPath: (row.querySelector('.tagname-tab .hiddenBgPath') || {}).value || '',
-            TagArtTitle: ((row.querySelector('.txtTagArtTitle') || {}).value || '').trim()
+            TagArtTitle: ((row.querySelector('.txtTagArtTitle') || {}).value || '').trim(),
+            TagPosterOptions: artOptsOf(row.querySelector('.tagname-tab .coll-style-picker[data-kind="poster"]')),
+            TagBackgroundOptions: artOptsOf(row.querySelector('.tagname-tab .coll-style-picker[data-kind="background"]'))
         };
+    }
+
+    // The Customise options kept in a style picker ('' = the style's own look).
+    function artOptsOf(picker) {
+        var input = picker && picker.querySelector('.coll-art-opts');
+        return input ? input.value || '' : '';
     }
 
     // The "Playlist look" block of the Playlist tab: the same pickers / upload boxes as the
@@ -989,7 +1003,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             </div>
                             <div style="margin-top:15px;">
                                 <p style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Playlist Poster</p>
-                                ${buildCollStylePickerHtml('poster', tc.PlaylistPosterStyle, 'playlist')}
+                                ${buildCollStylePickerHtml('poster', tc.PlaylistPosterStyle, 'playlist', tc.PlaylistPosterOptions)}
                                 <div class="pl-poster-upload" style="display:${tc.PlaylistPosterStyle ? 'none' : 'block'};">
                                     <div class="poster-preview-container" style="margin-bottom:8px; display:${tc.PlaylistPosterPath ? 'block' : 'none'};">
                                         <span class="poster-filename" style="font-size:0.85em; opacity:0.7;">${file(tc.PlaylistPosterPath)}</span>
@@ -1010,7 +1024,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             </div>
                             <div style="margin-top:15px;">
                                 <p style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Playlist Background</p>
-                                ${buildCollStylePickerHtml('background', tc.PlaylistBackgroundStyle, 'playlist')}
+                                ${buildCollStylePickerHtml('background', tc.PlaylistBackgroundStyle, 'playlist', tc.PlaylistBackgroundOptions)}
                                 <div class="pl-bg-upload" style="display:${tc.PlaylistBackgroundStyle ? 'none' : 'block'};">
                                     <div class="bg-preview-container" style="margin-bottom:8px; display:${tc.PlaylistBackgroundPath ? 'block' : 'none'};">
                                         <span class="bg-filename" style="font-size:0.85em; opacity:0.7;">${file(tc.PlaylistBackgroundPath)}</span>
@@ -1043,8 +1057,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     var COLLECTION_ART_STYLES = [['', 'Custom'], ['collage', 'Collage'], ['grid', 'Grid'], ['fan', 'Fan'], ['wall', 'Wall'],
                                  ['hero_strip', 'Hero strip'], ['spotlight', 'Spotlight split'], ['ranked', 'Ranked (Top 10)']];
     var _collPickerSeq = 0;
-    function buildCollStylePickerHtml(kind, selected, scope) {
+    function buildCollStylePickerHtml(kind, selected, scope, options) {
         var sel = selected || '';
+        var optsVal = (options || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
         var embyOwn = scope === 'tag' && kind === 'poster';
         var name = 'collStyle_' + kind + '_' + (++_collPickerSeq);
         var cardBase = 'cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 12px;border-radius:6px;border:2px solid transparent;transition:border-color 0.15s;';
@@ -1060,7 +1075,213 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     '<span style="font-size:0.78em;opacity:0.8;white-space:nowrap;">' + (o[0] || !embyOwn ? o[1] : "Emby's own") + '</span>' +
                     '</label>';
             }).join('') +
+            // Customise (generated styles only): opens the art popup; its options live here.
+            '<input type="hidden" class="coll-art-opts" value="' + optsVal + '" />' +
+            '<div class="coll-art-custom-row" style="flex-basis:100%;display:' + (sel ? 'flex' : 'none') + ';align-items:center;gap:8px;">' +
+                '<button type="button" is="emby-button" class="btnArtCustomise raised" style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">settings</i><span>Customise</span></button>' +
+                '<span class="coll-art-custom-note fieldDescription" style="margin:0;' + (options ? '' : 'display:none;') + '">Customised</span>' +
+            '</div>' +
             '</div>';
+    }
+
+    // ── Customise popup (generated art) ──────────────────────────────────────────────
+    // One screen for every poster and background picker (collection, tag, playlist): the same
+    // fields for every style, starting at that style's own look (from the server). The live
+    // preview is drawn by the server's renderer; nothing is drawn here. OK writes the changed
+    // fields (only those that differ from the style's look) into the picker's .coll-art-opts.
+    var _artInfoPromise = null;
+    function getArtCustomiseInfo() {
+        if (!_artInfoPromise)
+            _artInfoPromise = window.ApiClient.getJSON(window.ApiClient.getUrl('HomeScreenCompanion/ArtCustomiseInfo'))
+                .catch(function (e) { _artInfoPromise = null; throw e; });
+        return _artInfoPromise;
+    }
+
+    var ART_STYLE_NAMES = { collage: 'Collage', grid: 'Grid', fan: 'Fan', wall: 'Wall', hero_strip: 'Hero strip', spotlight: 'Spotlight split', ranked: 'Ranked (Top 10)' };
+    var ART_FIELDS = ['tilt', 'rows', 'posters', 'title', 'font', 'pos', 'size', 'case', 'colour', 'darken'];
+    var ART_COLOURS = [['#ffffff', 'White'], ['#f5c518', 'Gold'], ['#e50914', 'Red'], ['#ff7a00', 'Orange'], ['#7fd4ff', 'Ice blue'], ['#ff6fb5', 'Pink'], ['#9be37a', 'Green'], ['#111111', 'Black']];
+
+    // The style's own value of every field (from the server's defaults).
+    function artDefaultsToState(d) {
+        return { tilt: d.Tilt, rows: d.Rows || 0, posters: d.Posters || 0, title: !!d.ShowTitle, font: d.Font, pos: d.Pos,
+                 size: d.Size, 'case': d.Case, colour: (d.Colour || '#ffffff').toLowerCase(), darken: d.Darken || 0 };
+    }
+
+    // Changed fields only, as stored ('' when nothing differs from the style's look).
+    function artStateToOptions(state, def) {
+        var out = {}, any = false;
+        ART_FIELDS.forEach(function (k) {
+            if (state[k] === def[k]) return;
+            if ((k === 'rows' || k === 'posters') && !state[k]) return;
+            out[k] = state[k]; any = true;
+        });
+        return any ? JSON.stringify(out) : '';
+    }
+
+    function openArtCustomise(picker) {
+        var view = picker.closest('#HomeScreenCompanionConfigPage') || activeView();
+        var row = picker.closest('.tag-row');
+        var overlay = view.querySelector('#artCustomiseModalOverlay');
+        var checked = picker.querySelector('input[type=radio]:checked');
+        var style = checked ? checked.value : '';
+        if (!overlay || !style) return;
+        var kind = picker.dataset.kind, scope = picker.dataset.scope || 'collection';
+        var bg = kind === 'background';
+        var optsInput = picker.querySelector('.coll-art-opts');
+        var body = overlay.querySelector('.artc-body');
+        var scopeName = { collection: 'Collection', tag: 'Tag', playlist: 'Playlist' }[scope] || 'Collection';
+        overlay.querySelector('.artc-title').textContent = 'Customise ' + (bg ? 'background' : 'poster');
+        overlay.querySelector('.artc-subtitle').textContent = scopeName + ' ' + (bg ? 'background' : 'poster') + ' — ' + (ART_STYLE_NAMES[style] || style);
+        body.innerHTML = '<div style="padding:20px 0; text-align:center; opacity:0.8;">Loading…</div>';
+        overlay.classList.add('modal-visible');
+
+        // Title text and name the art would carry (same as the card's own art).
+        function q(sel) { return row ? ((row.querySelector(sel) || {}).value || '').trim() : ''; }
+        var label = q('.txtEntryLabel');
+        var titleTpl = scope === 'tag' ? q('.txtTagArtTitle') : scope === 'playlist' ? q('.txtPlArtTitle') : q('.txtCollArtTitle');
+        var name = scope === 'tag' ? (q('.txtTagName') || label) : scope === 'playlist' ? (q('.txtPlaylistName') || label) : (q('.txtCollectionName') || label);
+
+        getArtCustomiseInfo().then(function (info) {
+            var def = artDefaultsToState(info.Defaults[kind + '|' + style] || {});
+            var hints = (info.Defaults[kind + '|' + style] || {}).Hints || {};
+            var autoPosters = (info.Defaults[kind + '|' + style] || {}).AutoPosters || 0;
+            var stored = {};
+            try { stored = optsInput.value ? JSON.parse(optsInput.value) : {}; } catch (e) { stored = {}; }
+            var state = Object.assign({}, def);
+            ART_FIELDS.forEach(function (k) { if (stored[k] !== undefined && stored[k] !== null) state[k] = stored[k]; });
+            if (typeof state.colour === 'string') state.colour = state.colour.toLowerCase();
+            render();
+
+            function seg(field, opts) {
+                return '<div class="artc-seg" data-field="' + field + '">' + opts.map(function (o) {
+                    return '<button type="button" class="artc-segbtn' + (String(state[field]) === String(o[0]) ? ' artc-on' : '') + '" data-value="' + o[0] + '">' + o[1] + '</button>';
+                }).join('') + '</div>';
+            }
+            function hint(field, extra) {
+                var t = hints[field] || extra || '';
+                return '<div class="artc-hint"' + (t ? '' : ' style="display:none;"') + '>' + escapeHtml(t) + '</div>';
+            }
+            function field(label, html, f, extra) {
+                return '<div class="artc-field"><div class="artc-label">' + label + '</div>' + html + hint(f, extra) + '</div>';
+            }
+            function render() {
+                var titleOff = state.title ? '' : 'The title is off.';
+                var groups = {};
+                info.Fonts.forEach(function (f) { (groups[f.Group] = groups[f.Group] || []).push(f); });
+                var fonts = '<div class="artc-fonts">' + Object.keys(groups).map(function (g) {
+                    return '<div class="artc-fontgroup">' + escapeHtml(g) + '</div>' + groups[g].map(function (f) {
+                        return '<button type="button" class="artc-font' + (state.font === f.Id ? ' artc-on' : '') + '" data-value="' + f.Id + '" title="' + escapeHtml(f.Name) + '">'
+                            + (f.Sample ? '<img src="' + f.Sample + '" alt="' + escapeHtml(f.Name) + '" />' : escapeHtml(f.Name)) + '</button>';
+                    }).join('');
+                }).join('') + '</div>';
+                var dots = '<div class="artc-pos">' + ['tl', 'tc', 'tr', 'ml', 'mc', 'mr', 'bl', 'bc', 'br'].map(function (p) {
+                    return '<button type="button" class="artc-dot' + (state.pos === p ? ' artc-on' : '') + '" data-value="' + p + '" title="' + p + '"><span></span></button>';
+                }).join('') + '</div>';
+                var swatches = '<div class="artc-colours">' + ART_COLOURS.map(function (c) {
+                    return '<button type="button" class="artc-swatch' + (state.colour === c[0] ? ' artc-on' : '') + '" data-value="' + c[0] + '" title="' + c[1] + '" style="background:' + c[0] + ';"></button>';
+                }).join('') + '<input type="text" class="artc-hex" maxlength="7" value="' + escapeHtml(state.colour) + '" spellcheck="false" /></div>';
+
+                body.innerHTML =
+                    '<div class="artc-wrap">' +
+                      '<div class="artc-previewcol">' +
+                        '<div class="artc-preview ' + (bg ? 'artc-bg' : 'artc-poster') + '"><img class="artc-img" alt="" /><div class="artc-busy">Drawing…</div></div>' +
+                        '<div class="fieldDescription" style="margin-top:6px;">Drawn with stand-in posters. <em>Preview art</em> on the card shows your real titles.</div>' +
+                      '</div>' +
+                      '<div class="artc-fieldscol">' +
+                        '<div class="artc-section">Layout</div>' +
+                        field('Tilt', seg('tilt', [['straight', 'Straight'], ['left', 'Left'], ['right', 'Right']]), 'tilt') +
+                        field('Rows', seg('rows', [[0, 'Auto'], [2, '2'], [3, '3']]), 'rows') +
+                        field('Posters', seg('posters', [[0, 'Auto' + (autoPosters ? ' (' + autoPosters + ')' : '')], [4, '4'], [6, '6'], [9, '9'], [12, '12'], [16, '16'], [20, '20']]), 'posters') +
+                        '<div class="artc-section">Title</div>' +
+                        field('Show title', seg('title', [[true, 'On'], [false, 'Off']]), 'title') +
+                        field('Font', fonts, 'font', titleOff) +
+                        field('Position', dots, 'pos', titleOff) +
+                        field('Size', seg('size', [['s', 'S'], ['m', 'M'], ['l', 'L']]), 'size', titleOff) +
+                        field('Case', seg('case', [['upper', 'UPPER'], ['typed', 'As typed']]), 'case', titleOff) +
+                        field('Colour', swatches, 'colour', titleOff) +
+                        '<div class="artc-section">Darken</div>' +
+                        field('Darken <span class="artc-darkval">' + state.darken + '%</span>', '<input type="range" class="artc-darken" min="0" max="80" step="1" value="' + state.darken + '" />', 'darken') +
+                      '</div>' +
+                    '</div>';
+                wire();
+                refreshPreview();
+            }
+            function set(f, v) { state[f] = v; render(); }
+            function wire() {
+                body.querySelectorAll('.artc-seg').forEach(function (g) {
+                    g.querySelectorAll('.artc-segbtn').forEach(function (b) {
+                        b.addEventListener('click', function () {
+                            var v = b.dataset.value, f = g.dataset.field;
+                            set(f, f === 'rows' || f === 'posters' ? parseInt(v, 10) : f === 'title' ? v === 'true' : v);
+                        });
+                    });
+                });
+                body.querySelectorAll('.artc-font').forEach(function (b) { b.addEventListener('click', function () { set('font', b.dataset.value); }); });
+                body.querySelectorAll('.artc-dot').forEach(function (b) { b.addEventListener('click', function () { set('pos', b.dataset.value); }); });
+                body.querySelectorAll('.artc-swatch').forEach(function (b) { b.addEventListener('click', function () { set('colour', b.dataset.value); }); });
+                var hex = body.querySelector('.artc-hex');
+                hex.addEventListener('input', function () {
+                    var v = hex.value.trim().toLowerCase();
+                    if (v && v[0] !== '#') v = '#' + v;
+                    if (/^#[0-9a-f]{6}$/.test(v)) {
+                        state.colour = v;
+                        body.querySelectorAll('.artc-swatch').forEach(function (s) { s.classList.toggle('artc-on', s.dataset.value === v); });
+                        refreshPreview();
+                    }
+                });
+                var dark = body.querySelector('.artc-darken');
+                dark.addEventListener('input', function () {
+                    state.darken = parseInt(dark.value, 10) || 0;
+                    body.querySelector('.artc-darkval').textContent = state.darken + '%';
+                    refreshPreview();
+                });
+            }
+            var timer = null, seq = 0;
+            function refreshPreview() {
+                clearTimeout(timer);
+                var busy = body.querySelector('.artc-busy');
+                if (busy) busy.style.display = 'block';
+                timer = setTimeout(function () {
+                    var mine = ++seq;
+                    fetch(window.ApiClient.getUrl('HomeScreenCompanion/ArtCustomPreview'), {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
+                        body: JSON.stringify({ Style: style, Background: bg, Options: artStateToOptions(state, def), Title: titleTpl, Name: name })
+                    }).then(function (r) { return r.json(); }).then(function (res) {
+                        if (mine !== seq) return;   // a newer drawing is on its way
+                        var img = body.querySelector('.artc-img'), b = body.querySelector('.artc-busy');
+                        if (res.Success && img) { img.src = res.Image; if (b) b.style.display = 'none'; }
+                        else if (b) b.textContent = res.Message || 'Preview failed.';
+                    }).catch(function (e) {
+                        if (mine !== seq) return;
+                        var b = body.querySelector('.artc-busy'); if (b) b.textContent = 'Preview failed: ' + e.message;
+                    });
+                }, 300);
+            }
+
+            overlay._artcReset = function () { state = Object.assign({}, def); render(); };
+            overlay._artcOk = function () {
+                var val = artStateToOptions(state, def);
+                if (optsInput.value !== val) {
+                    optsInput.value = val;
+                    var note = picker.querySelector('.coll-art-custom-note');
+                    if (note) note.style.display = val ? '' : 'none';
+                    setTimeout(checkFormState, 0);
+                }
+                overlay.classList.remove('modal-visible');
+            };
+        }).catch(function (e) {
+            body.innerHTML = '<div style="padding:12px 0;">Could not load the options: ' + escapeHtml(e && e.message || String(e)) + '</div>';
+            overlay._artcOk = function () { overlay.classList.remove('modal-visible'); };
+            overlay._artcReset = function () { };
+        });
+
+        if (!overlay._artcWired) {
+            overlay._artcWired = true;
+            overlay.querySelector('.btnArtcCancel').addEventListener('click', function () { overlay.classList.remove('modal-visible'); });
+            overlay.querySelector('.btnArtcOk').addEventListener('click', function () { if (overlay._artcOk) overlay._artcOk(); });
+            overlay.querySelector('.btnArtcReset').addEventListener('click', function () { if (overlay._artcReset) overlay._artcReset(); });
+        }
     }
 
     var _artSamplesPromise = null;
@@ -1195,8 +1416,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             CollectionBackgroundPath: readCollectionArt(row).CollectionBackgroundPath,
             CollectionSortToTop: readCollectionArt(row).CollectionSortToTop,
             CollectionArtTitle: readCollectionArt(row).CollectionArtTitle,
+            CollectionPosterOptions: readCollectionArt(row).CollectionPosterOptions,
+            CollectionBackgroundOptions: readCollectionArt(row).CollectionBackgroundOptions,
             TagPosterStyle: readTagArt(row).TagPosterStyle, TagBackgroundStyle: readTagArt(row).TagBackgroundStyle,
             TagBackgroundPath: readTagArt(row).TagBackgroundPath, TagArtTitle: readTagArt(row).TagArtTitle,
+            TagPosterOptions: readTagArt(row).TagPosterOptions, TagBackgroundOptions: readTagArt(row).TagBackgroundOptions,
             OverrideWhenActive: overrideWhenActive, SourceType: st,
             Urls: urls, LocalSources: localSources, Limit: miLimit, ManualItemIds: readManualIds(row),
             MediaInfoFilters: miFilters, MediaInfoConditions: [],
@@ -1219,6 +1443,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             PlaylistDescription: readPlaylistLook(row).PlaylistDescription, PlaylistPosterPath: readPlaylistLook(row).PlaylistPosterPath,
             PlaylistPosterStyle: readPlaylistLook(row).PlaylistPosterStyle, PlaylistBackgroundStyle: readPlaylistLook(row).PlaylistBackgroundStyle,
             PlaylistBackgroundPath: readPlaylistLook(row).PlaylistBackgroundPath, PlaylistArtTitle: readPlaylistLook(row).PlaylistArtTitle,
+            PlaylistPosterOptions: readPlaylistLook(row).PlaylistPosterOptions, PlaylistBackgroundOptions: readPlaylistLook(row).PlaylistBackgroundOptions,
             PlaylistUserIds:  _plUserIds,
             PlaylistMappings: (function() { try { return JSON.parse(decodeURIComponent((_plTab && _plTab.dataset.plMappings) || '%5B%5D')); } catch { return []; } })(),
             NextWatchUsersMigrated: row.dataset.nwMigrated === '1',
@@ -2216,8 +2441,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 </div>
 
             <div class="tab-content tagname-tab" style="display:none;">
-                    <div class="inputContainer" style="flex-grow:1;"><input is="emby-input" class="txtTagName" type="text" label="Tag Name" value="${tagName}" placeholder="${labelName}" /></div>
-                    <div class="tag-tab-controls" style="margin-top:10px;">
+                    <div class="tag-tab-controls">
                         <div class="checkboxContainer checkboxContainer-withDescription">
                             <label>
                                 <input is="emby-checkbox" type="checkbox" class="chkEnableTag" ${enableTag} />
@@ -2227,6 +2451,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             <div class="nw-shared-warning fieldDescription" style="display:none; color:#e0a040; margin-top:6px;">${NEXT_WATCH_SHARED_WARNING}</div>
                         </div>
                         <div class="tag-settings" style="margin-left: 20px; padding-left: 15px; border-left: 2px solid var(--line-color); margin-top: 10px; display: ${tagConfig.EnableTag !== false ? 'block' : 'none'};">
+                            <div class="inputContainer">
+                                <input is="emby-input" type="text" class="txtTagName" label="Tag Name" value="${tagName}" placeholder="${labelName}" />
+                                <div class="fieldDescription">Leave empty to use Display Name.</div>
+                            </div>
                             <div class="mi-tag-target-section" style="margin-top:4px;">
                                 <div style="font-size:0.85em; opacity:0.6; margin-bottom:6px; display:flex; align-items:center; gap:8px;">
                                     <span>For TV shows, choose what level to tag:</span>
@@ -2250,13 +2478,13 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                             <div style="margin-top:15px;">
                                 <p style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Tag Poster</p>
-                                ${buildCollStylePickerHtml('poster', tagConfig.TagPosterStyle, 'tag')}
+                                ${buildCollStylePickerHtml('poster', tagConfig.TagPosterStyle, 'tag', tagConfig.TagPosterOptions)}
                                 <div class="fieldDescription tag-poster-note">${tagConfig.TagPosterStyle ? 'Drawn from the posters of the first titles with this tag, with the tag name. It is redrawn when the titles change.' : "Emby's own collage of the tagged titles."}</div>
                             </div>
 
                             <div style="margin-top:15px;">
                                 <p style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Tag Background</p>
-                                ${buildCollStylePickerHtml('background', tagConfig.TagBackgroundStyle, 'tag')}
+                                ${buildCollStylePickerHtml('background', tagConfig.TagBackgroundStyle, 'tag', tagConfig.TagBackgroundOptions)}
                                 <div class="tag-bg-upload" style="display:${tagConfig.TagBackgroundStyle ? 'none' : 'block'};">
                                 <div class="bg-preview-container" style="margin-bottom:8px; display:${tagConfig.TagBackgroundPath ? 'block' : 'none'};">
                                     <span class="bg-filename" style="font-size:0.85em; opacity:0.7;">${tagConfig.TagBackgroundPath ? tagConfig.TagBackgroundPath.split(/[\\\\/]/).pop() : ''}</span>
@@ -2353,7 +2581,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                         <div style="margin-top:15px;">
                             <p class="coll-poster-heading" style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Collection Poster</p>
-                            ${buildCollStylePickerHtml('poster', tagConfig.CollectionPosterStyle)}
+                            ${buildCollStylePickerHtml('poster', tagConfig.CollectionPosterStyle, 'collection', tagConfig.CollectionPosterOptions)}
                             <div class="coll-poster-upload" style="display:${tagConfig.CollectionPosterStyle ? 'none' : 'block'};">
                             <div class="poster-preview-container" style="margin-bottom:8px; display:${collPosterPath ? 'block' : 'none'};">
                                 <span class="poster-filename" style="font-size:0.85em; opacity:0.7;">${collPosterPath ? collPosterPath.split(/[\\\\/]/).pop() : ''}</span>
@@ -2380,7 +2608,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                         <div style="margin-top:15px;">
                             <p class="coll-bg-heading" style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Collection Background</p>
-                            ${buildCollStylePickerHtml('background', tagConfig.CollectionBackgroundStyle)}
+                            ${buildCollStylePickerHtml('background', tagConfig.CollectionBackgroundStyle, 'collection', tagConfig.CollectionBackgroundOptions)}
                             <div class="coll-bg-upload" style="display:${tagConfig.CollectionBackgroundStyle ? 'none' : 'block'};">
                             <div class="bg-preview-container" style="margin-bottom:8px; display:${tagConfig.CollectionBackgroundPath ? 'block' : 'none'};">
                                 <span class="bg-filename" style="font-size:0.85em; opacity:0.7;">${tagConfig.CollectionBackgroundPath ? tagConfig.CollectionBackgroundPath.split(/[\\\\/]/).pop() : ''}</span>
@@ -3151,7 +3379,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         row.querySelector('.btnDuplicateRow').addEventListener('click', () => {
             var config = markAsCopy(readRowAsConfig(row));
             renderTagGroup(config, row.closest('#tagListContainer'), true, undefined, true);
-            applyFilters(view);
+            applyFilters(row.closest('#HomeScreenCompanionConfigPage') || activeView());
             setTimeout(checkFormState, 0);
         });
 
@@ -3198,6 +3426,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 });
             });
             picker.addEventListener('change', picker.dataset.scope === 'tag' ? syncTagArt : picker.dataset.scope === 'playlist' ? syncPlArt : syncCollArt);
+            // Customise shows for a generated style only (not Custom / Emby's own).
+            picker.addEventListener('change', function () {
+                var on = picker.querySelector('input[type=radio]:checked');
+                var customRow = picker.querySelector('.coll-art-custom-row');
+                if (customRow) customRow.style.display = on && on.value ? 'flex' : 'none';
+            });
+            var custBtn = picker.querySelector('.btnArtCustomise');
+            if (custBtn) custBtn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); openArtCustomise(picker); });
         });
         setTimeout(fillCollStyleThumbs, 0);
         function syncCollArt() {
@@ -4084,7 +4320,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             if (hint) hint.style.display = 'block';
             var hseDetails = row.querySelector('.hse-details');
             if (hseDetails) hseDetails.style.display = 'none';
-            updateBadges(row);
+            // updateBadges lives in setupRowEvents; the Home Screen checkbox's change handler calls it.
+            hseCbx.dispatchEvent(new Event('change'));
         } else {
             hseCbx.disabled = false;
             if (hint) hint.style.display = 'none';
@@ -4214,8 +4451,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 CollectionBackgroundPath: readCollectionArt(row).CollectionBackgroundPath,
                 CollectionSortToTop: readCollectionArt(row).CollectionSortToTop,
                 CollectionArtTitle: readCollectionArt(row).CollectionArtTitle,
+                CollectionPosterOptions: readCollectionArt(row).CollectionPosterOptions,
+                CollectionBackgroundOptions: readCollectionArt(row).CollectionBackgroundOptions,
                 TagPosterStyle: readTagArt(row).TagPosterStyle, TagBackgroundStyle: readTagArt(row).TagBackgroundStyle,
                 TagBackgroundPath: readTagArt(row).TagBackgroundPath, TagArtTitle: readTagArt(row).TagArtTitle,
+                TagPosterOptions: readTagArt(row).TagPosterOptions, TagBackgroundOptions: readTagArt(row).TagBackgroundOptions,
                 SourceType: st, MediaInfoFilters: miFilters, MediaInfoConditions: [],
                 TagTargetEpisode:        !!(row.querySelector('.chkTagTargetEpisode')  || {}).checked,
                 TagTargetSeason:         !!(row.querySelector('.chkTagTargetSeason')   || {}).checked,
@@ -4234,6 +4474,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 PlaylistDescription: readPlaylistLook(row).PlaylistDescription, PlaylistPosterPath: readPlaylistLook(row).PlaylistPosterPath,
                 PlaylistPosterStyle: readPlaylistLook(row).PlaylistPosterStyle, PlaylistBackgroundStyle: readPlaylistLook(row).PlaylistBackgroundStyle,
                 PlaylistBackgroundPath: readPlaylistLook(row).PlaylistBackgroundPath, PlaylistArtTitle: readPlaylistLook(row).PlaylistArtTitle,
+                PlaylistPosterOptions: readPlaylistLook(row).PlaylistPosterOptions, PlaylistBackgroundOptions: readPlaylistLook(row).PlaylistBackgroundOptions,
                 PlaylistUserIds:  plUserIds2,
                 PlaylistMappings: (function() { try { return JSON.parse(decodeURIComponent((plTab2 && plTab2.dataset.plMappings) || '%5B%5D')); } catch { return []; } })(),
                 NextWatchUsersMigrated: row.dataset.nwMigrated === '1'
@@ -4513,8 +4754,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     CollectionPosterStyle: t.CollectionPosterStyle || '', CollectionBackgroundStyle: t.CollectionBackgroundStyle || '',
                     CollectionBackgroundPath: t.CollectionBackgroundPath || '', CollectionSortToTop: !!t.CollectionSortToTop,
                     CollectionArtTitle: t.CollectionArtTitle || '',
+                    CollectionPosterOptions: t.CollectionPosterOptions || '', CollectionBackgroundOptions: t.CollectionBackgroundOptions || '',
                     TagPosterStyle: t.TagPosterStyle || '', TagBackgroundStyle: t.TagBackgroundStyle || '',
                     TagBackgroundPath: t.TagBackgroundPath || '', TagArtTitle: t.TagArtTitle || '',
+                    TagPosterOptions: t.TagPosterOptions || '', TagBackgroundOptions: t.TagBackgroundOptions || '',
                     OnlyCollection: t.OnlyCollection, OverrideWhenActive: t.OverrideWhenActive || false, LastModified: t.LastModified,
                     SourceType: t.SourceType || "External", MediaInfoConditions: t.MediaInfoConditions || [], MediaInfoFilters: t.MediaInfoFilters || [],
                     Limit: t.Limit || 0,
@@ -4538,6 +4781,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     PlaylistDescription: t.PlaylistDescription || '', PlaylistPosterPath: t.PlaylistPosterPath || '',
                     PlaylistPosterStyle: t.PlaylistPosterStyle || '', PlaylistBackgroundStyle: t.PlaylistBackgroundStyle || '',
                     PlaylistBackgroundPath: t.PlaylistBackgroundPath || '', PlaylistArtTitle: t.PlaylistArtTitle || '',
+                    PlaylistPosterOptions: t.PlaylistPosterOptions || '', PlaylistBackgroundOptions: t.PlaylistBackgroundOptions || '',
                     PlaylistUserIds:  t.PlaylistUserIds  || [],
                     PlaylistMappings: t.PlaylistMappings || [],
                     NextWatchUsersMigrated: !!t.NextWatchUsersMigrated,

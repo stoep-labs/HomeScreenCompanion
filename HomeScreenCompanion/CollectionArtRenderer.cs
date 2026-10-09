@@ -30,8 +30,10 @@ namespace HomeScreenCompanion
         public static readonly string[] Styles = { Collage, Grid, Fan, Wall, HeroStrip, Spotlight, Ranked };
 
         // How many titles a style can show (the most it draws from).
-        public static int PostersFor(string style, bool background)
+        public static int PostersFor(string style, bool background, ArtOptions? opts = null)
         {
+            var st = (style ?? "").Trim().ToLowerInvariant();
+            if (opts?.Posters != null && st != Ranked) return opts.Posters.Value;
             switch ((style ?? "").Trim().ToLowerInvariant())
             {
                 case Collage: return background ? 40 : 9;
@@ -49,9 +51,9 @@ namespace HomeScreenCompanion
 
         private const float PosterRatio = 1.5f;   // height / width of a movie poster
         private static readonly SKColor Accent = new SKColor(245, 197, 24);
-        private static readonly Lazy<SKTypeface> Display = new Lazy<SKTypeface>(() => LoadFont("BebasNeue.ttf"));
-        private static readonly Lazy<SKTypeface> Heavy = new Lazy<SKTypeface>(() => LoadFont("Anton.ttf"));
-        private static readonly Lazy<SKTypeface> Roboto = new Lazy<SKTypeface>(() => LoadFont("Roboto-Bold.ttf"));
+        private static readonly Lazy<SKTypeface> Display = ArtFonts.All.First(f => f.Id == "bebas").Face;
+        private static readonly Lazy<SKTypeface> Heavy = ArtFonts.All.First(f => f.Id == "anton").Face;
+        private static readonly Lazy<SKTypeface> Roboto = ArtFonts.All.First(f => f.Id == "roboto").Face;
 
         public static bool IsStyle(string? style) => Styles.Contains((style ?? "").Trim().ToLowerInvariant());
 
@@ -113,6 +115,64 @@ namespace HomeScreenCompanion
             return url;
         }
 
+        /// <summary>
+        /// The Customise popup's live preview (PNG data: URL): the real renderer with the popup's
+        /// options, drawn from the same stand-in posters as the style tiles (twelve, or as many as
+        /// the poster count asks for), a little bigger than a tile.
+        /// </summary>
+        public static string Preview(string style, bool background, ArtOptions opts, string title, string tempDir)
+        {
+            Directory.CreateDirectory(tempDir);
+            int count = opts.Posters != null ? Math.Max(1, PostersFor(style, background, opts)) : 12;
+            var posters = new List<string>();
+            for (int i = 0; i < count; i++)
+            {
+                var path = Path.Combine(tempDir, $"stand-in-{i}.jpg");
+                lock (SampleCache) if (!File.Exists(path)) DrawStandInPoster(i, path);
+                posters.Add(path);
+            }
+            var output = Path.Combine(tempDir, "preview-" + Guid.NewGuid().ToString("N") + ".jpg");
+            try
+            {
+                Render(style, posters, string.IsNullOrWhiteSpace(title) ? "Collection" : title, background, output, opts);
+                using var full = SKBitmap.Decode(output);
+                int th = background ? 338 : 450, tw = (int)Math.Round(full.Width * th / (double)full.Height);
+                using var small = full.Resize(new SKImageInfo(tw, th), SKFilterQuality.High);
+                using var img = SKImage.FromBitmap(small);
+                using var data = img.Encode(SKEncodedImageFormat.Png, 100);
+                return "data:image/png;base64," + Convert.ToBase64String(data.ToArray());
+            }
+            finally
+            {
+                try { File.Delete(output); } catch { }
+            }
+        }
+
+        /// <summary>What every Customise field is for <paramref name="style"/> when nothing is set
+        /// (today's look), with a short note for each field the style ignores.</summary>
+        public static ArtOptionDefaults Defaults(string style, bool background)
+        {
+            var st = (style ?? "").Trim().ToLowerInvariant();
+            if (!IsStyle(st)) st = Grid;
+            // Spotlight as a poster is drawn as hero strip.
+            var look = st == Spotlight && !background ? HeroStrip : st;
+            var d = new ArtOptionDefaults { AutoPosters = PostersFor(st, background) };
+            d.Tilt = st == Wall ? "left" : "straight";
+            d.ShowTitle = !(st == Collage && background);
+            d.Font = st == Collage ? "roboto" : look == Spotlight ? "anton" : "bebas";
+            d.Case = st == Collage || look == Spotlight ? "typed" : "upper";
+            d.Colour = st == Collage ? "#f5c518" : "#ffffff";
+            d.Pos = st == Wall ? "mc" : look == HeroStrip ? (background ? "tl" : "bc") : look == Spotlight ? "ml"
+                  : st == Ranked ? (background ? "tl" : "tc") : "bc";
+            d.Darken = st == Grid ? 72 : st == Fan ? 55 : st == Wall ? 35 : look == HeroStrip ? (background ? 35 : 25) : 0;
+            if (st != Wall && st != Collage && st != Grid) d.Hints["tilt"] = "Tilt is used by Wall, Grid and Collage only.";
+            if (st != Wall && st != Collage && st != Grid) d.Hints["rows"] = "Rows are used by Wall, Grid and Collage only.";
+            if (st == Ranked) d.Hints["posters"] = "Ranked always shows the top " + (background ? 5 : 4) + ".";
+            if (st == Ranked) d.Hints["darken"] = "Ranked has a plain dark background.";
+            if (st == Wall) d.Hints["pos"] = "The centre spot keeps the gold title band; any other spot puts the title over the wall.";
+            return d;
+        }
+
         // A plain poster-shaped gradient in one of twelve hues, with a lighter "title" bar.
         private static void DrawStandInPoster(int i, string path)
         {
@@ -132,8 +192,17 @@ namespace HomeScreenCompanion
         }
 
         /// <summary>Renders <paramref name="style"/> to a JPEG. Needs at least one poster file.</summary>
-        public static void Render(string style, IList<string> posterPaths, string title, bool background, string outputPath)
+        public static void Render(string style, IList<string> posterPaths, string title, bool background, string outputPath, ArtOptions? opts = null)
         {
+            var o = opts ?? ArtOptions.None;
+            var st = (style ?? "").Trim().ToLowerInvariant();
+            var d = Defaults(st, background);
+            var x = new Ctx(o, background);
+            // Title moved from the style's own spot: the style draws without it and the title goes
+            // on top at the chosen spot (DrawFreeTitle).
+            bool showTitle = o.ShowTitle ?? d.ShowTitle;
+            bool free = showTitle && o.Pos != null && o.Pos != d.Pos && !string.IsNullOrWhiteSpace(title);
+            string styleTitle = showTitle && !free ? title : "";
             var posters = new List<SKBitmap>();
             try
             {
@@ -150,22 +219,23 @@ namespace HomeScreenCompanion
                 var canvas = surface.Canvas;
                 canvas.Clear(Base);
 
-                switch ((style ?? "").Trim().ToLowerInvariant())
+                switch (st)
                 {
-                    case Fan: DrawFan(canvas, posters, title, background, w, h); break;
-                    case Collage: DrawCollage(canvas, posters, background ? "" : title, w, h); break;
-                    case Wall: DrawWall(canvas, posters, title, background, w, h); break;
-                    case Ranked: DrawRanked(canvas, posters, title, background, w, h); break;
+                    case Fan: DrawFan(canvas, posters, styleTitle, background, w, h, x); break;
+                    case Collage: DrawCollage(canvas, posters, styleTitle, w, h, x); break;
+                    case Wall: DrawWall(canvas, posters, styleTitle, background, w, h, x); break;
+                    case Ranked: DrawRanked(canvas, posters, styleTitle, background, w, h, x); break;
                     case HeroStrip:
-                        if (background) DrawHeroStripBackground(canvas, posters, title, w, h);
-                        else DrawHeroStripPoster(canvas, posters, title, w, h);
+                        if (background) DrawHeroStripBackground(canvas, posters, styleTitle, w, h, x);
+                        else DrawHeroStripPoster(canvas, posters, styleTitle, w, h, x);
                         break;
                     case Spotlight:
-                        if (background) DrawSpotlight(canvas, posters, title, w, h);
-                        else DrawHeroStripPoster(canvas, posters, title, w, h);
+                        if (background) DrawSpotlight(canvas, posters, styleTitle, w, h, x);
+                        else DrawHeroStripPoster(canvas, posters, styleTitle, w, h, x);
                         break;
-                    default: DrawGrid(canvas, posters, title, background, w, h); break;
+                    default: DrawGrid(canvas, posters, styleTitle, background, w, h, x); break;
                 }
+                if (free) DrawFreeTitle(canvas, title, o.Pos!, background, w, h, x, d);
                 Save(surface, outputPath);
             }
             finally
@@ -178,29 +248,45 @@ namespace HomeScreenCompanion
         // Posters: up to 12 (1, 2x1, 3x2, 3x3, 4x3…); backgrounds: up to 14 in at most two rows.
         // A partial last row is centred. The title sits in a dark band at the bottom; a two-line
         // title gets an accent first line.
-        private static void DrawGrid(SKCanvas c, List<SKBitmap> posters, string title, bool background, int w, int h)
+        private static void DrawGrid(SKCanvas c, List<SKBitmap> posters, string title, bool background, int w, int h, Ctx x)
         {
-            DrawBackdrop(c, MostColourful(posters), w, h, 0.72f);
+            DrawBackdrop(c, MostColourful(posters), w, h, x.Dark(0.72f));
             DrawVignette(c, w, h, 0.45f);
 
             bool hasTitle = !string.IsNullOrWhiteSpace(title);
             int m = background ? 72 : 64;
-            int titleH = hasTitle ? (background ? 200 : 300) : 0;
+            int titleH = hasTitle ? (int)((background ? 200 : 300) * x.Scale) : 0;
             int titleGap = hasTitle ? (background ? 30 : 40) : 0;
             var region = SKRect.Create(m, m, w - 2 * m, h - 2 * m - titleH - titleGap);
-            var g = BestGrid(posters.Count, (int)region.Width, (int)region.Height, 22, background ? 14 : 12, background ? 2 : (int?)null);
+            var g = BestGrid(posters.Count, (int)region.Width, (int)region.Height, 22, x.O.Posters ?? (background ? 14 : 12),
+                             x.O.Rows ?? (background ? 2 : (int?)null), x.O.Rows);
 
             float radius = RadiusFor(g.CardW);
             var cells = g.Cells(region);
+            float tilt = x.Tilt(-6, 0);
+            if (tilt != 0)
+            {
+                // The whole block turned about the region's centre, shrunk so it still fits.
+                float bw = g.Cols * g.CardW + (g.Cols - 1) * g.Gap, bh = g.Rows * g.CardH + (g.Rows - 1) * g.Gap;
+                double rad = Math.Abs(tilt) * Math.PI / 180;
+                float rw = (float)(bw * Math.Cos(rad) + bh * Math.Sin(rad)), rh = (float)(bw * Math.Sin(rad) + bh * Math.Cos(rad));
+                float k = Math.Min(1f, Math.Min(region.Width / rw, region.Height / rh));
+                c.Save();
+                c.Translate(region.MidX, region.MidY);
+                c.RotateDegrees(tilt);
+                c.Scale(k);
+                c.Translate(-region.MidX, -region.MidY);
+            }
             for (int i = 0; i < cells.Count; i++)
                 DrawCard(c, posters[i], SKRect.Create(cells[i].X, cells[i].Y, g.CardW, g.CardH), radius,
                          Math.Max(8, g.CardW / 18f), g.CardW / 30f, 190);
+            if (tilt != 0) c.Restore();
 
             if (!hasTitle) return;
             float bandTop = region.Bottom;
             Scrim(c, SKRect.Create(0, bandTop - 80, w, h - bandTop + 80), Dir.Down, 0, 0.55f, 235);
-            var t = LayoutTitle(title, w - 2 * m, titleH, background ? 190 : 240);
-            DrawTitle(c, t, w / 2f, bandTop + titleGap + (titleH - t.Height) / 2, TextAlign.Center);
+            var t = LayoutTitle(title, w - 2 * m, titleH, (background ? 190 : 240) * x.Scale, x.Upper(true), x.Face(Display.Value));
+            DrawTitle(c, t, w / 2f, bandTop + titleGap + (titleH - t.Height) / 2, TextAlign.Center, colour: x.O.ColourValue);
         }
 
         // The mockup styles (stoep-shelves/docs/art-mockups/mock.py) were drawn at 680x1000 (poster)
@@ -273,15 +359,32 @@ namespace HomeScreenCompanion
         }
 
         // ── collage (Collectra) ─────────────────────────────────────────────────────────
-        private static void DrawCollage(SKCanvas c, List<SKBitmap> posters, string title, int w, int h)
+        private static void DrawCollage(SKCanvas c, List<SKBitmap> posters, string title, int w, int h, Ctx x)
         {
             int n = posters.Count, rows, cols;
-            if (w < h) { rows = Math.Max(1, (int)Math.Sqrt(n)); cols = (n + rows - 1) / rows; }
+            if (x.O.Rows != null)
+            {
+                rows = x.O.Rows.Value;
+                cols = Math.Max(1, (int)Math.Round(w / (h / (double)rows / PosterRatio)));
+            }
+            else if (w < h) { rows = Math.Max(1, (int)Math.Sqrt(n)); cols = (n + rows - 1) / rows; }
             else { rows = Math.Max(1, (int)(Math.Sqrt(n) / (w / (double)h))); cols = (n + rows - 1) / rows; }
             int cellW = w / cols, cellH = h / rows;
             var used = new int[rows * cols];
             var rng = new Random(n * 7919 + w);
             using var paint = new SKPaint { FilterQuality = SKFilterQuality.High };
+            float tilt = x.Tilt(-8, 0);
+            if (tilt != 0)
+            {
+                // Turned about the centre and enlarged so no corner shows.
+                double rad = Math.Abs(tilt) * Math.PI / 180;
+                float k = (float)Math.Max((w * Math.Cos(rad) + h * Math.Sin(rad)) / w, (w * Math.Sin(rad) + h * Math.Cos(rad)) / h);
+                c.Save();
+                c.Translate(w / 2f, h / 2f);
+                c.RotateDegrees(tilt);
+                c.Scale(k);
+                c.Translate(-w / 2f, -h / 2f);
+            }
             for (int i = 0; i < rows * cols; i++)
             {
                 int pick = i;
@@ -298,13 +401,18 @@ namespace HomeScreenCompanion
                 var p = posters[pick];
                 c.DrawBitmap(p, CoverSource(p.Width, p.Height, cellW, cellH), SKRect.Create((i % cols) * cellW, (i / cols) * cellH, cellW, cellH), paint);
             }
+            if (tilt != 0) c.Restore();
+            if (x.O.Darken > 0)
+                using (var dim = new SKPaint { Color = SKColors.Black.WithAlpha((byte)Math.Round(255 * x.Dark(0))) }) c.DrawRect(0, 0, w, h, dim);
             if (string.IsNullOrWhiteSpace(title)) return;
 
             // Collectra's text overlay: wrapped to 90% of the width, at the bottom (30px margin),
             // on a 50% black box (16px padding), yellow with a 2px black shadow.
             // Collectify's settings: Roboto Bold 95px on a 680px poster, #F5C518.
-            float size = 95 * w / 680f, margin = 30 * w / 680f, pad = Math.Max(16, 16 * w / 680f), shadowOff = 2 * w / 680f;
-            using var text = new SKPaint { Typeface = Roboto.Value, TextSize = size, IsAntialias = true, Color = new SKColor(245, 197, 24) };
+            var face = x.Face(Roboto.Value);
+            if (x.Upper(false)) title = title.ToUpperInvariant();
+            float size = 95 * w / 680f * x.Scale, margin = 30 * w / 680f, pad = Math.Max(16, 16 * w / 680f), shadowOff = 2 * w / 680f;
+            using var text = new SKPaint { Typeface = face, TextSize = size, IsAntialias = true, Color = x.Colour(new SKColor(245, 197, 24)) };
             float maxW = w * 0.9f;
             var lines = new List<string>();
             foreach (var word in title.Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries))
@@ -319,25 +427,27 @@ namespace HomeScreenCompanion
             float widest = lines.Max(l => text.MeasureText(l));
             using (var box = new SKPaint { Color = SKColors.Black.WithAlpha(128) })
                 c.DrawRect(new SKRect((w - widest) / 2 - pad, startY - pad, (w + widest) / 2 + pad, startY + total + pad), box);
-            using var shadow = new SKPaint { Typeface = Roboto.Value, TextSize = size, IsAntialias = true, Color = SKColors.Black };
+            using var shadow = new SKPaint { Typeface = face, TextSize = size, IsAntialias = true, Color = SKColors.Black };
             for (int i = 0; i < lines.Count; i++)
             {
                 var lb = new SKRect(); text.MeasureText(lines[i], ref lb);
-                float x = (w - text.MeasureText(lines[i])) / 2;
+                float lx = (w - text.MeasureText(lines[i])) / 2;
                 float y = startY + i * lineH + (lineH - lb.Height) / 2 - lb.Top;
-                c.DrawText(lines[i], x + shadowOff, y + shadowOff, shadow);
-                c.DrawText(lines[i], x, y, text);
+                c.DrawText(lines[i], lx + shadowOff, y + shadowOff, shadow);
+                c.DrawText(lines[i], lx, y, text);
             }
         }
 
         // ── fan ─────────────────────────────────────────────────────────────────────────
         // Cards fanned like a hand of playing cards, the middle one on top; title underneath.
-        private static void DrawFan(SKCanvas c, List<SKBitmap> posters, string title, bool background, int w, int h)
+        private static void DrawFan(SKCanvas c, List<SKBitmap> posters, string title, bool background, int w, int h, Ctx x)
         {
             float s = MockScale(background, w);
-            MockBackdrop(c, posters.Count > 3 ? posters[3] : posters[0], w, h, 34 * s, 0.55f);
-            int n = Math.Min(posters.Count, background ? 7 : 5);
+            MockBackdrop(c, posters.Count > 3 ? posters[3] : posters[0], w, h, 34 * s, x.Dark(0.55f));
+            int defN = background ? 7 : 5;
+            int n = Math.Min(posters.Count, x.O.Posters != null ? Math.Min(x.O.Posters.Value, 11) : defN);
             float cw = (background ? 230 : 260) * s, ch = cw * PosterRatio;
+            if (n > defN) { cw *= (defN + 1) / (float)(n + 1); ch = cw * PosterRatio; }
             float cy = (background ? 330 : 440) * (h / (background ? 720f : 1000f));
             float spread = background ? 7 : 9;
             float mid = (n - 1) / 2f;
@@ -351,27 +461,33 @@ namespace HomeScreenCompanion
                 c.Restore();
             }
             if (string.IsNullOrWhiteSpace(title)) return;
-            var (lines, size) = MockLines(title, Display.Value, w - 80 * s, (background ? 96 : 110) * s);
+            var face = x.Face(Display.Value);
+            var (lines, size) = MockLines(title, face, w - 80 * s, (background ? 96 : 110) * s * x.Scale, x.Upper(true));
             float y = (background ? 590 : 800) * (h / (background ? 720f : 1000f));
             foreach (var line in lines)
             {
-                MockText(c, line, w / 2f, y, Display.Value, size, SKColors.White, SKTextAlign.Center, 2 * s);
-                y += size * 0.95f;
+                MockText(c, line, w / 2f, y, face, size, x.Colour(SKColors.White), SKTextAlign.Center, 2 * s);
+                y += size * Step(face, Display.Value, 0.95f);
             }
         }
 
         // ── wall ────────────────────────────────────────────────────────────────────────
         // A brick-offset wall of posters tilted 14°, dimmed a little, with a dark title band and
         // gold lines across the middle. Posters repeat so the wall is always full.
-        private static void DrawWall(SKCanvas c, List<SKBitmap> posters, string title, bool background, int w, int h)
+        private static void DrawWall(SKCanvas c, List<SKBitmap> posters, string title, bool background, int w, int h, Ctx x)
         {
             float s = MockScale(background, w);
             float cw = 150 * s, ch = (int)(150 * PosterRatio) * s, gap = 10 * s;
+            if (x.O.Rows != null)   // about that many rows across the height
+            {
+                ch = h / (float)x.O.Rows.Value - gap;
+                cw = ch / PosterRatio;
+            }
             float bigW = w * 1.8f, bigH = h * 1.8f;
             int cols = (int)Math.Ceiling(bigW / (cw + gap)) + 1, rows = (int)Math.Ceiling(bigH / (ch + gap)) + 1;
             c.Save();
             c.Translate(w / 2f, h / 2f);
-            c.RotateDegrees(-14);
+            c.RotateDegrees(x.Tilt(-14, -14));
             c.Translate(-bigW / 2, -bigH / 2);
             // Posters repeat to fill the wall, but never touch a card showing the same poster: not
             // the card to the left, nor the two cards above (rows are offset by half a card).
@@ -403,15 +519,17 @@ namespace HomeScreenCompanion
                     MockCard(c, posters[pick], col * (cw + gap) + (r % 2) * (cw / 2), r * (ch + gap), cw, ch, 8 * s, false, s);
                 }
             c.Restore();
-            using (var dim = new SKPaint { Color = SKColors.Black.WithAlpha(90) }) c.DrawRect(0, 0, w, h, dim);
+            byte dimAlpha = x.O.Darken.HasValue ? (byte)Math.Round(255 * x.Dark(0)) : (byte)90;
+            using (var dim = new SKPaint { Color = SKColors.Black.WithAlpha(dimAlpha) }) c.DrawRect(0, 0, w, h, dim);
 
             if (string.IsNullOrWhiteSpace(title)) return;
-            float size = (background ? 110 : 104) * s;
+            float size = (background ? 110 : 104) * s * x.Scale;
+            var face = x.Face(Display.Value);
             // One line, or two when the name is long; the band grows with the text.
-            var (lines, fitted) = MockLines(title, Display.Value, w - 60 * s, size);
-            using var probe = new SKPaint { Typeface = Display.Value, TextSize = fitted };
+            var (lines, fitted) = MockLines(title, face, w - 60 * s, size, x.Upper(true));
+            using var probe = new SKPaint { Typeface = face, TextSize = fitted };
             var b = new SKRect(); probe.MeasureText("H", ref b);
-            float lineStep = fitted * 0.95f;
+            float lineStep = fitted * Step(face, Display.Value, 0.95f);
             float textH = b.Height + (lines.Length - 1) * lineStep;
             float bandH = Math.Max(size * 1.5f, textH + size * 0.6f);
             float by = (h - bandH) / 2;
@@ -424,7 +542,7 @@ namespace HomeScreenCompanion
             float ty = by + (bandH - textH) / 2;
             foreach (var line in lines)
             {
-                MockText(c, line, w / 2f, ty, Display.Value, fitted, SKColors.White, SKTextAlign.Center);
+                MockText(c, line, w / 2f, ty, face, fitted, x.Colour(SKColors.White), SKTextAlign.Center);
                 ty += lineStep;
             }
         }
@@ -432,12 +550,12 @@ namespace HomeScreenCompanion
         // ── hero strip ──────────────────────────────────────────────────────────────────
         // Poster: the first title as a lightly blurred hero fading to dark, a two-tone title,
         // and a strip of five cards along the bottom.
-        private static void DrawHeroStripPoster(SKCanvas c, List<SKBitmap> posters, string title, int w, int h)
+        private static void DrawHeroStripPoster(SKCanvas c, List<SKBitmap> posters, string title, int w, int h, Ctx x)
         {
             float s = MockScale(false, w), sy = h / 1000f;
-            MockBackdrop(c, posters[0], w, h, 22 * s, 0.25f);
+            MockBackdrop(c, posters[0], w, h, 22 * s, x.Dark(0.25f));
             Scrim(c, SKRect.Create(0, 0, w, h), Dir.Down, 0.35f, 1f, 245);
-            int n = 5; float gap = 12 * s, margin = 30 * s;
+            int n = x.O.Posters != null ? Math.Max(1, Math.Min(x.O.Posters.Value - 1, 10)) : 5; float gap = 12 * s, margin = 30 * s;
             float cw = (w - 2 * margin - gap * (n - 1)) / n, ch = cw * PosterRatio;
             float stripTop = h - ch - 34 * sy;
             var strip = posters.Skip(1).Take(n).ToList();
@@ -446,38 +564,42 @@ namespace HomeScreenCompanion
             for (int i = 0; i < strip.Count; i++)
                 MockCard(c, strip[i], x0 + i * (cw + gap), stripTop, cw, ch, 10 * s, false, s);
             if (string.IsNullOrWhiteSpace(title)) return;
-            var (lines, size) = MockLines(title, Display.Value, w - 80 * s, 132 * s, preferTwo: true);
-            float lineH = size * 0.83f;
+            var face = x.Face(Display.Value);
+            var (lines, size) = MockLines(title, face, w - 80 * s, 132 * s * x.Scale, x.Upper(true), preferTwo: true);
+            float lineH = size * Step(face, Display.Value, 0.83f);
             float y = stripTop - 30 * sy - lines.Length * lineH - (size - lineH);
             for (int i = 0; i < lines.Length; i++)
-                MockText(c, lines[i], w / 2f, y + i * lineH, Display.Value, size, lines.Length > 1 && i == 0 ? Accent : SKColors.White, SKTextAlign.Center);
+                MockText(c, lines[i], w / 2f, y + i * lineH, face, size, x.TwoTone(lines.Length > 1 && i == 0), SKTextAlign.Center);
         }
 
         // Background: blurred hero with a dark left-to-right fade, title on the left, and a strip
         // of six cards with drop shadows underneath.
-        private static void DrawHeroStripBackground(SKCanvas c, List<SKBitmap> posters, string title, int w, int h)
+        private static void DrawHeroStripBackground(SKCanvas c, List<SKBitmap> posters, string title, int w, int h, Ctx x)
         {
             float s = MockScale(true, w);
-            MockBackdrop(c, posters[0], w, h, 26 * s, 0.35f);
+            MockBackdrop(c, posters[0], w, h, 26 * s, x.Dark(0.35f));
             Scrim(c, SKRect.Create(0, 0, w, h), Dir.Left, 0f, 1f, 235);
             float cw = 130 * s, ch = 195 * s, gap = 14 * s, x0 = 70 * s;
-            var strip = posters.Count > 1 ? posters.Skip(1).Take(6).ToList() : posters.Take(1).ToList();
+            int take = x.O.Posters != null ? Math.Max(1, Math.Min(x.O.Posters.Value - 1, 14)) : 6;
+            var strip = posters.Count > 1 ? posters.Skip(1).Take(take).ToList() : posters.Take(1).ToList();
+            if (strip.Count > 6) { cw = Math.Min(cw, (w - 2 * x0 - gap * (strip.Count - 1)) / strip.Count); ch = cw * PosterRatio; }
             for (int i = 0; i < strip.Count; i++)
                 MockCard(c, strip[i], x0 + i * (cw + gap), h - ch - 60 * s, cw, ch, 10 * s, true, s);
             if (string.IsNullOrWhiteSpace(title)) return;
-            var (lines, size) = MockLines(title, Display.Value, w * 0.55f, 150 * s, preferTwo: true);
+            var face = x.Face(Display.Value);
+            var (lines, size) = MockLines(title, face, w * 0.55f, 150 * s * x.Scale, x.Upper(true), preferTwo: true);
             float y = 150 * s;
             for (int i = 0; i < lines.Length; i++)
             {
-                MockText(c, lines[i], x0, y, Display.Value, size, lines.Length > 1 && i == 0 ? Accent : SKColors.White);
-                y += size * 0.86f;
+                MockText(c, lines[i], x0, y, face, size, x.TwoTone(lines.Length > 1 && i == 0));
+                y += size * Step(face, Display.Value, 0.86f);
             }
         }
 
         // ── spotlight split (background) ────────────────────────────────────────────────
         // The first title's poster on the right, fading into dark on the left; a gold
         // "COLLECTION" kicker, the title in Anton (mixed case) and four cards on the left.
-        private static void DrawSpotlight(SKCanvas c, List<SKBitmap> posters, string title, int w, int h)
+        private static void DrawSpotlight(SKCanvas c, List<SKBitmap> posters, string title, int w, int h, Ctx x)
         {
             float s = MockScale(true, w);
             c.Clear(new SKColor(10, 10, 14));
@@ -485,6 +607,8 @@ namespace HomeScreenCompanion
             float heroW = h * 0.9f;
             using (var p = new SKPaint { FilterQuality = SKFilterQuality.High })
                 c.DrawBitmap(hero, CoverSource(hero.Width, hero.Height, (int)heroW, h), SKRect.Create(w - heroW, 0, heroW, h), p);
+            if (x.O.Darken > 0)
+                using (var dim = new SKPaint { Color = SKColors.Black.WithAlpha((byte)Math.Round(255 * x.Dark(0))) }) c.DrawRect(w - heroW, 0, heroW, h, dim);
             // Dark from the left edge to 45% of the width, then fading out to the right edge.
             using (var fade = new SKPaint
             {
@@ -493,29 +617,33 @@ namespace HomeScreenCompanion
                     new[] { 0f, 0.45f, 1f }, SKShaderTileMode.Clamp)
             }) c.DrawRect(0, 0, w, h, fade);
 
-            float x = 70 * s;
-            MockText(c, "COLLECTION", x, 120 * s, Display.Value, 34 * s, Accent);
+            float left = 70 * s;
+            MockText(c, "COLLECTION", left, 120 * s, Display.Value, 34 * s, Accent);
             float y = 160 * s;
             if (!string.IsNullOrWhiteSpace(title))
             {
-                var (lines, size) = MockLines(title, Heavy.Value, w * 0.42f, 120 * s, upper: false, preferTwo: true);
+                var face = x.Face(Heavy.Value);
+                var (lines, size) = MockLines(title, face, w * 0.42f, 120 * s * x.Scale, x.Upper(false), preferTwo: true);
                 foreach (var line in lines)
                 {
-                    MockText(c, line, x - 4 * s, y, Heavy.Value, size, SKColors.White);
+                    MockText(c, line, left - 4 * s, y, face, size, x.Colour(SKColors.White));
                     y += size * 1.25f;
                 }
             }
             float cardsY = Math.Max(500 * s, y + 30 * s);
-            var strip = posters.Skip(1).Take(4).ToList();
+            int take = x.O.Posters != null ? Math.Max(1, Math.Min(x.O.Posters.Value - 1, 10)) : 4;
+            var strip = posters.Skip(1).Take(take).ToList();
+            float step = 124 * s, cardW = 110 * s, cardH = 165 * s;
+            if (strip.Count > 4) { step = (w * 0.5f - left) / strip.Count; cardW = step * 110 / 124f; cardH = cardW * PosterRatio; }
             for (int i = 0; i < strip.Count; i++)
-                MockCard(c, strip[i], x + i * 124 * s, cardsY, 110 * s, 165 * s, 8 * s, false, s);
+                MockCard(c, strip[i], left + i * step, cardsY, cardW, cardH, 8 * s, false, s);
         }
 
         // ── ranked (Top 10) ─────────────────────────────────────────────────────────────
         // Netflix-style numbered cards: big outlined numerals with a poster tucked against each.
         // Poster: a red "TOP 10", the title, and a 2x2 of ranks 1-4. Background: the title and
         // ranks 1-5 in a row.
-        private static void DrawRanked(SKCanvas c, List<SKBitmap> posters, string title, bool background, int w, int h)
+        private static void DrawRanked(SKCanvas c, List<SKBitmap> posters, string title, bool background, int w, int h, Ctx cx)
         {
             float s = MockScale(background, w);
             c.Clear(new SKColor(14, 14, 16));
@@ -537,9 +665,10 @@ namespace HomeScreenCompanion
             {
                 if (!string.IsNullOrWhiteSpace(title))
                 {
-                    var (lines, size) = MockLines(title, Display.Value, w - 120 * s, 64 * s);
+                    var face = cx.Face(Display.Value);
+                    var (lines, size) = MockLines(title, face, w - 120 * s, 64 * s * cx.Scale, cx.Upper(true));
                     float ty = 46 * s;
-                    foreach (var line in lines) { MockText(c, line, 60 * s, ty, Display.Value, size, SKColors.White); ty += size * 0.95f; }
+                    foreach (var line in lines) { MockText(c, line, 60 * s, ty, face, size, cx.Colour(SKColors.White)); ty += size * Step(face, Display.Value, 0.95f); }
                 }
                 for (int i = 0; i < Math.Min(5, posters.Count); i++)
                     Numbered(i + 1, 30 * s + i * 245 * s, 205 * s, 330 * s, 34 * s, 240 * s);
@@ -550,9 +679,10 @@ namespace HomeScreenCompanion
                 MockText(c, "TOP 10", w / 2f, 34 * sy, Heavy.Value, 120 * s, RankRed, SKTextAlign.Center);
                 if (!string.IsNullOrWhiteSpace(title))
                 {
-                    var (lines, size) = MockLines(title, Display.Value, w - 80 * s, 54 * s);
-                    float sz = lines.Length > 1 ? Math.Min(size, 44 * s) : size, ty = 196 * sy;
-                    foreach (var line in lines) { MockText(c, line, w / 2f, ty, Display.Value, sz, SKColors.White, SKTextAlign.Center); ty += sz * 0.95f; }
+                    var face = cx.Face(Display.Value);
+                    var (lines, size) = MockLines(title, face, w - 80 * s, 54 * s * cx.Scale, cx.Upper(true));
+                    float sz = lines.Length > 1 ? Math.Min(size, 44 * s * cx.Scale) : size, ty = 196 * sy;
+                    foreach (var line in lines) { MockText(c, line, w / 2f, ty, face, sz, cx.Colour(SKColors.White), SKTextAlign.Center); ty += sz * Step(face, Display.Value, 0.95f); }
                 }
                 var pos = new[] { (40f, 290f), (360f, 290f), (40f, 630f), (360f, 630f) };
                 for (int i = 0; i < Math.Min(4, posters.Count); i++)
@@ -561,6 +691,66 @@ namespace HomeScreenCompanion
         }
 
         // ── shared pieces ───────────────────────────────────────────────────────────────
+
+        // The Customise options as the drawing code needs them. Every getter returns the
+        // style's own value when the option is not set, so art without options is unchanged.
+        private sealed class Ctx
+        {
+            public Ctx(ArtOptions o, bool background) { O = o; Background = background; }
+            public ArtOptions O { get; }
+            public bool Background { get; }
+            public SKTypeface Face(SKTypeface own) => O.Font != null ? ArtFonts.Face(O.Font) : own;
+            public bool Upper(bool own) => O.Case == null ? own : O.Case == "upper";
+            public SKColor Colour(SKColor own) => O.ColourValue ?? own;
+            // Two-tone titles (gold first line) unless a colour was chosen.
+            public SKColor TwoTone(bool accentLine) => O.ColourValue ?? (accentLine ? Accent : SKColors.White);
+            public float Scale => O.SizeFactor;
+            public float Dark(float own) => O.Darken.HasValue ? O.Darken.Value / 100f : own;
+            // Degrees to turn: "left" = leftAngle, "right" = the mirror, "straight" = 0.
+            public float Tilt(float leftAngle, float own) => O.Tilt == null ? own : O.Tilt == "left" ? leftAngle : O.Tilt == "right" ? -leftAngle : 0;
+        }
+
+        // Line spacing: the style's own for its own font; other fonts get room for their
+        // ascenders and descenders.
+        private static float Step(SKTypeface used, SKTypeface own, float factor) => used == own ? factor : Math.Max(factor, 1.12f);
+
+        // A title moved by Customise to one of nine spots (pos: t/m/b + l/c/r), over the art, with
+        // a soft dark fade behind it so it stays readable.
+        private static void DrawFreeTitle(SKCanvas c, string title, string pos, bool background, int w, int h, Ctx x, ArtOptionDefaults d)
+        {
+            var face = ArtFonts.Face(x.O.Font ?? d.Font);
+            bool upper = (x.O.Case ?? d.Case) == "upper";
+            var colour = x.O.ColourValue ?? (SKColor.TryParse(d.Colour, out var dc) ? dc : SKColors.White);
+            float s = MockScale(background, w);
+            float m = (background ? 64 : 46) * s;
+            char row = pos[0], col = pos[1];
+            float maxW = col == 'c' ? w - 2 * m : w * 0.62f;
+            var (lines, size) = MockLines(title, face, maxW, (background ? 120 : 108) * s * x.Scale, upper);
+            using var probe = new SKPaint { Typeface = face, TextSize = size, IsAntialias = true };
+            float cap = CapHeight(probe);
+            float step = size * Step(face, Display.Value, 0.95f);
+            float textH = cap + (lines.Length - 1) * step;
+            float top = row == 't' ? m : row == 'b' ? h - m - textH : (h - textH) / 2;
+            float fade = textH + 2.2f * m;
+            if (row == 'b') Scrim(c, SKRect.Create(0, h - fade - m, w, fade + m), Dir.Down, 0, 0.7f, 225, 1.3f);
+            else if (row == 't') Scrim(c, SKRect.Create(0, 0, w, fade + m), Dir.Up, 0, 0.7f, 225, 1.3f);
+            else using (var band = new SKPaint { Color = MockBase.WithAlpha(165) }) c.DrawRect(0, top - m * 0.6f, w, textH + m * 1.2f, band);
+
+            float tx = col == 'l' ? m : col == 'r' ? w - m : w / 2f;
+            var align = col == 'l' ? SKTextAlign.Left : col == 'r' ? SKTextAlign.Right : SKTextAlign.Center;
+            float y = top + cap;
+            foreach (var line in lines)
+            {
+                using (var sp = new SKPaint
+                {
+                    Typeface = face, TextSize = size, IsAntialias = true, TextAlign = align, Color = SKColors.Black.WithAlpha(180),
+                    MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, Math.Max(4, size / 14))
+                }) c.DrawText(line, tx, y, sp);
+                using (var fill = new SKPaint { Typeface = face, TextSize = size, IsAntialias = true, TextAlign = align, Color = colour })
+                    c.DrawText(line, tx, y, fill);
+                y += step;
+            }
+        }
 
         // The most colourful of the first five posters makes the best blurred backdrop
         // (near-white or near-black posters give a muddy grey). Ties go to the earliest.
@@ -627,24 +817,25 @@ namespace HomeScreenCompanion
 
         private readonly struct TitleLayout
         {
-            public TitleLayout(string[] lines, float size, float cap, float leading, bool heavy)
-            { Lines = lines; Size = size; Cap = cap; Leading = leading; Heavy = heavy; }
+            public TitleLayout(string[] lines, float size, float cap, float leading, SKTypeface face)
+            { Lines = lines; Size = size; Cap = cap; Leading = leading; Face = face; }
             public string[] Lines { get; }
             public float Size { get; }
             public float Cap { get; }
             public float Leading { get; }
-            public bool Heavy { get; }
+            public SKTypeface Face { get; }
             public float Height => Cap + (Lines.Length - 1) * Leading * Size;
         }
 
         // Fits the title into maxW x maxH on one line or two balanced lines (two only when that
         // makes the type at least 18% larger). Bebas Neue upper case by default; Anton for spotlight.
         private static TitleLayout LayoutTitle(string title, float maxW, float maxH, float maxSize,
-            bool upper = true, bool heavy = false, float leading = 1.12f)
+            bool upper = true, SKTypeface? face = null, float leading = 1.12f)
         {
+            face ??= Display.Value;
             string text = string.Join(" ", (upper ? title.ToUpperInvariant() : title).Trim()
                 .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
-            using var probe = new SKPaint { Typeface = heavy ? Heavy.Value : Display.Value, TextSize = 100, IsAntialias = true };
+            using var probe = new SKPaint { Typeface = face, TextSize = 100, IsAntialias = true };
             float capAt100 = CapHeight(probe);
 
             (string[] lines, float size) Fit(string[] lines)
@@ -667,20 +858,20 @@ namespace HomeScreenCompanion
                 }
                 if (two != null && two.Value.size >= best.size * 1.18f) best = two.Value;
             }
-            return new TitleLayout(best.lines, best.size, capAt100 * best.size / 100, leading, heavy);
+            return new TitleLayout(best.lines, best.size, capAt100 * best.size / 100, leading, face);
         }
 
         // Draws a laid-out title with its cap line at top. Two-line titles get an accent first
         // line (twoTone); a soft shadow sits underneath (shadow).
         private static void DrawTitle(SKCanvas c, TitleLayout t, float x, float top, TextAlign align,
-            bool twoTone = true, bool shadow = true)
+            bool twoTone = true, bool shadow = true, SKColor? colour = null)
         {
-            var face = t.Heavy ? Heavy.Value : Display.Value;
+            var face = t.Face;
             var skAlign = align == TextAlign.Left ? SKTextAlign.Left : SKTextAlign.Center;
             float y = top + t.Cap;
             for (int i = 0; i < t.Lines.Length; i++)
             {
-                var colour = twoTone && t.Lines.Length > 1 && i == 0 ? Accent : SKColors.White;
+                var lineColour = colour ?? (twoTone && t.Lines.Length > 1 && i == 0 ? Accent : SKColors.White);
                 if (shadow)
                 {
                     using var sp = new SKPaint
@@ -691,7 +882,7 @@ namespace HomeScreenCompanion
                     };
                     c.DrawText(t.Lines[i], x, y, sp);
                 }
-                using var fill = new SKPaint { Typeface = face, TextSize = t.Size, IsAntialias = true, TextAlign = skAlign, Color = colour };
+                using var fill = new SKPaint { Typeface = face, TextSize = t.Size, IsAntialias = true, TextAlign = skAlign, Color = lineColour };
                 c.DrawText(t.Lines[i], x, y, fill);
                 y += t.Leading * t.Size;
             }
@@ -736,8 +927,24 @@ namespace HomeScreenCompanion
         // How many posters (<= n, <= cap) and which grid fills w x h best: area coverage x
         // count^0.35, so more posters win unless they get much smaller. A partial last row is
         // only allowed when every poster is used.
-        private static GridLayout BestGrid(int n, int w, int h, int gap, int cap, int? maxRows)
+        private static GridLayout BestGrid(int n, int w, int h, int gap, int cap, int? maxRows, int? exactRows = null)
         {
+            if (exactRows != null)
+            {
+                // Customise "Rows": that many rows when there are enough titles, else the best fit.
+                var exact = BestGrid(n, w, h, gap, cap, exactRows, null);
+                if (exact.Rows == exactRows || n < exactRows) return exact;
+                GridLayout? forced = null;
+                int k = Math.Min(n, cap);
+                for (int cols = 1; cols <= k; cols++)
+                {
+                    if ((int)Math.Ceiling(k / (double)cols) != exactRows) continue;
+                    double cw = Math.Min((w - gap * (cols - 1)) / (double)cols, (h - gap * (exactRows.Value - 1)) / (double)exactRows.Value / PosterRatio);
+                    if (cw <= 8) continue;
+                    if (forced == null || cw > forced.Value.CardW) forced = new GridLayout(k, cols, exactRows.Value, (int)cw, (int)(cw * PosterRatio), gap);
+                }
+                return forced ?? exact;
+            }
             GridLayout? best = null;
             double bestScore = -1;
             for (int k = 1; k <= Math.Min(n, cap); k++)

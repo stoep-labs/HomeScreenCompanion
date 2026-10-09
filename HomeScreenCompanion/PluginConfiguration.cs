@@ -87,6 +87,9 @@ namespace HomeScreenCompanion
         public string TagBackgroundStyle { get; set; } = "";
         // Text drawn on the tag art; "" = the tag name. {name} and {week} as for CollectionArtTitle.
         public string TagArtTitle { get; set; } = "";
+        // Customise options of the generated tag poster / background (ArtOptions JSON; "" = the style's own look).
+        public string TagPosterOptions { get; set; } = "";
+        public string TagBackgroundOptions { get; set; } = "";
         // Uploaded background (used when TagBackgroundStyle is "", i.e. Custom).
         public string TagBackgroundPath { get; set; } = "";
         public bool EnableCollection { get; set; } = false;
@@ -99,6 +102,9 @@ namespace HomeScreenCompanion
         // Text drawn on the generated art; "" = the collection name. {name} and {week} (ISO week
         // number) are filled in, e.g. "{name} {week}" → "Top Movies for the Week 41".
         public string CollectionArtTitle { get; set; } = "";
+        // Customise options of the generated poster / background (ArtOptions JSON; "" = the style's own look).
+        public string CollectionPosterOptions { get; set; } = "";
+        public string CollectionBackgroundOptions { get; set; } = "";
         // Uploaded background (used when CollectionBackgroundStyle is "", i.e. Custom).
         public string CollectionBackgroundPath { get; set; } = "";
         // Puts the collection at the top of the Collections view (sort name "!!! <name>").
@@ -145,6 +151,9 @@ namespace HomeScreenCompanion
         public string PlaylistBackgroundStyle { get; set; } = "";
         public string PlaylistBackgroundPath { get; set; } = "";
         public string PlaylistArtTitle { get; set; } = "";
+        // Customise options of the generated playlist poster / background (ArtOptions JSON; "" = the style's own look).
+        public string PlaylistPosterOptions { get; set; } = "";
+        public string PlaylistBackgroundOptions { get; set; } = "";
 
         public DateTime LastModified { get; set; } = DateTime.MinValue;
     }

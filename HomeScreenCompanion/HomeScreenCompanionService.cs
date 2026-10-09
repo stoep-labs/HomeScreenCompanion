@@ -107,6 +107,46 @@ namespace HomeScreenCompanion
         public Dictionary<string, string> Background { get; set; } = new Dictionary<string, string>();
     }
 
+    // The Customise popup: the fonts (each name drawn in its own font) and, per style and kind
+    // ("poster|wall", "background|grid", ...), what every field is when nothing is set.
+    [Route("/HomeScreenCompanion/ArtCustomiseInfo", "GET")]
+    [Authenticated(Roles = "Admin")]
+    public class ArtCustomiseInfoRequest : IReturn<ArtCustomiseInfoResponse> { }
+
+    public class ArtFontInfo
+    {
+        public string Id { get; set; } = "";
+        public string Name { get; set; } = "";
+        public string Group { get; set; } = "";
+        public string Sample { get; set; } = "";   // PNG data: URL
+    }
+
+    public class ArtCustomiseInfoResponse
+    {
+        public List<ArtFontInfo> Fonts { get; set; } = new List<ArtFontInfo>();
+        public Dictionary<string, ArtOptionDefaults> Defaults { get; set; } = new Dictionary<string, ArtOptionDefaults>();
+    }
+
+    // The Customise popup's live preview: one style drawn by the renderer with the popup's
+    // options from the stand-in posters of the style tiles. Returns a PNG (data: URL).
+    [Route("/HomeScreenCompanion/ArtCustomPreview", "POST")]
+    [Authenticated(Roles = "Admin")]
+    public class ArtCustomPreviewRequest : IReturn<ArtCustomPreviewResponse>
+    {
+        public string Style { get; set; } = "";
+        public bool Background { get; set; }
+        public string Options { get; set; } = "";
+        public string Title { get; set; } = "";   // the card's "Title on the art" ({name}, {week})
+        public string Name { get; set; } = "";    // the collection / tag / playlist name
+    }
+
+    public class ArtCustomPreviewResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = "";
+        public string Image { get; set; } = "";
+    }
+
     // The collection art a source would get, from its unsaved settings. Changes nothing.
     [Route("/HomeScreenCompanion/PreviewCollectionArt", "POST")]
     [Authenticated(Roles = "Admin")]
@@ -886,6 +926,42 @@ public class HomeScreenCompanionService : IService
             return res;
         }
 
+        public object Get(ArtCustomiseInfoRequest request)
+        {
+            var res = new ArtCustomiseInfoResponse();
+            foreach (var f in ArtFonts.All)
+            {
+                string sample = "";
+                try { sample = ArtFonts.Sample(f); } catch (Exception ex) { _logger.Warn($"Font sample '{f.Id}' failed: {ex.Message}"); }
+                res.Fonts.Add(new ArtFontInfo { Id = f.Id, Name = f.Name, Group = f.Group, Sample = sample });
+            }
+            foreach (var style in CollectionArtRenderer.Styles)
+            {
+                res.Defaults["poster|" + style] = CollectionArtRenderer.Defaults(style, false);
+                res.Defaults["background|" + style] = CollectionArtRenderer.Defaults(style, true);
+            }
+            return res;
+        }
+
+        public object Post(ArtCustomPreviewRequest request)
+        {
+            if (!CollectionArtRenderer.IsStyle(request.Style))
+                return new ArtCustomPreviewResponse { Message = "Choose a generated style first." };
+            try
+            {
+                var dir = Path.Combine(Plugin.Instance!.DataFolderPath, "collection_art", "_samples");
+                var image = CollectionArtRenderer.Preview(request.Style.Trim().ToLowerInvariant(), request.Background,
+                    ArtOptions.Parse(request.Options),
+                    CollectionArtRenderer.ArtTitle(request.Title, string.IsNullOrWhiteSpace(request.Name) ? "Collection" : request.Name.Trim()), dir);
+                return new ArtCustomPreviewResponse { Success = true, Image = image };
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn($"Art preview '{request.Style}' failed: {ex.Message}");
+                return new ArtCustomPreviewResponse { Message = "Preview failed: " + ex.Message };
+            }
+        }
+
         public async Task<object> Post(PreviewCollectionArtRequest request)
         {
             var result = await PreviewCollectionArt(request.Source ?? new TagConfig());
@@ -948,10 +1024,11 @@ public class HomeScreenCompanionService : IService
                 }
                 string Draw(string style, bool bg)
                 {
-                    var posters = CollectionArtRenderer.DistinctTitles(items).Take(CollectionArtRenderer.PostersFor(style, bg)).Select(PosterOf).Where(p => p != null).Select(p => p!).ToList();
+                    var opts = ArtOptions.Parse(bg ? source.CollectionBackgroundOptions : source.CollectionPosterOptions);
+                    var posters = CollectionArtRenderer.DistinctTitles(items).Take(CollectionArtRenderer.PostersFor(style, bg, opts)).Select(PosterOf).Where(p => p != null).Select(p => p!).ToList();
                     if (posters.Count == 0) return "";
                     var output = Path.Combine(tempDir, bg ? "background.jpg" : "poster.jpg");
-                    CollectionArtRenderer.Render(style, posters, title, bg, output);
+                    CollectionArtRenderer.Render(style, posters, title, bg, output, opts);
                     return "data:image/jpeg;base64," + Convert.ToBase64String(File.ReadAllBytes(output));
                 }
                 return new PreviewCollectionArtResponse
@@ -3519,6 +3596,12 @@ public class HomeScreenCompanionService : IService
             t.TagArtTitle               ??= "";
             t.TagBackgroundStyle        ??= "";
             t.TagBackgroundPath         ??= "";
+            t.CollectionPosterOptions     ??= "";
+            t.CollectionBackgroundOptions ??= "";
+            t.TagPosterOptions            ??= "";
+            t.TagBackgroundOptions        ??= "";
+            t.PlaylistPosterOptions       ??= "";
+            t.PlaylistBackgroundOptions   ??= "";
             if (string.IsNullOrEmpty(t.HomeSectionLibraryId)) t.HomeSectionLibraryId = "auto";
             if (string.IsNullOrEmpty(t.HomeSectionSettings)) t.HomeSectionSettings = "{}";
             foreach (var m in t.PlaylistMappings) m.LastSyncedItemIds ??= new List<long>();

@@ -2861,7 +2861,8 @@ namespace HomeScreenCompanion
                 if (pl == null || !pl.GetType().Name.Contains("Playlist")) return;
                 // Art lives in playlist_art/<source>; the text on it is the playlist name.
                 if (SetGeneratedArt(pl, plName, "playlist_art", tc.PlaylistPosterStyle, tc.PlaylistBackgroundStyle,
-                        tc.PlaylistArtTitle, tc.PlaylistBackgroundPath, artItems, true, tc.PlaylistPosterPath, artKey: tc.Name + " - " + tc.Tag))
+                        tc.PlaylistArtTitle, tc.PlaylistBackgroundPath, artItems, true, tc.PlaylistPosterPath, artKey: tc.Name + " - " + tc.Tag,
+                        posterOptions: tc.PlaylistPosterOptions, backgroundOptions: tc.PlaylistBackgroundOptions))
                 {
                     _libraryManager.UpdateItem(pl, pl.GetParent(), ItemUpdateType.ImageUpdate, null);
                     _log.Debug($"  {userName}: playlist poster / background updated");
@@ -5430,7 +5431,8 @@ namespace HomeScreenCompanion
             try
             {
                 if (SetGeneratedArt(coll, cName, "collection_art", tc.CollectionPosterStyle, tc.CollectionBackgroundStyle,
-                        tc.CollectionArtTitle, tc.CollectionBackgroundPath, items, false))
+                        tc.CollectionArtTitle, tc.CollectionBackgroundPath, items, false,
+                        posterOptions: tc.CollectionPosterOptions, backgroundOptions: tc.CollectionBackgroundOptions))
                 {
                     _libraryManager.UpdateItem(coll, coll.Parent, ItemUpdateType.ImageUpdate, null);
                     _log.Debug($"  {cName}  →  collection art applied");
@@ -5475,7 +5477,8 @@ namespace HomeScreenCompanion
                                              : i is MediaBrowser.Controller.Entities.TV.Season se ? se.Series : i)
                                   .Where(i => i != null).Select(i => i!).ToList();
                 if (SetGeneratedArt(tagItem, tagName, "tag_art", tc.TagPosterStyle, tc.TagBackgroundStyle,
-                        tc.TagArtTitle, tc.TagBackgroundPath, items, true))
+                        tc.TagArtTitle, tc.TagBackgroundPath, items, true,
+                        posterOptions: tc.TagPosterOptions, backgroundOptions: tc.TagBackgroundOptions))
                 {
                     _libraryManager.UpdateItem(tagItem, tagItem.GetParent(), ItemUpdateType.ImageUpdate, null);
                     _log.Debug(wanted ? $"  {tagName}  →  tag art applied" : $"  {tagName}  →  tag art removed");
@@ -5505,15 +5508,17 @@ namespace HomeScreenCompanion
         // set (playlists). artKey: the art's folder name when it differs from name. True when the
         // item's images changed.
         private bool SetGeneratedArt(BaseItem target, string name, string artFolder, string posterStyle, string backgroundStyle,
-            string artTitle, string backgroundPath, IList<BaseItem> items, bool removeWhenNone, string? posterPath = null, string? artKey = null)
+            string artTitle, string backgroundPath, IList<BaseItem> items, bool removeWhenNone, string? posterPath = null, string? artKey = null,
+            string? posterOptions = null, string? backgroundOptions = null)
         {
             bool changed = false;
             foreach (var (style, background) in new[] { (posterStyle, false), (backgroundStyle, true) })
             {
+                var opts = ArtOptions.Parse(background ? backgroundOptions : posterOptions);
                 var type = background ? ImageType.Backdrop : ImageType.Primary;
                 var current = (target.ImageInfos ?? Array.Empty<ItemImageInfo>()).FirstOrDefault(i => i.Type == type);
                 string? path;
-                if (CollectionArtRenderer.IsStyle(style)) path = RenderCollectionArt(artKey ?? name, artFolder, CollectionArtRenderer.ArtTitle(artTitle, name), style, background, items);
+                if (CollectionArtRenderer.IsStyle(style)) path = RenderCollectionArt(artKey ?? name, artFolder, CollectionArtRenderer.ArtTitle(artTitle, name), style, background, items, opts);
                 else if (background && !string.IsNullOrWhiteSpace(backgroundPath) && File.Exists(backgroundPath))
                     path = backgroundPath;   // Custom: the uploaded background
                 else if (!background && !string.IsNullOrWhiteSpace(posterPath) && File.Exists(posterPath))
@@ -5566,8 +5571,9 @@ namespace HomeScreenCompanion
 
         // Draws the art into <plugin data>/<artFolder>/<name>/ (collection_art or tag_art) and
         // returns its path, or the existing file when nothing changed. Null when no poster could be found.
-        private string? RenderCollectionArt(string cName, string artFolder, string title, string style, bool background, IList<BaseItem> items)
+        private string? RenderCollectionArt(string cName, string artFolder, string title, string style, bool background, IList<BaseItem> items, ArtOptions? opts = null)
         {
+            opts ??= ArtOptions.None;
             var invalid = Path.GetInvalidFileNameChars();
             var safe = new string(cName.Select(ch => Array.IndexOf(invalid, ch) >= 0 ? '_' : ch).ToArray()).Trim().Trim('.');
             if (string.IsNullOrEmpty(safe)) safe = "collection";
@@ -5577,8 +5583,11 @@ namespace HomeScreenCompanion
             var output = Path.Combine(dir, kind + ".jpg");
             var keyFile = Path.Combine(dir, kind + ".key");
 
-            var picks = CollectionArtRenderer.DistinctTitles(items).Take(CollectionArtRenderer.PostersFor(style, background)).ToList();
+            var picks = CollectionArtRenderer.DistinctTitles(items).Take(CollectionArtRenderer.PostersFor(style, background, opts)).ToList();
             var key = style + "|" + title + "|" + string.Join(",", picks.Select(i => i.Id.ToString("N")));
+            // Customise options join the key only when set, so art without them keeps its old key.
+            var optKey = opts.Canonical();
+            if (optKey.Length > 0) key += "|" + optKey;
             if (File.Exists(output) && File.Exists(keyFile) && File.ReadAllText(keyFile) == key) return output;
 
             var tempDir = Path.Combine(dir, "tmp");
@@ -5593,7 +5602,7 @@ namespace HomeScreenCompanion
                     if (poster != null) posters.Add(poster);
                 }
                 if (posters.Count == 0) { _log.Warn($"Art for \"{cName}\": no posters found"); return null; }
-                CollectionArtRenderer.Render(style, posters, title, background, output);
+                CollectionArtRenderer.Render(style, posters, title, background, output, opts);
                 File.WriteAllText(keyFile, key);
                 return output;
             }
