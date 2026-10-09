@@ -300,6 +300,8 @@ namespace HomeScreenCompanion
         public int MaxItems { get; set; } = 0;
         public string BadgeStyle { get; set; } = "neutral";
         public string BadgeOptions { get; set; } = "";
+        // "Badge the real posters too": "" = off, else "label|size" (see RealPosterBadges).
+        public string? RealPosterBadge { get; set; }
     }
     public class PrepareTopListFolderResponse
     {
@@ -338,6 +340,8 @@ namespace HomeScreenCompanion
         public string CardSizeOffset { get; set; } = "0";
         public string BadgeStyle { get; set; } = "neutral";
         public string BadgeOptions { get; set; } = "";
+        // "Badge the real posters too": "" = off, else "label|size" (see RealPosterBadges).
+        public string? RealPosterBadge { get; set; }
         public List<string> UserIds { get; set; } = new List<string>();
         public string Message { get; set; } = "";
         public string ContentType { get; set; } = "Movies";
@@ -372,6 +376,8 @@ namespace HomeScreenCompanion
         public string SourceTag { get; set; } = "";
         public string BadgeStyle { get; set; } = "top10";
         public string BadgeOptions { get; set; } = "";
+        // "Badge the real posters too": "" = off, else "label|size" (see RealPosterBadges).
+        public string? RealPosterBadge { get; set; }
         public int MaxItems { get; set; }   // 1–10; 0 = 10
         // Emby's ContentSection.CardSizeOffset (-1 = smaller cards); null keeps the stored value.
         public int? CardSizeOffset { get; set; }
@@ -498,6 +504,8 @@ namespace HomeScreenCompanion
         public List<ManualTopListItem> Items { get; set; } = new List<ManualTopListItem>();
         public string BadgeStyle { get; set; } = "neutral";
         public string BadgeOptions { get; set; } = "";
+        // "Badge the real posters too": "" = off, else "label|size" (see RealPosterBadges).
+        public string? RealPosterBadge { get; set; }
     }
     public class ManualTopListItem
     {
@@ -618,6 +626,8 @@ namespace HomeScreenCompanion
         public string CardSizeOffset { get; set; } = "0";
         public string BadgeStyle { get; set; } = "neutral";
         public string BadgeOptions { get; set; } = "";
+        // "Badge the real posters too": "" = off, else "label|size" (see RealPosterBadges).
+        public string? RealPosterBadge { get; set; }
         public int MaxItems { get; set; }
         public List<string> UserIds { get; set; } = new List<string>();
         public string FolderPath { get; set; } = "";
@@ -712,6 +722,8 @@ namespace HomeScreenCompanion
         public string CardSizeOffset { get; set; } = "0";
         public string BadgeStyle { get; set; } = "";
         public string BadgeOptions { get; set; } = "";
+        // "Badge the real posters too": "" = off, else "label|size" (see RealPosterBadges).
+        public string? RealPosterBadge { get; set; }
         public int MaxItems { get; set; }
         public List<string> UserIds { get; set; } = new List<string>();
         // Manual lists: the ranked titles, in order.
@@ -746,6 +758,8 @@ namespace HomeScreenCompanion
         public string CardSizeOffset { get; set; } = "0";
         public string BadgeStyle { get; set; } = "";
         public string BadgeOptions { get; set; } = "";
+        // "Badge the real posters too": "" = off, else "label|size" (see RealPosterBadges).
+        public string? RealPosterBadge { get; set; }
         public int MaxItems { get; set; }
         public List<string> UserIds { get; set; } = new List<string>();
         // Same shape as the create dialog's own picks (movies: Guid ItemId; shows: internal id).
@@ -2730,6 +2744,7 @@ public class HomeScreenCompanionService : IService
                 var cardSize    = "0";
                 var badgeStyle  = "neutral";
                 var badgeOptions = "";
+                var realPoster  = "";
                 var userIds     = new List<string>();
                 if (tlConfig != null)
                 {
@@ -2742,6 +2757,7 @@ public class HomeScreenCompanionService : IService
                         cardSize    = settings.TryGetValue("CardSizeOffset", out var cs) && !string.IsNullOrEmpty(cs) ? cs : "0";
                         badgeStyle  = settings.TryGetValue("BadgeStyle",  out var bs) ? bs  : "neutral";
                         badgeOptions = settings.TryGetValue("BadgeOptions", out var bo) ? bo ?? "" : "";
+                        realPoster = settings.TryGetValue("RealPosterBadge", out var rp) ? rp ?? "" : "";
                     }
                     catch { }
                     userIds = tlConfig.HomeSectionUserIds ?? new List<string>();
@@ -2759,6 +2775,7 @@ public class HomeScreenCompanionService : IService
                     CardSizeOffset = cardSize,
                     BadgeStyle  = badgeStyle,
                     BadgeOptions = badgeOptions,
+                    RealPosterBadge = realPoster,
                     UserIds     = userIds
                 };
             }
@@ -2825,6 +2842,7 @@ public class HomeScreenCompanionService : IService
                     settings["CardSizeOffset"] = Math.Max(-3, Math.Min(3, request.CardSizeOffset.Value)).ToString(System.Globalization.CultureInfo.InvariantCulture);
                 settings["BadgeStyle"] = string.IsNullOrWhiteSpace(request.BadgeStyle) ? "top10" : request.BadgeStyle.Trim();
                 settings["BadgeOptions"] = (request.BadgeOptions ?? "").Trim();
+                if (request.RealPosterBadge != null) settings["RealPosterBadge"] = request.RealPosterBadge.Trim();
                 tl.HomeSectionSettings = _jsonSerializer.SerializeToString(settings);
 
                 var log = NewShowTopList().Apply(config, tl, series);
@@ -2869,6 +2887,7 @@ public class HomeScreenCompanionService : IService
                 CardSizeOffset = settings.TryGetValue("CardSizeOffset", out var cs) && !string.IsNullOrEmpty(cs) ? cs : "0",
                 BadgeStyle  = settings.TryGetValue("BadgeStyle", out var bs) && !string.IsNullOrWhiteSpace(bs) ? bs : "top10",
                 BadgeOptions = settings.TryGetValue("BadgeOptions", out var bo) ? bo ?? "" : "",
+                RealPosterBadge = settings.TryGetValue("RealPosterBadge", out var rpb) ? rpb ?? "" : "",
                 UserIds     = tl.HomeSectionUserIds ?? new List<string>()
             };
         }
@@ -4237,6 +4256,7 @@ public class HomeScreenCompanionService : IService
             file.CardSizeOffset = Setting("CardSizeOffset").Length > 0 ? Setting("CardSizeOffset") : "0";
             file.BadgeStyle  = Setting("BadgeStyle");
             file.BadgeOptions = Setting("BadgeOptions");
+            file.RealPosterBadge = Setting("RealPosterBadge");
             file.MaxItems    = tl.MaxItems;
             file.UserIds     = (tl.HomeSectionUserIds ?? new List<string>()).Where(u => !string.IsNullOrWhiteSpace(u)).ToList();
 
@@ -4309,6 +4329,7 @@ public class HomeScreenCompanionService : IService
                 response.CardSizeOffset = string.IsNullOrWhiteSpace(file.CardSizeOffset) ? "0" : file.CardSizeOffset;
                 response.BadgeStyle  = file.BadgeStyle ?? "";
                 response.BadgeOptions = file.BadgeOptions ?? "";
+                response.RealPosterBadge = file.RealPosterBadge ?? "";
                 response.MaxItems    = Math.Max(0, file.MaxItems);
 
                 // Users: by name, case-insensitive (as for sources).

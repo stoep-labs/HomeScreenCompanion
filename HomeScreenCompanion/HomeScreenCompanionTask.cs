@@ -1579,7 +1579,7 @@ namespace HomeScreenCompanion
                 _log.Error($"Sync aborted: {ex.Message}");
                 WriteExceptionDebug(ex);
             }
-            finally { IsRunning = false; PersistLog(); }
+            finally { IsRunning = false; PersistLog(); RealPosterBadges.QueueRebuild(); }
         }
 
         public async Task<(bool Success, string Message)> RunSingleEntryAsync(string entryName, CancellationToken cancellationToken)
@@ -1627,6 +1627,7 @@ namespace HomeScreenCompanion
             {
                 IsRunning = false;
                 PersistLog();
+                RealPosterBadges.QueueRebuild();
             }
         }
 

@@ -850,6 +850,40 @@ namespace HomeScreenCompanion
             DrawFit(c, "10", t2, box.MidX, box.Top + box.Height * 0.66f, box.Width * 0.7f, box.Height * 0.36f);
         }
 
+        /// <summary>
+        /// "Badge the real posters too": the red TOP 10 square (DrawLogo) in the top-right corner
+        /// of the real poster, with "#rank" on a second line when withRank. size s/m/l ≈ 14/18/24%
+        /// of the poster width. Writes a new JPEG; the source file is only read.
+        /// </summary>
+        internal static void RealPosterBadge(string sourcePath, string outputPath, int rank, bool withRank, string size)
+        {
+            using var src = SKBitmap.Decode(sourcePath)
+                ?? throw new InvalidOperationException($"SkiaSharp could not decode '{sourcePath}'");
+            int w = src.Width, h = src.Height;
+            using var surface = SKSurface.Create(new SKImageInfo(w, h))
+                ?? throw new InvalidOperationException($"SkiaSharp could not create a {w}x{h} surface");
+            var c = surface.Canvas;
+            c.DrawBitmap(src, 0, 0);
+            float bw = w * (size == "s" ? 0.14f : size == "l" ? 0.24f : 0.18f), bh = bw * 1.12f;
+            var logo = SKRect.Create(w - bw, 0, bw, bh);
+            if (withRank)
+            {
+                float rh = bw * 0.5f;
+                using (var bg = new SKPaint { Color = new SKColor(0xE5, 0x09, 0x14), IsAntialias = true })
+                    c.DrawRect(SKRect.Create(w - bw, 0, bw, bh + rh), bg);
+                DrawLogo(c, logo);
+                using (var line = new SKPaint { Color = SKColors.White.WithAlpha(150), IsAntialias = true })
+                    c.DrawRect(SKRect.Create(w - bw + bw * 0.2f, bh - bw * 0.02f, bw * 0.6f, Math.Max(1f, bw * 0.02f)), line);
+                using var t = new SKPaint { Typeface = BadgeFonts.Face("roboto"), Color = SKColors.White, IsAntialias = true };
+                DrawFit(c, "#" + rank, t, logo.MidX, bh + rh * 0.45f, bw * 0.7f, rh * 0.62f);
+            }
+            else DrawLogo(c, logo);
+            using var img = surface.Snapshot();
+            using var data = img.Encode(SKEncodedImageFormat.Jpeg, 92);
+            using var fs = File.Create(outputPath);
+            data.SaveTo(fs);
+        }
+
         private static readonly Dictionary<string, string> ShapeCache = new Dictionary<string, string>();
 
         /// <summary>Rank #1 in the given shape on a stand-in poster, small (JPEG data: URL), for the popup's shape tiles.</summary>

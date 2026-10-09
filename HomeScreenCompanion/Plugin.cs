@@ -39,6 +39,14 @@ namespace HomeScreenCompanion
                 TopListCollectionMirror.QueueFullSync();
         }
 
+        // Every config save (the settings page and the server's own saves) can change which
+        // titles carry a badge on their real poster.
+        public override void SaveConfiguration()
+        {
+            base.SaveConfiguration();
+            RealPosterBadges.QueueRebuild();
+        }
+
         public IEnumerable<PluginPageInfo> GetPages()
         {
             var assembly = GetType().Assembly;

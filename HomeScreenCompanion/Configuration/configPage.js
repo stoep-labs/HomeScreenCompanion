@@ -5905,6 +5905,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var modal      = ui.modal;
         var badgeStyle = ui.badgeStyle || 'neutral';
         var badgeOptions = ui.badgeOptions;   // undefined: keep what the list has
+        var realPoster = ui.realPoster;       // undefined: keep what the list has
         var tok = window.ApiClient.accessToken ? window.ApiClient.accessToken() : '';
         var snapshotId = null;
         var pendingLibraryId = null;
@@ -6055,6 +6056,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 try { storedSettings = JSON.parse((existing && existing.HomeSectionSettings) || '{}'); } catch (e) {}
                 var cardSizeOffset = ui.cardSizeOffset != null ? normCardSize(ui.cardSizeOffset) : normCardSize(storedSettings.CardSizeOffset);
                 if (badgeOptions == null) badgeOptions = storedSettings.BadgeOptions || '';
+                if (realPoster == null) realPoster = storedSettings.RealPosterBadge || '';
                 var hseSettings = JSON.stringify({
                     SectionType: 'items',
                     DisplayMode: displayMode,
@@ -6063,7 +6065,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     ViewType: '',
                     ImageType: imageType,
                     CardSizeOffset: cardSizeOffset,
-                    BadgeStyle: badgeStyle, BadgeOptions: badgeOptions,
+                    BadgeStyle: badgeStyle, BadgeOptions: badgeOptions, RealPosterBadge: realPoster,
                     SortBy: 'SortName',
                     SortOrder: 'Ascending',
                     ScrollDirection: '',
@@ -6268,7 +6270,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     function badgeKindOf(style) { return style === 'top10' ? 'top10' : style === 'none' ? 'none' : 'badge'; }
 
     var _badgePickerSeq = 0;
-    function buildBadgePickerHtml(selectedVal, optionsJson) {
+    function buildBadgePickerHtml(selectedVal, optionsJson, realPoster) {
         var sel = selectedVal || 'neutral';
         var kind = badgeKindOf(sel);
         var preset = isBadgePreset(sel) ? sel : 'neutral';
@@ -6301,12 +6303,71 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             '<div class="tl-badge-custom-row" style="display:flex;align-items:center;gap:8px;margin-top:8px;">' + custBtn +
                 '<span class="tl-badge-custom-note fieldDescription" style="margin:0;' + (optionsJson ? '' : 'display:none;') + '">Customised</span>' +
             '</div>' +
+            buildRealPosterHtml(realPoster) +
             '</div>';
+    }
+
+    // "Real posters" block under Badge Style: the TOP 10 badge on the title's own poster
+    // everywhere in Emby (drawn by the server's image enhancer; image files stay untouched).
+    // Stored in HomeSectionSettings.RealPosterBadge: '' = off, else 'label|size'
+    // (label top10 | top10rank, size s | m | l).
+    function parseRealPoster(v) {
+        var p = String(v || '').split('|');
+        return { on: !!v, label: p[0] === 'top10rank' ? 'top10rank' : 'top10', size: (p[1] === 's' || p[1] === 'l') ? p[1] : 'm' };
+    }
+    function buildRealPosterHtml(value) {
+        var rp = parseRealPoster(value);
+        function seg(key, opts, cur) {
+            return '<div class="artc-seg" data-rp="' + key + '">' + opts.map(function (o) {
+                return '<button type="button" class="artc-segbtn' + (o[0] === cur ? ' artc-on' : '') + '" data-value="' + o[0] + '">' + o[1] + '</button>';
+            }).join('') + '</div>';
+        }
+        var lbl = 'font-size:0.82em;opacity:0.75;min-width:44px;';
+        return '<div class="tl-rp" style="margin-top:14px;">' +
+            '<span style="font-size:0.82em;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;opacity:0.65;display:block;margin-bottom:4px;">Real posters</span>' +
+            '<div class="checkboxContainer" style="margin-bottom:6px;"><label>' +
+                '<input is="emby-checkbox" type="checkbox" class="tl-rp-on"' + (rp.on ? ' checked' : '') + ' />' +
+                '<span>Badge the real posters too</span></label></div>' +
+            '<div class="tl-rp-opts" style="' + (rp.on ? '' : 'display:none;') + 'margin-left:4px;">' +
+                '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><span style="' + lbl + '">Label</span>' + seg('label', [['top10', 'TOP 10'], ['top10rank', 'TOP 10 #3']], rp.label) + '</div>' +
+                '<div style="display:flex;align-items:center;gap:10px;"><span style="' + lbl + '">Size</span>' + seg('size', [['s', 'S'], ['m', 'M'], ['l', 'L']], rp.size) + '</div>' +
+                '<div class="fieldDescription" style="margin-top:6px;">The TOP 10 square on the title\'s own poster everywhere in Emby (library, search, item page, every app). Image files are not changed.</div>' +
+            '</div>' +
+            '</div>';
+    }
+    function readRealPoster(container) {
+        var on = container.querySelector('.tl-rp-on');
+        if (!on || !on.checked) return '';
+        var l = container.querySelector('.tl-rp [data-rp="label"] .artc-on');
+        var z = container.querySelector('.tl-rp [data-rp="size"] .artc-on');
+        return (l ? l.getAttribute('data-value') : 'top10') + '|' + (z ? z.getAttribute('data-value') : 'm');
+    }
+    function initRealPoster(container) {
+        container.querySelectorAll('.tl-rp').forEach(function (block) {
+            if (block.dataset.rpInit) return;
+            block.dataset.rpInit = '1';
+            var chk = block.querySelector('.tl-rp-on');
+            var optsEl = block.querySelector('.tl-rp-opts');
+            chk.addEventListener('change', function () { optsEl.style.display = chk.checked ? '' : 'none'; });
+            block.querySelectorAll('.artc-seg').forEach(function (segEl) {
+                segEl.querySelectorAll('.artc-segbtn').forEach(function (btn) {
+                    btn.addEventListener('click', function (e) {
+                        e.preventDefault();
+                        if (btn.classList.contains('artc-on')) return;
+                        segEl.querySelectorAll('.artc-segbtn').forEach(function (b) { b.classList.remove('artc-on'); });
+                        btn.classList.add('artc-on');
+                        // The forms' dirty checks listen for change on their inputs.
+                        chk.dispatchEvent(new Event('change', { bubbles: true }));
+                    });
+                });
+            });
+        });
     }
 
     var BADGE_NOTHING_TIP = 'Nothing to customise for No number';
     function initBadgePicker(container, tagName) {
         if (container && container.dataset) container.dataset.tlTag = tagName || '';
+        initRealPoster(container);
         var opts = Array.from(container.querySelectorAll('.tl-badge-opt'));
         opts.forEach(function (label) {
             label.addEventListener('click', function () {
@@ -6749,7 +6810,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '<label style="' + labelStyle + '">Card Size</label>' +
                 '<select is="emby-select" class="tlm-card-size" style="width:100%;">' + cardSizeOptionsHtml(preset ? preset.cardSizeOffset : '0') + '</select></div>' +
 
-                buildBadgePickerHtml(preset ? preset.badgeStyle : (isShows ? 'top10' : 'neutral'), preset ? preset.badgeOptions : '') +
+                buildBadgePickerHtml(preset ? preset.badgeStyle : (isShows ? 'top10' : 'neutral'), preset ? preset.badgeOptions : '', preset ? preset.realPoster : '') +
 
                 '<div style="' + fieldStyle + '">' +
                 '<label style="' + labelStyle + '">Max items <span style="font-weight:400;text-transform:none;letter-spacing:0;opacity:0.7;">' + (isShows ? '(up to 10 shows)' : '(0 = all)') + '</span></label>' +
@@ -6802,6 +6863,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var cardSize      = normCardSize(modal.querySelector('.tlm-card-size').value);
                 var badgeStyle    = readBadgeStyle(modal);
                 var badgeOptions  = readBadgeOptions(modal);
+                var realPoster    = readRealPoster(modal);
                 var maxItems      = Math.max(0, parseInt(modal.querySelector('.tlm-max-items').value, 10) || 0);
                 var tok = window.ApiClient.accessToken ? window.ApiClient.accessToken() : '';
 
@@ -6815,7 +6877,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         body: JSON.stringify({
                             ListName: listName, CustomName: customName, DisplayMode: displayMode, ImageType: imageType,
                             CardSizeOffset: parseInt(cardSize, 10),
-                            UserIds: selectedUserIds, SourceTag: tagName, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions, MaxItems: maxItems
+                            UserIds: selectedUserIds, SourceTag: tagName, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions, RealPosterBadge: realPoster, MaxItems: maxItems
                         })
                     })
                     .then(function (r) { return r.json(); })
@@ -6836,14 +6898,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/PrepareFolder'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-Emby-Token': tok },
-                    body: JSON.stringify({ TagName: tagName, MaxItems: maxItems, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions })
+                    body: JSON.stringify({ TagName: tagName, MaxItems: maxItems, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions, RealPosterBadge: realPoster })
                 })
                 .then(function (r) { return r.json(); })
                 .then(function (prepareResult) {
                     if (!prepareResult.Success) throw new Error(prepareResult.Message || 'Failed to create folder.');
                     executeTopListCreationSteps(
                         tagName, displayName, selectedUserIds, displayMode, customName, imageType, maxItems,
-                        prepareResult, { saveBtn: saveBtn, errEl: errEl, modal: modal, badgeStyle: badgeStyle, badgeOptions: badgeOptions, cardSizeOffset: cardSize }, onSuccess
+                        prepareResult, { saveBtn: saveBtn, errEl: errEl, modal: modal, badgeStyle: badgeStyle, badgeOptions: badgeOptions, realPoster: realPoster, cardSizeOffset: cardSize }, onSuccess
                     );
                 })
                 .catch(function (err) {
@@ -6931,6 +6993,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var presetCardSize   = (preset && preset.cardSizeOffset) || '0';
             var presetBadgeStyle = (preset && preset.badgeStyle)  || (isShows ? 'top10' : 'neutral');
             var presetBadgeOptions = (preset && preset.badgeOptions) || '';
+            var presetRealPoster = (preset && preset.realPoster) || '';
 
             var displayOptions = [
                 { val: '',               label: 'Always' },
@@ -7029,7 +7092,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '</div>' +
 
                 '<div style="border-top:1px solid var(--line-color);padding-top:14px;margin-top:4px;">' +
-                buildBadgePickerHtml(presetBadgeStyle, presetBadgeOptions) +
+                buildBadgePickerHtml(presetBadgeStyle, presetBadgeOptions, presetRealPoster) +
                 '</div>' +
 
                 '<div class="mtl-error" style="color:#cc3333;font-size:0.85em;min-height:1.2em;margin-top:12px;margin-bottom:4px;"></div>' +
@@ -7187,6 +7250,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var cardSize        = normCardSize(modal.querySelector('.mtlCardSize').value);
                 var badgeStyle      = readBadgeStyle(modal);
                 var badgeOptions    = readBadgeOptions(modal);
+                var realPoster    = readRealPoster(modal);
                 var selectedUserIds = Array.from(modal.querySelectorAll('.chkMtlUser:checked')).map(function (c) { return c.value; });
 
                 if (!listName)                    { errEl.textContent = 'Please enter a name for the list.'; return; }
@@ -7205,7 +7269,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             CardSizeOffset: parseInt(cardSize, 10),
                             UserIds: selectedUserIds,
                             SourceTag: sourceTag,
-                            BadgeStyle: badgeStyle, BadgeOptions: badgeOptions,
+                            BadgeStyle: badgeStyle, BadgeOptions: badgeOptions, RealPosterBadge: realPoster,
                             SeriesIds: sourceTag ? [] : selectedMovies.map(function (m) { return m.ItemId; })
                         })
                     })
@@ -7233,7 +7297,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     headers: { 'Content-Type': 'application/json', 'X-Emby-Token': tok2 },
                     body: JSON.stringify({
                         ListName: listName,
-                        BadgeStyle: badgeStyle, BadgeOptions: badgeOptions,
+                        BadgeStyle: badgeStyle, BadgeOptions: badgeOptions, RealPosterBadge: realPoster,
                         Items: selectedMovies.map(function (m) { return { ImdbId: m.ImdbId, ItemId: m.ItemId }; })
                     })
                 })
@@ -7242,7 +7306,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     if (!prepareResult.Success) throw new Error(prepareResult.Message || 'Failed to create folder.');
                     executeTopListCreationSteps(
                         listName, customNameVal, selectedUserIds, displayMode, customNameVal, imageType, 0,
-                        prepareResult, { saveBtn: createBtn, errEl: errEl, modal: modal, badgeStyle: badgeStyle, badgeOptions: badgeOptions, cardSizeOffset: cardSize }, function () {
+                        prepareResult, { saveBtn: createBtn, errEl: errEl, modal: modal, badgeStyle: badgeStyle, badgeOptions: badgeOptions, realPoster: realPoster, cardSizeOffset: cardSize }, function () {
                             document.removeEventListener('keydown', onEsc);
                             if (typeof onSuccess === 'function') onSuccess();
                         }
@@ -7318,6 +7382,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var presetCardSize   = data.CardSizeOffset != null ? String(data.CardSizeOffset) : (editJson.cardSizeOffset || '0');
                 var presetBadgeStyle = data.BadgeStyle   || editJson.badgeStyle   || (isShows ? 'top10' : 'neutral');
                 var presetBadgeOptions = data.BadgeOptions != null ? data.BadgeOptions : (editJson.badgeOptions || '');
+                var presetRealPoster = data.RealPosterBadge != null ? data.RealPosterBadge : (editJson.realPoster || '');
                 var presetCustomName = data.CustomName   || editJson.customName   || '';
                 var presetMovies     = data.Movies       || [];
 
@@ -7385,7 +7450,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     '</div>' +
 
                     '<div style="border-top:1px solid var(--line-color);padding-top:14px;margin-top:4px;">' +
-                    buildBadgePickerHtml(presetBadgeStyle, presetBadgeOptions) +
+                    buildBadgePickerHtml(presetBadgeStyle, presetBadgeOptions, presetRealPoster) +
                     '</div>' +
 
                     '<div class="mtl-error" style="color:#cc3333;font-size:0.85em;min-height:1.2em;margin-top:12px;margin-bottom:4px;"></div>' +
@@ -7496,6 +7561,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         cardSize: wrapper.querySelector('.mtlCardSize').value,
                         badgeStyle: readBadgeStyle(body),
                         badgeOptions: readBadgeOptions(body),
+                        realPoster: readRealPoster(body),
                         userIds: Array.from(wrapper.querySelectorAll('.chkMtlUser:checked')).map(function (c) { return c.value; }).sort(),
                         movies: selectedMovies.map(function (m) { return m.ItemId; })
                     });
@@ -7520,6 +7586,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         var cardSize        = normCardSize(wrapper.querySelector('.mtlCardSize').value);
                         var badgeStyle      = readBadgeStyle(body);
                         var badgeOptions    = readBadgeOptions(body);
+                        var realPoster    = readRealPoster(body);
                         var userIds         = Array.from(wrapper.querySelectorAll('.chkMtlUser:checked')).map(function (c) { return c.value; });
 
                         if (userIds.length === 0)      { reject(new Error('Please select at least one target user.')); return; }
@@ -7533,7 +7600,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                 body: JSON.stringify({
                                     ListName: tagName, CustomName: customNameVal, DisplayMode: displayMode, ImageType: imageType,
                                     CardSizeOffset: parseInt(cardSize, 10),
-                                    UserIds: userIds, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions,
+                                    UserIds: userIds, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions, RealPosterBadge: realPoster,
                                     SeriesIds: selectedMovies.map(function (m) { return m.ItemId; })
                                 })
                             })
@@ -7549,7 +7616,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json', 'X-Emby-Token': tok2 },
                             body: JSON.stringify({
-                                ListName: tagName, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions,
+                                ListName: tagName, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions, RealPosterBadge: realPoster,
                                 Items: selectedMovies.map(function (m) { return { ImdbId: m.ImdbId, ItemId: m.ItemId }; })
                             })
                         })
@@ -7560,7 +7627,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             var errEl = wrapper.querySelector('.mtl-error');
                             executeTopListCreationSteps(
                                 tagName, customNameVal, userIds, displayMode, customNameVal, imageType, 0,
-                                prepareResult, { saveBtn: fakeBtn, errEl: errEl, modal: body, innerBox: wrapper, badgeStyle: badgeStyle, badgeOptions: badgeOptions, cardSizeOffset: cardSize, closeHandler: resolve, silent: true },
+                                prepareResult, { saveBtn: fakeBtn, errEl: errEl, modal: body, innerBox: wrapper, badgeStyle: badgeStyle, badgeOptions: badgeOptions, realPoster: realPoster, cardSizeOffset: cardSize, closeHandler: resolve, silent: true },
                                 resolve
                             );
                         })
@@ -7580,6 +7647,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var presetCardSize   = editJson.cardSizeOffset || '0';
                 var presetBadgeStyle = editJson.badgeStyle  || 'neutral';
                 var presetBadgeOptions = editJson.badgeOptions || '';
+                var presetRealPoster = editJson.realPoster || '';
                 var presetCustomName = editJson.customName  || '';
                 var presetMaxItems   = editJson.maxItems    || '0';
 
@@ -7618,7 +7686,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     '<label style="' + labelStyle + '">Card Size</label>' +
                     '<select is="emby-select" class="tlm-card-size" style="width:100%;">' + cardSizeOptionsHtml(presetCardSize) + '</select></div>' +
 
-                    buildBadgePickerHtml(presetBadgeStyle, presetBadgeOptions) +
+                    buildBadgePickerHtml(presetBadgeStyle, presetBadgeOptions, presetRealPoster) +
 
                     '<div style="' + fieldStyle + '">' +
                     '<label style="' + labelStyle + '">Max items <span style="font-weight:400;text-transform:none;letter-spacing:0;opacity:0.7;">' + (isShows ? '(up to 10 shows)' : '(0 = all)') + '</span></label>' +
@@ -7648,6 +7716,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         cardSize: wrapper.querySelector('.tlm-card-size').value,
                         badgeStyle: readBadgeStyle(body),
                         badgeOptions: readBadgeOptions(body),
+                        realPoster: readRealPoster(body),
                         maxItems: wrapper.querySelector('.tlm-max-items').value,
                         userIds: Array.from(wrapper.querySelectorAll('.chkTlmUser:checked')).map(function (c) { return c.value; }).sort()
                     });
@@ -7676,6 +7745,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         var cardSize      = normCardSize(wrapper.querySelector('.tlm-card-size').value);
                         var badgeStyle    = readBadgeStyle(body);
                         var badgeOptions  = readBadgeOptions(body);
+                        var realPoster    = readRealPoster(body);
                         var maxItems      = Math.max(0, parseInt(wrapper.querySelector('.tlm-max-items').value, 10) || 0);
                         var tok2 = window.ApiClient.accessToken ? window.ApiClient.accessToken() : '';
 
@@ -7686,7 +7756,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                 body: JSON.stringify({
                                     ListName: tagName, CustomName: customNameVal, DisplayMode: displayMode, ImageType: imageType,
                                     CardSizeOffset: parseInt(cardSize, 10),
-                                    UserIds: userIds, SourceTag: editJson.sourceTag || tagName, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions, MaxItems: maxItems
+                                    UserIds: userIds, SourceTag: editJson.sourceTag || tagName, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions, RealPosterBadge: realPoster, MaxItems: maxItems
                                 })
                             })
                             .then(function (r) { return r.json(); })
@@ -7701,7 +7771,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/PrepareFolder'), {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json', 'X-Emby-Token': tok2 },
-                            body: JSON.stringify({ TagName: tagName, MaxItems: maxItems, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions })
+                            body: JSON.stringify({ TagName: tagName, MaxItems: maxItems, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions, RealPosterBadge: realPoster })
                         })
                         .then(function (r) { return r.json(); })
                         .then(function (prepareResult) {
@@ -7710,7 +7780,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             var errEl = wrapper.querySelector('.tlm-error');
                             executeTopListCreationSteps(
                                 tagName, customNameVal, userIds, displayMode, customNameVal, imageType, maxItems,
-                                prepareResult, { saveBtn: fakeBtn, errEl: errEl, modal: body, innerBox: wrapper, badgeStyle: badgeStyle, badgeOptions: badgeOptions, cardSizeOffset: cardSize, closeHandler: resolve, silent: true },
+                                prepareResult, { saveBtn: fakeBtn, errEl: errEl, modal: body, innerBox: wrapper, badgeStyle: badgeStyle, badgeOptions: badgeOptions, realPoster: realPoster, cardSizeOffset: cardSize, closeHandler: resolve, silent: true },
                                 resolve
                             );
                         })
@@ -8211,6 +8281,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             cardSizeOffset: normCardSize(r.CardSizeOffset),
             badgeStyle:     r.BadgeStyle || (isShows ? 'top10' : 'neutral'),
             badgeOptions:   r.BadgeOptions || '',
+            realPoster:     r.RealPosterBadge || '',
             maxItems:       String(r.MaxItems || '0'),
             movies:         r.Items || [],
             notices:        r.Notices || []
@@ -8517,6 +8588,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     cardSizeOffset: normCardSize(settings.CardSizeOffset),
                     badgeStyle:  settings.BadgeStyle  || 'neutral',
                     badgeOptions: settings.BadgeOptions || '',
+                    realPoster:  settings.RealPosterBadge || '',
                     maxItems:    settings.MaxItems    || 0
                 };
             });
@@ -8547,6 +8619,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         cardSizeOffset: item.cardSizeOffset,
                         badgeStyle:  item.badgeStyle,
                         badgeOptions: item.badgeOptions || '',
+                        realPoster:  item.realPoster || '',
                         maxItems:    String(item.maxItems || '0')
                     }));
                     return '<div class="tag-row" data-tlname="' + escAttr(item.tagName.toLowerCase()) + '" data-ismanual="' + (isManual ? '1' : '0') + '" data-count="' + item.count + '" data-editjson="' + editJson + '">' +
