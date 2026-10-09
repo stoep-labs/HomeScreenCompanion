@@ -14,8 +14,8 @@ namespace HomeScreenCompanion
     /// A missing key (or "" for the whole thing) means the style's own look, so art without
     /// options is drawn exactly as before. Keys:
     ///   tilt    straight | left | right
-    ///   rows    2 | 3                      (missing = auto)
-    ///   posters how many titles             (missing = auto)
+    ///   rows    1..10 (popup: 2-5 or custom) (missing = auto)
+    ///   posters 1..100 titles               (missing = auto)
     ///   title   true | false               show the title
     ///   font    a font id (ArtFonts)
     ///   pos     tl tc tr ml mc mr bl bc br  title position
@@ -59,8 +59,8 @@ namespace HomeScreenCompanion
                 switch (key)
                 {
                     case "tilt": if (str == "straight" || str == "left" || str == "right") o.Tilt = str; break;
-                    case "rows": if (num >= 1 && num <= 6) o.Rows = num; break;
-                    case "posters": if (num >= 1 && num <= 40) o.Posters = num; break;
+                    case "rows": if (num >= 1 && num <= CollectionArtRenderer.MaxRows) o.Rows = num; break;
+                    case "posters": if (num >= 1 && num <= CollectionArtRenderer.MaxPosters) o.Posters = num; break;
                     case "title": if (raw == "true" || raw == "false") o.ShowTitle = raw == "true"; break;
                     case "font": if (str != null && ArtFonts.Exists(str)) o.Font = str; break;
                     case "pos": if (str != null && Positions.Contains(str)) o.Pos = str; break;

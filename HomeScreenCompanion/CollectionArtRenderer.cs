@@ -33,14 +33,20 @@ namespace HomeScreenCompanion
         public static int PostersFor(string style, bool background, ArtOptions? opts = null)
         {
             var st = (style ?? "").Trim().ToLowerInvariant();
-            if (opts?.Posters != null && st != Ranked) return opts.Posters.Value;
+            if (opts?.Posters != null && st != Ranked) return Math.Min(MaxPosters, opts.Posters.Value);
             // Rows chosen but no count: the style's own count rounded up to full rows.
             if (opts?.Rows != null)
             {
                 int r = opts.Rows.Value;
-                if (st == Fan) return FullRowsCount(background ? 7 : 5, r);
-                if (st == HeroStrip || (st == Spotlight && !background)) return 1 + FullRowsCount(background && st == HeroStrip ? 6 : 5, r);
-                if (st == Spotlight) return 1 + FullRowsCount(4, r);
+                if (st == Fan) return RowsCount(background ? 7 : 5, r, background);
+                if (st == HeroStrip || (st == Spotlight && !background)) return 1 + RowsCount(background && st == HeroStrip ? 6 : 5, r, background);
+                if (st == Spotlight) return 1 + RowsCount(4, r, background);
+                if (r >= 4 && st == Collage)
+                {
+                    int w = background ? BackgroundW : PosterW, h = background ? BackgroundH : PosterH;
+                    return Math.Min(MaxPosters, Math.Max(background ? 40 : 9, r * CollageCols(r, w, h)));
+                }
+                if (r >= 4 && st != Wall && st != Ranked) return RowsCount(background ? 14 : 12, r, background);
             }
             switch (st)
             {
@@ -54,16 +60,64 @@ namespace HomeScreenCompanion
             }
         }
 
+        public const int MaxPosters = 100, MaxRows = 10;
+
         // The smallest multiple of rows that is at least count (5 cards on 2 rows -> 6).
         private static int FullRowsCount(int count, int rows) => rows <= 1 ? count : rows * (int)Math.Ceiling(count / (double)rows);
 
-        // How many of the available cards to use: the asked count when Posters is set (laid out
-        // as evenly as possible), else the wanted count trimmed to full rows.
+        // The count for Rows set and Posters on Auto: the style's own count rounded up to full
+        // rows; from 4 rows on at least 3 a row (4 on a background) so a row never shrinks to
+        // one or two lonely cards.
+        private static int RowsCount(int own, int rows, bool background) =>
+            rows <= 3 ? FullRowsCount(own, rows) : rows * Math.Max((int)Math.Ceiling(own / (double)rows), background ? 4 : 3);
+
+        // Collage columns for that many rows: cells about a poster's shape.
+        private static int CollageCols(int rows, int w, int h) => Math.Max(1, (int)Math.Round(w / (h / (double)rows / PosterRatio)));
+
+        // How many cards to draw: the asked count when Posters is set (laid out as evenly as
+        // possible; repeats fill in when the source has fewer titles), else the available
+        // titles up to the wanted count, trimmed to full rows.
         private static int CardsToUse(int available, int wanted, int rows, bool exact)
         {
+            if (exact) return Math.Max(0, wanted);
             int n = Math.Min(available, wanted);
             if (!exact && rows > 1 && n >= rows) n -= n % rows;
             return Math.Max(0, n);
+        }
+
+        // The cards for rows of the given lengths (each row centred): the posters in order, and
+        // when there are fewer posters than cards, repeats that never touch a copy of themselves
+        // (beside, above, below or diagonal) and sit as far from their copies as they can.
+        private static List<SKBitmap> Spread(List<SKBitmap> posters, int[] counts)
+        {
+            int total = counts.Sum();
+            if (posters.Count >= total || posters.Count == 0) return posters.Take(total).ToList();
+            var picks = SpreadPicks(posters.Count, counts);
+            return picks.Select(i => posters[i]).ToList();
+        }
+
+        internal static int[] SpreadPicks(int available, int[] counts)
+        {
+            var cells = new List<(int Row, double X)>();
+            for (int r = 0; r < counts.Length; r++)
+                for (int j = 0; j < counts[r]; j++) cells.Add((r, j - (counts[r] - 1) / 2.0));
+            var picks = new int[cells.Count];
+            var rng = new Random(available * 7919 + cells.Count);
+            for (int i = 0; i < cells.Count; i++)
+            {
+                if (i < available) { picks[i] = i; continue; }
+                var (r0, x0) = cells[i];
+                double Dist(int j) => Math.Max(Math.Abs(cells[j].Row - r0), Math.Abs(cells[j].X - x0));
+                var touching = new HashSet<int>();
+                for (int j = 0; j < i; j++) if (Dist(j) <= 1.01) touching.Add(picks[j]);
+                var cands = Enumerable.Range(0, available).Where(p => !touching.Contains(p)).ToList();
+                if (cands.Count == 0) cands = Enumerable.Range(0, available).ToList();
+                double Far(int p) { double d = double.MaxValue; for (int j = 0; j < i; j++) if (picks[j] == p) d = Math.Min(d, Dist(j)); return d; }
+                double far = cands.Max(Far);
+                var best = cands.Where(p => Far(p) >= far - 1e-9).ToList();
+                picks[i] = best[rng.Next(best.Count)];
+            }
+            return picks;
         }
 
         // count cards over rows as evenly as possible, the fuller rows first (10 on 3 -> 4/3/3).
@@ -76,7 +130,7 @@ namespace HomeScreenCompanion
         }
 
         // Rows for a strip of n cards when Posters is set but Rows is auto: one row up to perRow.
-        private static int AutoStripRows(int n, int perRow) => Math.Max(1, (int)Math.Ceiling(n / (double)perRow));
+        private static int AutoStripRows(int n, int perRow) => Math.Min(MaxRows, Math.Max(1, (int)Math.Ceiling(n / (double)perRow)));
 
         // Turns what draw() paints by deg about (cx, cy), shrunk so a bw x bh block still fits
         // inside a fw x fh box (no shrinking when deg is 0, nothing is turned then).
@@ -256,9 +310,12 @@ namespace HomeScreenCompanion
             var posters = new List<SKBitmap>();
             try
             {
+                // Over 40 posters the cards are small: each poster is decoded at about 600 px high
+                // (JPEG decodes straight to a smaller scale), so 100 posters stay light on memory.
+                bool small = posterPaths.Count > 40;
                 foreach (var path in posterPaths)
                 {
-                    var bmp = SKBitmap.Decode(path);
+                    var bmp = small ? DecodeSmall(path, 600) : SKBitmap.Decode(path);
                     if (bmp != null) posters.Add(bmp);
                 }
                 if (posters.Count == 0) throw new InvalidOperationException("none of the posters could be read");
@@ -294,6 +351,31 @@ namespace HomeScreenCompanion
             }
         }
 
+        // A poster decoded at about maxH pixels high (never larger than the file).
+        private static SKBitmap? DecodeSmall(string path, int maxH)
+        {
+            try
+            {
+                using var codec = SKCodec.Create(path);
+                if (codec == null) return SKBitmap.Decode(path);
+                var info = codec.Info;
+                if (info.Height <= maxH * 1.5) return SKBitmap.Decode(codec);
+                var dims = codec.GetScaledDimensions(maxH / (float)info.Height);
+                if (dims.Height < maxH) dims = info.Size;   // no matching scale: decode then resize
+                var bmp = new SKBitmap(new SKImageInfo(dims.Width, dims.Height, SKColorType.Rgba8888, SKAlphaType.Premul));
+                if (codec.GetPixels(bmp.Info, bmp.GetPixels()) is var r && r != SKCodecResult.Success && r != SKCodecResult.IncompleteInput)
+                { bmp.Dispose(); return SKBitmap.Decode(path); }
+                if (bmp.Height > maxH * 1.5)
+                {
+                    var resized = bmp.Resize(new SKImageInfo((int)Math.Round(bmp.Width * maxH / (double)bmp.Height), maxH, SKColorType.Rgba8888, SKAlphaType.Premul), SKFilterQuality.Medium);
+                    bmp.Dispose();
+                    return resized;
+                }
+                return bmp;
+            }
+            catch { return SKBitmap.Decode(path); }
+        }
+
         // ── grid ────────────────────────────────────────────────────────────────────────
         // Posters: up to 12 (1, 2x1, 3x2, 3x3, 4x3…); backgrounds: up to 14 in at most two rows.
         // A partial last row is centred. The title sits in a dark band at the bottom; a two-line
@@ -308,8 +390,13 @@ namespace HomeScreenCompanion
             int titleH = hasTitle ? (int)((background ? 200 : 300) * x.Scale) : 0;
             int titleGap = hasTitle ? (background ? 30 : 40) : 0;
             var region = SKRect.Create(m, m, w - 2 * m, h - 2 * m - titleH - titleGap);
-            var g = BestGrid(posters.Count, (int)region.Width, (int)region.Height, 22, x.O.Posters ?? (background ? 14 : 12),
-                             x.O.Rows ?? (background ? 2 : (int?)null), x.O.Rows, x.O.Posters != null);
+            int cap = x.O.Posters ?? (x.O.Rows >= 4 ? RowsCount(background ? 14 : 12, x.O.Rows.Value, background) : background ? 14 : 12);
+            // Many small cards (a custom count over 20, or more than 5 rows) get a narrower gap.
+            int gridGap = (x.O.Posters ?? 0) > 20 || (x.O.Rows ?? 0) > 5 ? 10 : 22;
+            // A chosen count is drawn in full: repeats fill in when the source has fewer titles.
+            var g = BestGrid(x.O.Posters != null ? Math.Max(posters.Count, cap) : posters.Count, (int)region.Width, (int)region.Height, gridGap, cap,
+                             x.O.Rows ?? (background && !(x.O.Posters > 40) ? 2 : (int?)null), x.O.Rows, x.O.Posters != null);
+            if (g.RowCounts != null) posters = Spread(posters, g.RowCounts);
 
             float radius = RadiusFor(g.CardW);
             var cells = g.Cells(region);
@@ -417,9 +504,11 @@ namespace HomeScreenCompanion
             {
                 // Customise "Posters": each poster once, rows of even length spanning the width
                 // (12 on 3 rows = 4/4/4; 10 on 3 = 4/3/3). Rows auto: the rows whose cells come
-                // closest to a poster's shape.
+                // closest to a poster's shape. A source with fewer titles than asked repeats
+                // posters (never beside a copy).
+                n = Math.Max(n, x.O.Posters.Value);
                 int best = 1; double bestErr = double.MaxValue;
-                for (int r = 1; r <= Math.Min(n, 8); r++)
+                for (int r = 1; r <= Math.Min(n, MaxRows); r++)
                 {
                     if (x.O.Rows != null && r != Math.Min(n, x.O.Rows.Value)) continue;
                     int c0 = (int)Math.Ceiling(n / (double)r);
@@ -428,17 +517,17 @@ namespace HomeScreenCompanion
                 }
                 rowCounts = EvenRows(n, best);
                 rows = rowCounts.Length; cols = rowCounts[0];
+                posters = Spread(posters, rowCounts);
             }
             else if (x.O.Rows != null)
             {
                 rows = x.O.Rows.Value;
-                cols = Math.Max(1, (int)Math.Round(w / (h / (double)rows / PosterRatio)));
+                cols = CollageCols(rows, w, h);
             }
             else if (w < h) { rows = Math.Max(1, (int)Math.Sqrt(n)); cols = (n + rows - 1) / rows; }
             else { rows = Math.Max(1, (int)(Math.Sqrt(n) / (w / (double)h))); cols = (n + rows - 1) / rows; }
             int cellW = w / cols, cellH = h / rows;
-            var used = new int[rows * cols];
-            var rng = new Random(n * 7919 + w);
+            var used = rowCounts == null ? CollagePicks(n, rows, cols, new Random(n * 7919 + w)) : new int[0];
             using var paint = new SKPaint { FilterQuality = SKFilterQuality.High };
             float tilt = x.Tilt(-8, 0);
             if (tilt != 0)
@@ -469,18 +558,7 @@ namespace HomeScreenCompanion
             else
             for (int i = 0; i < rows * cols; i++)
             {
-                int pick = i;
-                if (i >= n)
-                {
-                    var avoid = new HashSet<int>();
-                    if (i % cols > 0) avoid.Add(used[i - 1]);
-                    if (i >= cols) avoid.Add(used[i - cols]);
-                    var cands = Enumerable.Range(0, n).Where(x => !avoid.Contains(x)).ToList();
-                    if (cands.Count == 0) cands = Enumerable.Range(0, n).ToList();
-                    pick = cands[rng.Next(cands.Count)];
-                }
-                used[i] = pick;
-                var p = posters[pick];
+                var p = posters[used[i]];
                 c.DrawBitmap(p, CoverSource(p.Width, p.Height, cellW, cellH), SKRect.Create((i % cols) * cellW, (i / cols) * cellH, cellW, cellH), paint);
             }
             if (tilt != 0) c.Restore();
@@ -520,6 +598,41 @@ namespace HomeScreenCompanion
             }
         }
 
+        // The poster for each cell of a rows x cols collage of n posters: the posters in order,
+        // then the spare cells filled with repeats (CollageRepeat). Four posters with spare cells
+        // use a 2x2 pattern, the only way to keep every copy apart from its own.
+        internal static int[] CollagePicks(int n, int rows, int cols, Random rng)
+        {
+            var used = new int[rows * cols];
+            bool pattern = n == 4 && rows >= 2 && cols >= 2 && rows * cols > n;
+            for (int i = 0; i < used.Length; i++)
+                used[i] = pattern ? 2 * (i / cols % 2) + i % cols % 2 : i < n ? i : CollageRepeat(used, i, cols, n, rng);
+            return used;
+        }
+
+        // A poster for spare collage cell i (cells before it are filled): never one of the cards
+        // around it (beside, above or diagonal), and of the rest the one whose nearest copy is
+        // furthest away, so repeats are spread out.
+        private static int CollageRepeat(int[] used, int i, int cols, int n, Random rng)
+        {
+            int r0 = i / cols, c0 = i % cols;
+            var touching = new HashSet<int>();
+            for (int j = 0; j < i; j++)
+                if (Math.Abs(j / cols - r0) <= 1 && Math.Abs(j % cols - c0) <= 1) touching.Add(used[j]);
+            var cands = Enumerable.Range(0, n).Where(p => !touching.Contains(p)).ToList();
+            if (cands.Count == 0) cands = Enumerable.Range(0, n).ToList();
+            int Dist(int p)
+            {
+                int d = int.MaxValue;
+                for (int j = 0; j < i; j++)
+                    if (used[j] == p) d = Math.Min(d, Math.Max(Math.Abs(j / cols - r0), Math.Abs(j % cols - c0)));
+                return d;
+            }
+            int far = cands.Max(Dist);
+            var best = cands.Where(p => Dist(p) == far).ToList();
+            return best[rng.Next(best.Count)];
+        }
+
         // ── fan ─────────────────────────────────────────────────────────────────────────
         // Cards fanned like a hand of playing cards, the middle one on top; title underneath.
         private static void DrawFan(SKCanvas c, List<SKBitmap> posters, string title, bool background, int w, int h, Ctx x)
@@ -532,7 +645,7 @@ namespace HomeScreenCompanion
             float titleY = (background ? 590 : 800) * (h / (background ? 720f : 1000f));
             float fanTilt = x.Tilt(-8, 0);
             // One fan of cards (the middle one on top) centred on (fx, fy).
-            void FanRow(List<SKBitmap> cards, float fx, float fy, float cw, float ch)
+            void FanRow(List<SKBitmap> cards, float fx, float fy, float cw, float ch, float step = 0.55f)
             {
                 int cnt = cards.Count;
                 float mid = (cnt - 1) / 2f;
@@ -542,15 +655,18 @@ namespace HomeScreenCompanion
                 {
                     float k = i - mid, kb = bend == 1f ? k : k * bend;
                     c.Save();
-                    c.Translate(fx + k * cw * 0.55f, fy + (float)Math.Pow(Math.Abs(kb), 1.6) * (bend == 1f ? cw : cw / bend) * 0.09f);
+                    c.Translate(fx + k * cw * step, fy + (float)Math.Pow(Math.Abs(kb), 1.6) * (bend == 1f ? cw : cw / bend) * 0.09f);
                     c.RotateDegrees(kb * spread);
                     DrawCard(c, cards[i], SKRect.Create(-cw / 2, -ch / 2, cw, ch), 14 * s, 16 * s, 12 * s, 170);
                     c.Restore();
                 }
             }
-            if (x.O.Rows == null || x.O.Rows <= 1)
+            // More than 20 cards with Rows on Auto: stacked fans of about 10.
+            int fanRows = x.O.Rows ?? (x.O.Posters > 20 ? AutoStripRows(x.O.Posters.Value, 10) : 1);
+            if (fanRows <= 1)
             {
-                int n = Math.Min(posters.Count, x.O.Posters != null ? Math.Min(x.O.Posters.Value, 20) : defN);
+                int n = x.O.Posters != null ? Math.Min(x.O.Posters.Value, 20) : Math.Min(posters.Count, defN);
+                if (posters.Count < n) posters = Spread(posters, new[] { n });
                 float cw = (background ? 230 : 260) * s, ch = cw * PosterRatio;
                 if (n > defN) { cw *= (defN + 1) / (float)(n + 1); ch = cw * PosterRatio; }
                 if (fanTilt != 0) { c.Save(); c.RotateDegrees(fanTilt, w / 2f, cy); }
@@ -561,20 +677,24 @@ namespace HomeScreenCompanion
             {
                 // Customise "Rows": that many smaller fans stacked above the title, the cards
                 // spread evenly over them (full rows unless Posters is set).
-                int rows = x.O.Rows.Value;
-                int n = CardsToUse(posters.Count, x.O.Posters ?? FullRowsCount(defN, rows), rows, x.O.Posters != null);
+                int rows = fanRows;
+                int n = CardsToUse(posters.Count, x.O.Posters ?? RowsCount(defN, rows, background), rows, x.O.Posters != null);
                 var counts = EvenRows(n, rows);
+                posters = Spread(posters, counts);
                 float top = 24 * s, bottom = titleY - 16 * s, band = (bottom - top) / counts.Length;
                 int most = counts.Max();
                 float cwByH = band * (background ? 1.1f : 0.82f) / PosterRatio, cwByW = w * 0.9f / (1 + 0.55f * (most - 1));
                 float cw = Math.Min(cwByH, cwByW), ch = cw * PosterRatio;
+                // From 4 rows on the small cards spread wider (up to side by side) so each fan
+                // still spans the picture instead of a narrow tower.
+                float step = rows >= 4 && most > 1 ? Math.Max(0.55f, Math.Min(1.05f, (w * 0.9f - cw) / ((most - 1) * cw))) : 0.55f;
                 if (fanTilt != 0) { c.Save(); c.RotateDegrees(fanTilt, w / 2f, (top + bottom) / 2); }
                 int at = 0;
                 for (int r = 0; r < counts.Length; r++)
                 {
                     float bendR = counts[r] > defN ? (defN - 1) / (float)(counts[r] - 1) : 1f;
                     float arc = (float)Math.Pow((counts[r] - 1) / 2f * bendR, 1.6) * cw / bendR * 0.09f;
-                    FanRow(posters.Skip(at).Take(counts[r]).ToList(), w / 2f, top + band * (r + 0.5f) - arc / 2, cw, ch);
+                    FanRow(posters.Skip(at).Take(counts[r]).ToList(), w / 2f, top + band * (r + 0.5f) - arc / 2, cw, ch, step);
                     at += counts[r];
                 }
                 if (fanTilt != 0) c.Restore();
@@ -605,7 +725,7 @@ namespace HomeScreenCompanion
                 {
                     // Both set: the rows keep their height and the cards narrow (cover-cropped, down
                     // to a little under half a poster's width) so about that many posters fit across.
-                    int perRow = (int)Math.Ceiling(posters.Count / (double)x.O.Rows.Value);
+                    int perRow = (int)Math.Ceiling(x.O.Posters.Value / (double)x.O.Rows.Value);
                     cw = Math.Max(cw * 0.45f, Math.Min(cw, w / (float)Math.Max(1, perRow) - gap));
                 }
             }
@@ -613,7 +733,7 @@ namespace HomeScreenCompanion
             {
                 // Customise "Posters": cards sized so about that many fill the picture (4 = four
                 // big posters), repeating only at the edges the tilt uncovers.
-                cw = (float)Math.Sqrt(w * (double)h / (posters.Count * PosterRatio)) - gap;
+                cw = (float)Math.Sqrt(w * (double)h / (x.O.Posters.Value * PosterRatio)) - gap;
                 ch = cw * PosterRatio;
             }
             float bigW = w * 1.8f, bigH = h * 1.8f;
@@ -622,35 +742,10 @@ namespace HomeScreenCompanion
             c.Translate(w / 2f, h / 2f);
             c.RotateDegrees(x.Tilt(-14, -14));
             c.Translate(-bigW / 2, -bigH / 2);
-            // Posters repeat to fill the wall, but never touch a card showing the same poster: not
-            // the card to the left, nor the two cards above (rows are offset by half a card).
-            var grid = new int[rows, cols];
-            int next = 0;
+            var grid = WallPicks(posters.Count, rows, cols);
             for (int r = 0; r < rows; r++)
                 for (int col = 0; col < cols; col++)
-                {
-                    // Cards that touch this one, and (when there are enough films) the ring around
-                    // those, so a repeat is at least two cards away.
-                    var touching = new HashSet<int>();
-                    var near = new HashSet<int>();
-                    void Mark(HashSet<int> set, int rr, int cc) { if (rr >= 0 && cc >= 0 && cc < cols) set.Add(grid[rr, cc]); }
-                    Mark(touching, r, col - 1); Mark(near, r, col - 2);
-                    if (r > 0)
-                    {
-                        int a = r % 2 == 1 ? col : col - 1;   // odd rows sit half a card to the right
-                        Mark(touching, r - 1, a); Mark(touching, r - 1, a + 1);
-                        Mark(near, r - 1, a - 1); Mark(near, r - 1, a + 2);
-                    }
-                    if (r > 1) { Mark(near, r - 2, col - 1); Mark(near, r - 2, col); Mark(near, r - 2, col + 1); }
-                    near.UnionWith(touching);
-                    int pick = next % posters.Count;
-                    var avoid = posters.Count > near.Count ? near : touching;
-                    for (int tries = 0; tries < posters.Count && avoid.Contains(pick); tries++)
-                        pick = (pick + 1) % posters.Count;
-                    grid[r, col] = pick;
-                    next = pick + 1;
-                    MockCard(c, posters[pick], col * (cw + gap) + (r % 2) * (cw / 2), r * (ch + gap), cw, ch, 8 * s, false, s);
-                }
+                    MockCard(c, posters[grid[r, col]], col * (cw + gap) + (r % 2) * (cw / 2), r * (ch + gap), cw, ch, 8 * s, false, s);
             c.Restore();
             byte dimAlpha = x.O.Darken.HasValue ? (byte)Math.Round(255 * x.Dark(0)) : (byte)90;
             using (var dim = new SKPaint { Color = SKColors.Black.WithAlpha(dimAlpha) }) c.DrawRect(0, 0, w, h, dim);
@@ -680,6 +775,48 @@ namespace HomeScreenCompanion
             }
         }
 
+        // Which poster goes on each card of a wall of rows x cols (odd rows sit half a card to the
+        // right). Posters repeat to fill the wall, but never touch a card showing the same poster:
+        // not the card beside it, nor the two cards above or below (the diagonal neighbours of a
+        // brick wall). With enough films a repeat is also kept off the ring around those. Three
+        // films use a fixed three-colour pattern (the only way to keep them apart); with one or
+        // two films touching repeats cannot be avoided.
+        internal static int[,] WallPicks(int count, int rows, int cols)
+        {
+            var grid = new int[rows, cols];
+            if (count == 3)
+            {
+                for (int r = 0; r < rows; r++)
+                    for (int col = 0; col < cols; col++)
+                        grid[r, col] = (((col - r / 2 + 2 * r) % 3) + 3) % 3;
+                return grid;
+            }
+            int next = 0;
+            for (int r = 0; r < rows; r++)
+                for (int col = 0; col < cols; col++)
+                {
+                    var touching = new HashSet<int>();
+                    var near = new HashSet<int>();
+                    void Mark(HashSet<int> set, int rr, int cc) { if (rr >= 0 && cc >= 0 && cc < cols) set.Add(grid[rr, cc]); }
+                    Mark(touching, r, col - 1); Mark(near, r, col - 2);
+                    if (r > 0)
+                    {
+                        int a = r % 2 == 1 ? col : col - 1;   // odd rows sit half a card to the right
+                        Mark(touching, r - 1, a); Mark(touching, r - 1, a + 1);
+                        Mark(near, r - 1, a - 1); Mark(near, r - 1, a + 2);
+                    }
+                    if (r > 1) { Mark(near, r - 2, col - 1); Mark(near, r - 2, col); Mark(near, r - 2, col + 1); }
+                    near.UnionWith(touching);
+                    int pick = next % count;
+                    var avoid = count > near.Count ? near : touching;
+                    for (int tries = 0; tries < count && avoid.Contains(pick); tries++)
+                        pick = (pick + 1) % count;
+                    grid[r, col] = pick;
+                    next = pick + 1;
+                }
+            return grid;
+        }
+
         // ── hero strip ──────────────────────────────────────────────────────────────────
         // Poster: the first title as a lightly blurred hero fading to dark, a two-tone title,
         // and a strip of five cards along the bottom.
@@ -697,6 +834,7 @@ namespace HomeScreenCompanion
                 stripTop = h - ch - 34 * sy;
                 var strip = posters.Skip(1).Take(n).ToList();
                 if (strip.Count == 0) strip = posters.Take(1).ToList();
+                if (x.O.Posters != null && strip.Count < n) strip = Spread(strip, new[] { n });
                 float x0 = (w - (strip.Count * cw + (strip.Count - 1) * gap)) / 2;
                 float top = stripTop;
                 Tilted(c, tilt, w / 2f, stripTop + ch / 2, strip.Count * cw + (strip.Count - 1) * gap, ch, w - margin, ch + 68 * sy, () =>
@@ -710,11 +848,12 @@ namespace HomeScreenCompanion
                 // Rows set, or more cards than one strip holds: the strip in rows (spread evenly;
                 // full rows unless Posters is set), taking at most 56% of the height.
                 bool exact = x.O.Posters != null;
-                int want = exact ? x.O.Posters!.Value - 1 : FullRowsCount(5, x.O.Rows!.Value);
+                int want = exact ? x.O.Posters!.Value - 1 : RowsCount(5, x.O.Rows!.Value, false);
                 var pool = posters.Count > 1 ? posters.Skip(1).ToList() : posters.Take(1).ToList();
                 int rows = x.O.Rows ?? AutoStripRows(want, 7);
                 int n = Math.Max(1, CardsToUse(pool.Count, Math.Max(1, want), rows, exact));
                 var counts = EvenRows(n, rows);
+                pool = Spread(pool, counts);
                 int most = counts.Max();
                 float cw = (w - 2 * margin - gap * (most - 1)) / most;
                 float maxH = h * 0.56f;
@@ -757,6 +896,7 @@ namespace HomeScreenCompanion
             {
                 int take = x.O.Posters != null ? Math.Max(1, Math.Min(x.O.Posters.Value - 1, 14)) : 6;
                 var strip = posters.Count > 1 ? posters.Skip(1).Take(take).ToList() : posters.Take(1).ToList();
+                if (x.O.Posters != null && strip.Count < take) strip = Spread(strip, new[] { take });
                 if (strip.Count > 6) { cw = Math.Min(cw, (w - 2 * x0 - gap * (strip.Count - 1)) / strip.Count); ch = cw * PosterRatio; }
                 float stripW = strip.Count * cw + (strip.Count - 1) * gap;
                 Tilted(c, tilt, x0 + stripW / 2, h - ch / 2 - 60 * s, stripW, ch, w - x0, ch + 80 * s, () =>
@@ -770,11 +910,12 @@ namespace HomeScreenCompanion
                 // Rows set, or more cards than one strip holds: the strip in rows under the title
                 // (spread evenly; full rows unless Posters is set).
                 bool exact = x.O.Posters != null;
-                int want = exact ? x.O.Posters!.Value - 1 : FullRowsCount(6, x.O.Rows!.Value);
+                int want = exact ? x.O.Posters!.Value - 1 : RowsCount(6, x.O.Rows!.Value, true);
                 var pool = posters.Count > 1 ? posters.Skip(1).ToList() : posters.Take(1).ToList();
                 int rows = x.O.Rows ?? AutoStripRows(want, 10);
                 int n = Math.Max(1, CardsToUse(pool.Count, Math.Max(1, want), rows, exact));
                 var counts = EvenRows(n, rows);
+                pool = Spread(pool, counts);
                 int most = counts.Max();
                 float titleBottom = string.IsNullOrWhiteSpace(title) ? 60 * s : 150 * s + lines.Length * size * Step(face, Display.Value, 0.86f);
                 float maxH = h - 60 * s - titleBottom - 30 * s;
@@ -831,9 +972,11 @@ namespace HomeScreenCompanion
                 if (x.O.Rows != null || (x.O.Posters != null && x.O.Posters.Value - 1 > 6))
                 {
                     // Thumbnails in rows: the title gives up height so each row keeps a usable size.
-                    int want = x.O.Posters != null ? x.O.Posters.Value - 1 : FullRowsCount(4, x.O.Rows!.Value);
+                    int want = x.O.Posters != null ? x.O.Posters.Value - 1 : RowsCount(4, x.O.Rows!.Value, true);
                     int rowsWanted = Math.Min(x.O.Rows ?? AutoStripRows(want, 6), Math.Max(1, want));
-                    float limit = h - 80 * s - (rowsWanted * 120 * s + (rowsWanted - 1) * 14 * s);
+                    // The rows reserve at most 36% of the height (they shrink to fit), so the title
+                    // keeps a readable size with many rows.
+                    float limit = h - 80 * s - Math.Min(rowsWanted * 120 * s + (rowsWanted - 1) * 14 * s, h * 0.36f);
                     if (y + lines.Length * size * 1.25f > limit)
                         (lines, size) = MockLines(title, face, w * 0.42f, Math.Max(40 * s, (limit - y) / (lines.Length * 1.25f)), x.Upper(false), preferTwo: true);
                 }
@@ -849,6 +992,7 @@ namespace HomeScreenCompanion
                 float cardsY = Math.Max(500 * s, y + 30 * s);
                 int take = x.O.Posters != null ? Math.Max(1, Math.Min(x.O.Posters.Value - 1, 10)) : 4;
                 var strip = posters.Skip(1).Take(take).ToList();
+                if (x.O.Posters != null && strip.Count < take) strip = Spread(strip.Count > 0 ? strip : posters.Take(1).ToList(), new[] { take });
                 float step = 124 * s, cardW = 110 * s, cardH = 165 * s;
                 if (strip.Count > 4) { step = (w * 0.5f - left) / strip.Count; cardW = step * 110 / 124f; cardH = cardW * PosterRatio; }
                 float stripW = (strip.Count - 1) * step + cardW;
@@ -863,13 +1007,15 @@ namespace HomeScreenCompanion
                 // Rows set, or more thumbnails than one row holds: thumbnails in rows under the
                 // title within the left half (spread evenly; full rows unless Posters is set).
                 bool exact = x.O.Posters != null;
-                int want = exact ? x.O.Posters!.Value - 1 : FullRowsCount(4, x.O.Rows!.Value);
+                int want = exact ? x.O.Posters!.Value - 1 : RowsCount(4, x.O.Rows!.Value, true);
                 var pool = posters.Skip(1).ToList();
+                if (pool.Count == 0 && exact) pool = posters.Take(1).ToList();
                 int rows = x.O.Rows ?? AutoStripRows(want, 6);
                 int n = CardsToUse(pool.Count, Math.Max(1, want), rows, exact);
-                if (n > 0)
+                if (n > 0 && pool.Count > 0)
                 {
                     var counts = EvenRows(n, rows);
+                    pool = Spread(pool, counts);
                     int most = counts.Max();
                     float top = y + 30 * s, availH = h - 50 * s - top, availW = w * 0.5f - left, gap = 14 * s;
                     float cardW = Math.Min(110 * s, (availW - gap * (most - 1)) / most);

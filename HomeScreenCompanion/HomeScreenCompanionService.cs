@@ -162,6 +162,7 @@ namespace HomeScreenCompanion
         public string Poster { get; set; } = "";       // data: URL, empty when not generated
         public string Background { get; set; } = "";
         public int Titles { get; set; }
+        public string Note { get; set; } = "";         // e.g. "this source has 12 titles; posters repeat"
     }
 
     // What a source (any type) would tag, from its unsaved settings. Changes nothing.
@@ -1016,6 +1017,8 @@ public class HomeScreenCompanionService : IService
             try
             {
                 var cache = new Dictionary<Guid, string?>();
+                int distinct = CollectionArtRenderer.DistinctTitles(items).Count;
+                string repeatNote = "";
                 string? PosterOf(BaseItem item)
                 {
                     if (!cache.TryGetValue(item.Id, out var path))
@@ -1025,19 +1028,23 @@ public class HomeScreenCompanionService : IService
                 string Draw(string style, bool bg)
                 {
                     var opts = ArtOptions.Parse(bg ? source.CollectionBackgroundOptions : source.CollectionPosterOptions);
+                    if (opts.Posters != null && style.Trim().ToLowerInvariant() != CollectionArtRenderer.Ranked && opts.Posters.Value > distinct)
+                        repeatNote = $"This source has {distinct} title{(distinct == 1 ? "" : "s")}; the posters repeat to make {opts.Posters.Value} (never next to a copy).";
                     var posters = CollectionArtRenderer.DistinctTitles(items).Take(CollectionArtRenderer.PostersFor(style, bg, opts)).Select(PosterOf).Where(p => p != null).Select(p => p!).ToList();
                     if (posters.Count == 0) return "";
                     var output = Path.Combine(tempDir, bg ? "background.jpg" : "poster.jpg");
                     CollectionArtRenderer.Render(style, posters, title, bg, output, opts);
                     return "data:image/jpeg;base64," + Convert.ToBase64String(File.ReadAllBytes(output));
                 }
-                return new PreviewCollectionArtResponse
+                var res = new PreviewCollectionArtResponse
                 {
                     Success = true,
                     Titles = items.Count,
                     Poster = poster ? Draw(source.CollectionPosterStyle, false) : "",
                     Background = background ? Draw(source.CollectionBackgroundStyle, true) : ""
                 };
+                res.Note = repeatNote;
+                return res;
             }
             catch (Exception ex)
             {

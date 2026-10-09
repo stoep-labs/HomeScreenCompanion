@@ -807,6 +807,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             if (res.Poster) html += '<div><div class="fieldDescription" style="margin-bottom:6px;">Poster</div><img src="' + res.Poster + '" style="width:180px; border-radius:4px; display:block;" /></div>';
             if (res.Background) html += '<div style="flex:1; min-width:260px;"><div class="fieldDescription" style="margin-bottom:6px;">Background</div><img src="' + res.Background + '" style="width:100%; border-radius:4px; display:block;" /></div>';
             html += '</div>';
+            if (res.Note) html += '<div class="fieldDescription" style="margin-top:8px;">' + escapeHtml(res.Note) + '</div>';
             body.innerHTML = html;
         }).catch(function (err) {
             body.innerHTML = '<div style="padding:12px 0;">Preview failed: ' + escapeHtml(err.message) + '</div>';
@@ -1107,6 +1108,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     }
 
     var ART_STYLE_NAMES = { collage: 'Collage', grid: 'Grid', fan: 'Fan', wall: 'Wall', hero_strip: 'Hero strip', spotlight: 'Spotlight split', ranked: 'Ranked (Top 10)' };
+    var ART_LIMITS = { rows: 10, posters: 100 };   // Customise "Custom" boxes (the server allows the same)
     var ART_FIELDS = ['tilt', 'rows', 'posters', 'title', 'font', 'pos', 'size', 'case', 'colour', 'darken'];
     var ART_COLOURS = [['#ffffff', 'White'], ['#f5c518', 'Gold'], ['#e50914', 'Red'], ['#ff7a00', 'Orange'], ['#7fd4ff', 'Ice blue'], ['#ff6fb5', 'Pink'], ['#9be37a', 'Green'], ['#111111', 'Black']];
 
@@ -1166,12 +1168,45 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     return '<button type="button" class="artc-segbtn' + (String(state[field]) === String(o[0]) ? ' artc-on' : '') + '" data-value="' + o[0] + '">' + o[1] + '</button>';
                 }).join('') + '</div>';
             }
+            // Preset buttons plus a "Custom" number box (Rows 1-10, Posters 1-100). A number typed in
+            // the box is the value; clicking a preset empties the box.
+            function segCustom(field, opts) {
+                var preset = opts.some(function (o) { return String(o[0]) === String(state[field]); });
+                var v = !preset && state[field] ? state[field] : '';
+                return seg(field, opts) + '<label class="artc-segcustom">Custom <input type="number" class="artc-custom' + (v ? ' artc-on' : '') +
+                    '" data-field="' + field + '" min="1" max="' + ART_LIMITS[field] + '" step="1" placeholder="1–' + ART_LIMITS[field] + '" value="' + v + '" /></label>';
+            }
+            // How many titles the source's tag holds now (for the "posters repeat" note); null = unknown.
+            var titleCount = null;
+            function postersHintText() {
+                if (hints.posters) return hints.posters;
+                if (titleCount != null && titleCount > 0 && state.posters > titleCount)
+                    return 'This source has ' + titleCount + ' title' + (titleCount === 1 ? '' : 's') + '; posters repeat (never next to a copy).';
+                return '';
+            }
+            function updatePostersHint() {
+                var h = body.querySelector('.artc-field[data-f="posters"] .artc-hint');
+                if (!h) return;
+                var t = postersHintText();
+                h.textContent = t; h.style.display = t ? '' : 'none';
+            }
+            (function countTitles() {
+                var tag = scope === 'tag' ? q('.txtTagName') : (q('.txtTagName') || label);
+                if (!tag || !window.ApiClient.getCurrentUserId) return;
+                window.ApiClient.getJSON(window.ApiClient.getUrl('Users/' + window.ApiClient.getCurrentUserId() + '/Items', {
+                    Recursive: true, Tags: tag, IncludeItemTypes: 'Movie,Series', Limit: 0
+                })).then(function (r) {
+                    titleCount = r && typeof r.TotalRecordCount === 'number' ? r.TotalRecordCount : null;
+                    updatePostersHint();
+                }).catch(function () { });
+            })();
             function hint(field, extra) {
                 var t = hints[field] || extra || '';
                 return '<div class="artc-hint"' + (t ? '' : ' style="display:none;"') + '>' + escapeHtml(t) + '</div>';
             }
             function field(label, html, f, extra) {
-                return '<div class="artc-field"><div class="artc-label">' + label + '</div>' + html + hint(f, extra) + '</div>';
+                if (f === 'posters') extra = postersHintText();
+                return '<div class="artc-field" data-f="' + f + '"><div class="artc-label">' + label + '</div>' + html + hint(f, extra) + '</div>';
             }
             function render() {
                 var titleOff = state.title ? '' : 'The title is off.';
@@ -1199,8 +1234,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                       '<div class="artc-fieldscol">' +
                         '<div class="artc-section">Layout</div>' +
                         field('Tilt', seg('tilt', [['straight', 'Straight'], ['left', 'Left'], ['right', 'Right']]), 'tilt') +
-                        field('Rows', seg('rows', [[0, 'Auto'], [2, '2'], [3, '3']]), 'rows') +
-                        field('Posters', seg('posters', [[0, 'Auto' + (autoPosters ? ' (' + autoPosters + ')' : '')], [4, '4'], [6, '6'], [9, '9'], [12, '12'], [16, '16'], [20, '20']]), 'posters') +
+                        field('Rows', segCustom('rows', [[0, 'Auto'], [2, '2'], [3, '3'], [4, '4'], [5, '5']]), 'rows') +
+                        field('Posters', segCustom('posters', [[0, 'Auto' + (autoPosters ? ' (' + autoPosters + ')' : '')], [4, '4'], [6, '6'], [9, '9'], [12, '12'], [16, '16'], [20, '20']]), 'posters') +
                         '<div class="artc-section">Title</div>' +
                         field('Show title', seg('title', [[true, 'On'], [false, 'Off']]), 'title') +
                         field('Font', fonts, 'font', titleOff) +
@@ -1223,6 +1258,19 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             var v = b.dataset.value, f = g.dataset.field;
                             set(f, f === 'rows' || f === 'posters' ? parseInt(v, 10) : f === 'title' ? v === 'true' : v);
                         });
+                    });
+                });
+                body.querySelectorAll('.artc-custom').forEach(function (inp) {
+                    inp.addEventListener('input', function () {
+                        var f = inp.dataset.field, n = parseInt(inp.value, 10);
+                        if (inp.value.trim() === '') n = 0;   // box emptied: back to Auto
+                        else if (!(n >= 1 && n <= ART_LIMITS[f]) || String(n) !== inp.value.trim()) return;   // keep the last good value
+                        state[f] = n;
+                        var g = body.querySelector('.artc-seg[data-field="' + f + '"]');
+                        g.querySelectorAll('.artc-segbtn').forEach(function (b) { b.classList.toggle('artc-on', String(b.dataset.value) === String(n)); });
+                        inp.classList.toggle('artc-on', !g.querySelector('.artc-segbtn.artc-on'));
+                        if (f === 'posters') updatePostersHint();
+                        refreshPreview();
                     });
                 });
                 body.querySelectorAll('.artc-font').forEach(function (b) { b.addEventListener('click', function () { set('font', b.dataset.value); }); });
