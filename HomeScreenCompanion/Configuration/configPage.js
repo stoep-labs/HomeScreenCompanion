@@ -1108,7 +1108,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     }
 
     var ART_STYLE_NAMES = { collage: 'Collage', grid: 'Grid', fan: 'Fan', wall: 'Wall', hero_strip: 'Hero strip', spotlight: 'Spotlight split', ranked: 'Ranked (Top 10)' };
-    var ART_LIMITS = { rows: 10, posters: 100 };   // Customise "Custom" boxes (the server allows the same)
+    var ART_LIMITS = { rows: 10, posters: 250 };   // Customise "Custom" boxes (the server allows the same)
     var ART_FIELDS = ['tilt', 'rows', 'posters', 'title', 'font', 'pos', 'size', 'case', 'colour', 'darken'];
     var ART_COLOURS = [['#ffffff', 'White'], ['#f5c518', 'Gold'], ['#e50914', 'Red'], ['#ff7a00', 'Orange'], ['#7fd4ff', 'Ice blue'], ['#ff6fb5', 'Pink'], ['#9be37a', 'Green'], ['#111111', 'Black']];
 
@@ -1168,7 +1168,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     return '<button type="button" class="artc-segbtn' + (String(state[field]) === String(o[0]) ? ' artc-on' : '') + '" data-value="' + o[0] + '">' + o[1] + '</button>';
                 }).join('') + '</div>';
             }
-            // Preset buttons plus a "Custom" number box (Rows 1-10, Posters 1-100). A number typed in
+            // Preset buttons plus a "Custom" number box (Rows 1-10, Posters 1-250). A number typed in
             // the box is the value; clicking a preset empties the box.
             function segCustom(field, opts) {
                 var preset = opts.some(function (o) { return String(o[0]) === String(state[field]); });
@@ -1311,6 +1311,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         if (mine !== seq) return;   // a newer drawing is on its way
                         var img = body.querySelector('.artc-img'), b = body.querySelector('.artc-busy');
                         if (res.Success && img) { img.src = res.Image; if (b) b.style.display = 'none'; }
+                        // Rows and Posters both set: say when fewer rows fit better ("16 posters fit best on 4 rows.").
+                        var rh = body.querySelector('.artc-field[data-f="rows"] .artc-hint');
+                        if (rh && !hints.rows) { rh.textContent = (res.Success && res.Note) || ''; rh.style.display = res.Success && res.Note ? '' : 'none'; }
                         else if (b) b.textContent = res.Message || 'Preview failed.';
                     }).catch(function (e) {
                         if (mine !== seq) return;
