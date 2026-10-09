@@ -2861,8 +2861,10 @@ namespace HomeScreenCompanion
             }
         }
 
-        // A NextWatch home row is Emby's "playlist" section type: the playlist's items in playlist
-        // order (no sort, no item-type or library filter). Image type Primary (the default here;
+        // A NextWatch home row is Emby's "playlist" section type: the playlist's items (no item-type
+        // or library filter). The row keeps the source's own Sort By / Sort Order like any other row:
+        // empty (the default) = playlist order, best pick first; Random = Emby shuffles the row on
+        // every home-screen load (the web client sends a new RandomSeed). Image type Primary (the default here;
         // only an explicit Thumb is kept) makes Emby's home screen draw a show's first episode with
         // the show's poster (hometab: ImageType "Primary" → preferSeriesImage; imagehelper then uses
         // SeriesPrimaryImageTag, 2:3), so shows look like the movies next to them. The episode's own
@@ -2874,8 +2876,8 @@ namespace HomeScreenCompanion
                 settings["ImageType"] = "Primary";
             settings["ItemTypes"] = "[]";
             settings["ExcludedFolders"] = "[]";
-            settings["SortBy"] = "";
-            settings["SortOrder"] = "";
+            if (!settings.ContainsKey("SortBy")) settings["SortBy"] = "";
+            if (!settings.ContainsKey("SortOrder")) settings["SortOrder"] = "";
             foreach (var k in settings.Keys.Where(k => k.StartsWith("_query", StringComparison.OrdinalIgnoreCase)).ToList())
                 settings.Remove(k);
         }

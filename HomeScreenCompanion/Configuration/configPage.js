@@ -2522,7 +2522,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         </label>
                         <div class="fieldDescription">A home screen section will be managed for selected users each time sync runs.</div>
                         <div class="hse-disabled-hint" style="font-size:0.9em; color:#e07070; margin-top:4px; display:${(tagConfig.EnableTag === false && !tagConfig.EnableCollection && sourceType !== 'NextWatch') ? 'block' : 'none'};">Requires <strong>Apply Tag</strong> or <strong>Create Collection</strong> to be enabled.</div>
-                        <div class="hse-nextwatch-hint fieldDescription" style="display:none; margin-top:4px;">Your Next Watch: every user ticked below gets <strong>their own</strong> playlist (HSC creates, updates and removes it) and a row showing it, in pick order. Untick a user to remove both on the next run. A show goes into the playlist as its first episode (Emby playlists hold episodes); the row still shows the show's poster. The playlist is named after the Display Name.</div>
+                        <div class="hse-nextwatch-hint fieldDescription" style="display:none; margin-top:4px;">Your Next Watch: every user ticked below gets <strong>their own</strong> playlist (HSC creates, updates and removes it) and a row showing it, in pick order (<em>Sort By: Random</em> shuffles it on every load). Untick a user to remove both on the next run. A show goes into the playlist as its first episode (Emby playlists hold episodes); the row still shows the show's poster. The playlist is named after the Display Name.</div>
                     </div>
                     <div class="hse-details" style="display:${enableHomeSection ? 'block' : 'none'}; margin-top:15px;">
                         <div style="margin-bottom:15px;">
@@ -3828,7 +3828,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         ].forEach(function(o) {
             html += '<option value="' + o[0] + '"' + (sortByVal === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
         });
-        html += '</select></div>';
+        html += '</select>';
+        if (nextWatch) html += '<div class="fieldDescription">Your Next Watch: <em>(Default)</em> keeps the playlist order, best match first. <em>Random</em> shuffles the row every time the home screen loads, so it shows a different few of the list each time.</div>';
+        html += '</div>';
 
         var sortOrderVal = s.SortOrder || '';
         html += '<div style="margin-bottom:12px;"><label class="selectLabel">Sort Order</label>';
