@@ -1612,6 +1612,11 @@ namespace HomeScreenCompanion
         internal async Task<SourcePreview> PreviewEntryAsync(TagConfig source, CancellationToken cancellationToken, List<TagConfig>? group = null, string previewUserId = "")
         {
             var preview = new SourcePreview(source, group) { UserId = previewUserId ?? "" };
+            // Previews share the run state below, so they take turns (a second preview waits for
+            // the first instead of failing); a real sync still turns them away.
+            await _previewGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
             if (IsRunning) { preview.Message = "A sync is running — try again when it has finished."; return preview; }
             IsRunning = true;
             var savedLog = _log;
@@ -1633,7 +1638,11 @@ namespace HomeScreenCompanion
                 IsRunning = false;
             }
             return preview;
+            }
+            finally { _previewGate.Release(); }
         }
+
+        private readonly SemaphoreSlim _previewGate = new SemaphoreSlim(1, 1);
 
         private async Task<(bool Success, string Message)> RunSingleEntryInternalAsync(string entryName, CancellationToken cancellationToken)
         {
@@ -5594,13 +5603,9 @@ namespace HomeScreenCompanion
             Directory.CreateDirectory(tempDir);
             try
             {
-                var posters = new List<string>();
-                foreach (var item in picks)
-                {
-                    var (poster, _) = HomeScreenCompanionService.FetchImageSources(item, _httpClient, tempDir,
-                        _providerManager, _libraryManager, _fileSystem, m => _log.Debug("  " + m));
-                    if (poster != null) posters.Add(poster);
-                }
+                // Each title's own poster file, read side by side (no thumbs, no image refresh).
+                var posters = HomeScreenCompanionService.ArtPosterPaths(picks, _httpClient, tempDir).Where(p => p != null).Select(p => p!).ToList();
+                if (posters.Count < picks.Count) _log.Debug($"  Art for \"{cName}\": {picks.Count - posters.Count} title(s) have no poster image");
                 if (posters.Count == 0) { _log.Warn($"Art for \"{cName}\": no posters found"); return null; }
                 CollectionArtRenderer.Render(style, posters, title, background, output, opts);
                 File.WriteAllText(keyFile, key);

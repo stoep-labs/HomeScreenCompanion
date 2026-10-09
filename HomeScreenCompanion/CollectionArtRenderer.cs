@@ -48,7 +48,7 @@ namespace HomeScreenCompanion
                 if (r >= 4 && st == Collage)
                 {
                     int w = background ? BackgroundW : PosterW, h = background ? BackgroundH : PosterH;
-                    return Math.Min(MaxPosters, Math.Max(background ? 40 : 9, r * CollageCols(r, w, h)));
+                    return Math.Min(AutoMaxPosters, Math.Max(background ? 40 : 9, r * CollageCols(r, w, h)));
                 }
             }
             switch (st)
@@ -63,7 +63,8 @@ namespace HomeScreenCompanion
             }
         }
 
-        public const int MaxPosters = 100, MaxRows = 10;
+        // Posters: the most a custom count may ask for; the counts worked out for Rows on Auto stop at 100.
+        public const int MaxPosters = 250, AutoMaxPosters = 100, MaxRows = 10;
 
         // The smallest multiple of rows that is at least count (5 cards on 2 rows -> 6).
         private static int FullRowsCount(int count, int rows) => rows <= 1 ? count : rows * (int)Math.Ceiling(count / (double)rows);
@@ -150,14 +151,14 @@ namespace HomeScreenCompanion
             double cw = Math.Min(maxCw, (availH - gap * (rows - 1)) / rows / PosterRatio);
             if (cw <= 1) return 1;
             int perRow = Math.Max(1, (int)Math.Round((availW + gap) / (cw + gap)));
-            return Math.Max(1, Math.Min(perRow, MaxPosters / Math.Max(1, rows)));
+            return Math.Max(1, Math.Min(perRow, AutoMaxPosters / Math.Max(1, rows)));
         }
 
         // Rows (1..10) that give n evenly spread cards the biggest size in availW x availH.
-        private static int BestRows(int n, double availW, double availH, double gap, double maxCw = double.MaxValue)
+        private static int BestRows(int n, double availW, double availH, double gap, double maxCw = double.MaxValue, int maxRows = MaxRows)
         {
             int best = 1; double bestW = -1;
-            for (int r = 1; r <= Math.Min(Math.Max(1, n), MaxRows); r++)
+            for (int r = 1; r <= Math.Min(Math.Max(1, n), Math.Max(1, maxRows)); r++)
             {
                 double cw = RowsCardW(EvenRows(n, r), availW, availH, gap, maxCw);
                 if (cw > bestW + 0.5) { bestW = cw; best = r; }
@@ -186,7 +187,7 @@ namespace HomeScreenCompanion
             int r = o.Rows!.Value, w = background ? BackgroundW : PosterW, h = background ? BackgroundH : PosterH;
             int own = r >= 4 ? RowsCount(background ? 14 : 12, r, background) : background ? 14 : 12;
             var region = GridRegion(background, w, h, hasTitle, o.SizeFactor);
-            return Math.Min(MaxPosters, Math.Max(own, r * FitPerRow(r, region.Width, region.Height, GridGap(o))));
+            return Math.Min(AutoMaxPosters, Math.Max(own, r * FitPerRow(r, region.Width, region.Height, GridGap(o))));
         }
 
         // Hero strip poster: the strip's box (full width less the margins, at most 56% high).
@@ -217,23 +218,27 @@ namespace HomeScreenCompanion
             if (!background)
             {
                 var (bw, bh, gap) = HeroPosterBox(PosterW, PosterH);
-                return Math.Min(MaxPosters - 1, Math.Max(RowsCount(5, r, false), r * FitPerRow(r, bw, bh, gap)));
+                return Math.Min(AutoMaxPosters - 1, Math.Max(RowsCount(5, r, false), r * FitPerRow(r, bw, bh, gap)));
             }
             var (w, g, maxCw) = HeroBackgroundBox(BackgroundW);
             float s = MockScale(true, BackgroundW);
             float cardsH = HeroBackgroundCardsH(BackgroundH, s, HeroTitleShare * (BackgroundH - 210 * s));
-            return Math.Min(MaxPosters - 1, Math.Max(RowsCount(6, r, true), r * FitPerRow(r, w, cardsH, g, maxCw)));
+            return Math.Min(AutoMaxPosters - 1, Math.Max(RowsCount(6, r, true), r * FitPerRow(r, w, cardsH, g, maxCw)));
         }
 
         private static int SpotlightRowsCount(int r)
         {
             float s = MockScale(true, BackgroundW);
-            return Math.Min(MaxPosters - 1, Math.Max(RowsCount(4, r, true),
+            return Math.Min(AutoMaxPosters - 1, Math.Max(RowsCount(4, r, true),
                 r * FitPerRow(r, BackgroundW * 0.5f - 70 * s, SpotlightReserve(r, BackgroundH, s), 14 * s, 110 * s)));
         }
 
-        private static int SpotlightAutoRows(int n, int w, int h, float s) =>
-            BestRows(n, w * 0.5f - 70 * s, h * 0.36f, 14 * s, 110 * s);
+        private static int SpotlightAutoRows(int n, int w, int h, float s, int maxRows = MaxRows) =>
+            BestRows(n, w * 0.5f - 70 * s, h * 0.36f, 14 * s, 110 * s, maxRows);
+
+        // Rows and Posters both set: Rows is the most (the rows up to it with the biggest cards).
+        private static int RowsFor(ArtOptions o, Func<int, int> bestUpTo) =>
+            o.Rows != null && o.Posters != null ? bestUpTo(o.Rows.Value) : o.Rows ?? bestUpTo(MaxRows);
 
         // Fan in rows from 3 rows on (and Auto rows over 20 posters): each row its own fan, as
         // many overlapping cards as fill 90% of the width.
@@ -260,11 +265,35 @@ namespace HomeScreenCompanion
             return best;
         }
 
+        // Fan rows (1..maxRows) for n cards with Rows and Posters both set: the biggest cards
+        // (one fan holds at most 20; from 2 rows each row is a wide fan across the picture).
+        private static int FanBestRows(int n, int maxRows, bool background, int w, int h, int defN, float s)
+        {
+            int best = 1; float bestW = -1;
+            for (int r = 1; r <= Math.Max(1, Math.Min(maxRows, n)); r++)
+            {
+                float cw;
+                if (r == 1)
+                {
+                    if (n > 20) continue;
+                    cw = (background ? 230 : 260) * s;
+                    if (n > defN) cw *= (defN + 1) / (float)(n + 1);
+                }
+                else
+                {
+                    int most = (int)Math.Ceiling(n / (double)r);
+                    cw = Math.Min(FanBandCardW(r, background, w, h), w * 0.9f / (1 + FanStep * (most - 1)));
+                }
+                if (cw > bestW + 0.5f) { bestW = cw; best = r; }
+            }
+            return best;
+        }
+
         private static int FanPerRow(int rows, bool background, int w, int h)
         {
             float cw = FanBandCardW(rows, background, w, h);
             int perRow = (int)Math.Floor((w * 0.9f - cw) / (FanStep * cw)) + 1;
-            return Math.Max(1, Math.Min(perRow, MaxPosters / rows));
+            return Math.Max(1, Math.Min(perRow, AutoMaxPosters / rows));
         }
 
         // Turns what draw() paints by deg about (cx, cy), shrunk so a bw x bh block still fits
@@ -338,7 +367,7 @@ namespace HomeScreenCompanion
             for (int i = 0; i < 12; i++)
             {
                 var path = Path.Combine(tempDir, $"stand-in-{i}.jpg");
-                if (!File.Exists(path)) DrawStandInPoster(i, path);
+                lock (SampleCache) if (!File.Exists(path)) DrawStandInPoster(i, path);
                 posters.Add(path);
             }
             var output = Path.Combine(tempDir, $"sample-{style}-{(background ? "bg" : "poster")}.jpg");
@@ -358,8 +387,12 @@ namespace HomeScreenCompanion
         /// options, drawn from the same stand-in posters as the style tiles (twelve, or as many as
         /// the poster count asks for), a little bigger than a tile.
         /// </summary>
-        public static string Preview(string style, bool background, ArtOptions opts, string title, string tempDir)
+        public static string Preview(string style, bool background, ArtOptions opts, string title, string tempDir) =>
+            Preview(style, background, opts, title, tempDir, out _);
+
+        public static string Preview(string style, bool background, ArtOptions opts, string title, string tempDir, out string note)
         {
+            note = "";
             Directory.CreateDirectory(tempDir);
             int count = opts.Posters != null ? Math.Max(1, PostersFor(style, background, opts))
                       : opts.Rows != null ? Math.Max(12, PostersFor(style, background, opts)) : 12;
@@ -373,7 +406,7 @@ namespace HomeScreenCompanion
             var output = Path.Combine(tempDir, "preview-" + Guid.NewGuid().ToString("N") + ".jpg");
             try
             {
-                Render(style, posters, string.IsNullOrWhiteSpace(title) ? "Collection" : title, background, output, opts);
+                note = RowsNote(opts, Render(style, posters, string.IsNullOrWhiteSpace(title) ? "Collection" : title, background, output, opts));
                 using var full = SKBitmap.Decode(output);
                 int th = background ? 338 : 450, tw = (int)Math.Round(full.Width * th / (double)full.Height);
                 using var small = full.Resize(new SKImageInfo(tw, th), SKFilterQuality.High);
@@ -386,6 +419,12 @@ namespace HomeScreenCompanion
                 try { File.Delete(output); } catch { }
             }
         }
+
+        /// <summary>The popup's note when Rows and Posters are both set and fewer rows were used
+        /// ("16 posters fit best on 4 rows"), else "".</summary>
+        public static string RowsNote(ArtOptions opts, int? rowsUsed) =>
+            opts.Rows != null && opts.Posters != null && rowsUsed != null && rowsUsed < opts.Rows
+                ? $"{opts.Posters} poster{(opts.Posters == 1 ? "" : "s")} fit best on {rowsUsed} row{(rowsUsed == 1 ? "" : "s")}." : "";
 
         /// <summary>What every Customise field is for <paramref name="style"/> when nothing is set
         /// (today's look), with a short note for each field the style ignores. Tilt, Rows and Posters
@@ -430,8 +469,10 @@ namespace HomeScreenCompanion
             Save(surface, path);
         }
 
-        /// <summary>Renders <paramref name="style"/> to a JPEG. Needs at least one poster file.</summary>
-        public static void Render(string style, IList<string> posterPaths, string title, bool background, string outputPath, ArtOptions? opts = null)
+        /// <summary>Renders <paramref name="style"/> to a JPEG. Needs at least one poster file.
+        /// Returns the rows the cards were drawn on when Rows and Posters are both set (Rows is
+        /// "at most" then), else null.</summary>
+        public static int? Render(string style, IList<string> posterPaths, string title, bool background, string outputPath, ArtOptions? opts = null)
         {
             var o = opts ?? ArtOptions.None;
             var st = (style ?? "").Trim().ToLowerInvariant();
@@ -447,12 +488,14 @@ namespace HomeScreenCompanion
             {
                 // Over 40 posters the cards are small: each poster is decoded at about 600 px high
                 // (JPEG decodes straight to a smaller scale), so 100 posters stay light on memory.
+                // Decoded side by side (a few at a time), kept in list order.
                 bool small = posterPaths.Count > 40;
-                foreach (var path in posterPaths)
-                {
-                    var bmp = small ? DecodeSmall(path, 600) : SKBitmap.Decode(path);
-                    if (bmp != null) posters.Add(bmp);
-                }
+                int maxH = SmallDecodeHeight(posterPaths.Count);
+                var decoded = new SKBitmap?[posterPaths.Count];
+                System.Threading.Tasks.Parallel.For(0, posterPaths.Count,
+                    new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = DecodeThreads },
+                    i => { try { decoded[i] = small ? DecodeSmall(posterPaths[i], maxH) : SKBitmap.Decode(posterPaths[i]); } catch { decoded[i] = null; } });
+                foreach (var bmp in decoded) if (bmp != null) posters.Add(bmp);
                 if (posters.Count == 0) throw new InvalidOperationException("none of the posters could be read");
 
                 int w = background ? BackgroundW : PosterW, h = background ? BackgroundH : PosterH;
@@ -479,12 +522,19 @@ namespace HomeScreenCompanion
                 }
                 if (free) DrawFreeTitle(canvas, title, o.Pos!, background, w, h, x, d);
                 Save(surface, outputPath);
+                return st == Ranked ? null : x.RowsUsed;
             }
             finally
             {
                 foreach (var p in posters) p.Dispose();
             }
         }
+
+        private static readonly int DecodeThreads = Math.Max(2, Math.Min(6, Environment.ProcessorCount));
+
+        // How high a poster is decoded when there are over 40 (the cards are small then): 600 px
+        // up to 100 posters, less beyond that (250 cards on a poster are under 150 px high).
+        private static int SmallDecodeHeight(int count) => count <= 100 ? 600 : count <= 160 ? 450 : 340;
 
         // A poster decoded at about maxH pixels high (never larger than the file).
         private static SKBitmap? DecodeSmall(string path, int maxH)
@@ -534,6 +584,7 @@ namespace HomeScreenCompanion
             var g = BestGrid(x.O.Posters != null ? Math.Max(posters.Count, cap) : posters.Count, (int)region.Width, (int)region.Height, gridGap, cap,
                              x.O.Rows ?? (background && x.O.Posters == null ? 2 : (int?)null), x.O.Rows, x.O.Posters != null);
             if (g.RowCounts != null) posters = Spread(posters, g.RowCounts);
+            if (x.O.Rows != null && x.O.Posters != null) x.RowsUsed = g.Rows;
 
             float radius = RadiusFor(g.CardW);
             var cells = g.Cells(region);
@@ -647,13 +698,14 @@ namespace HomeScreenCompanion
                 int best = 1; double bestErr = double.MaxValue;
                 for (int r = 1; r <= Math.Min(n, MaxRows); r++)
                 {
-                    if (x.O.Rows != null && r != Math.Min(n, x.O.Rows.Value)) continue;
+                    if (x.O.Rows != null && r > x.O.Rows.Value) continue;   // Rows set too: at most that many
                     int c0 = (int)Math.Ceiling(n / (double)r);
                     double err = Math.Abs(Math.Log((h / (double)r) / (w / (double)c0) / PosterRatio));
                     if (err < bestErr - 1e-9) { bestErr = err; best = r; }
                 }
                 rowCounts = EvenRows(n, best);
                 rows = rowCounts.Length; cols = rowCounts[0];
+                if (x.O.Rows != null) x.RowsUsed = rows;
                 posters = Spread(posters, rowCounts);
             }
             else if (x.O.Rows != null)
@@ -800,7 +852,11 @@ namespace HomeScreenCompanion
                 }
             }
             // More than 20 cards with Rows on Auto: stacked fans, on the rows that give the biggest cards.
-            int fanRows = x.O.Rows ?? (x.O.Posters > 20 ? FanAutoRows(x.O.Posters.Value, background, w, h) : 1);
+            // Rows and Posters both set: Rows is the most, the rows up to it with the biggest cards.
+            bool both = x.O.Rows != null && x.O.Posters != null;
+            int fanRows = both ? FanBestRows(x.O.Posters!.Value, x.O.Rows!.Value, background, w, h, defN, s)
+                        : x.O.Rows ?? (x.O.Posters > 20 ? FanAutoRows(x.O.Posters.Value, background, w, h) : 1);
+            if (both) x.RowsUsed = fanRows;
             if (fanRows <= 1)
             {
                 int n = x.O.Posters != null ? Math.Min(x.O.Posters.Value, 20) : Math.Min(posters.Count, defN);
@@ -818,7 +874,7 @@ namespace HomeScreenCompanion
                 // for a big count on Auto rows) each row is a wide fan of overlapping cards that
                 // spans the picture: as many cards as fill the width when Posters is on Auto.
                 int rows = fanRows;
-                bool wide = rows >= 3 || x.O.Rows == null;
+                bool wide = rows >= 3 || x.O.Rows == null || both;
                 int own = rows >= 3 ? rows * FanPerRow(rows, background, w, h)
                                     : RowsCount(defN, rows, background);
                 int n = CardsToUse(posters.Count, x.O.Posters ?? own, rows, x.O.Posters != null);
@@ -866,7 +922,17 @@ namespace HomeScreenCompanion
         {
             float s = MockScale(background, w);
             float cw = 150 * s, ch = (int)(150 * PosterRatio) * s, gap = 10 * s;
-            if (x.O.Rows != null)   // about that many rows across the height
+            // Rows and Posters both set: Rows is the most. Cards sized for the count alone when
+            // that needs no more rows; otherwise the rows keep their height and the cards narrow.
+            int? postersOnlyRows = null;
+            if (x.O.Rows != null && x.O.Posters != null)
+            {
+                float pch = ((float)Math.Sqrt(w * (double)h / (x.O.Posters.Value * PosterRatio)) - gap) * PosterRatio;
+                int pr = Math.Max(1, (int)Math.Round(h / (pch + gap)));
+                if (pr <= x.O.Rows.Value) postersOnlyRows = pr;
+                x.RowsUsed = postersOnlyRows ?? x.O.Rows.Value;
+            }
+            if (x.O.Rows != null && postersOnlyRows == null)   // about that many rows across the height
             {
                 ch = h / (float)x.O.Rows.Value - gap;
                 cw = ch / PosterRatio;
@@ -1002,7 +1068,8 @@ namespace HomeScreenCompanion
                 int want = exact ? x.O.Posters!.Value - 1 : HeroRowsCount(x.O.Rows!.Value, false);
                 var pool = posters.Count > 1 ? posters.Skip(1).ToList() : posters.Take(1).ToList();
                 var box = HeroPosterBox(w, h);
-                int rows = x.O.Rows ?? BestRows(Math.Max(1, want), box.W, box.H, box.Gap);
+                int rows = RowsFor(x.O, m => BestRows(Math.Max(1, want), box.W, box.H, box.Gap, maxRows: m));
+                if (x.O.Rows != null && exact) x.RowsUsed = rows;
                 int n = Math.Max(1, CardsToUse(pool.Count, Math.Max(1, want), rows, exact));
                 var counts = EvenRows(n, rows);
                 pool = Spread(pool, counts);
@@ -1074,7 +1141,8 @@ namespace HomeScreenCompanion
                 bool exact = x.O.Posters != null;
                 int want = exact ? x.O.Posters!.Value - 1 : HeroRowsCount(x.O.Rows!.Value, true);
                 var pool = posters.Count > 1 ? posters.Skip(1).ToList() : posters.Take(1).ToList();
-                int rows = x.O.Rows ?? BestRows(Math.Max(1, want), box.W, maxH, box.Gap, box.MaxCw);
+                int rows = RowsFor(x.O, m => BestRows(Math.Max(1, want), box.W, maxH, box.Gap, box.MaxCw, m));
+                if (x.O.Rows != null && exact) x.RowsUsed = rows;
                 int n = Math.Max(1, CardsToUse(pool.Count, Math.Max(1, want), rows, exact));
                 var counts = EvenRows(n, rows);
                 pool = Spread(pool, counts);
@@ -1133,7 +1201,7 @@ namespace HomeScreenCompanion
                 {
                     // Thumbnails in rows: the title gives up height so each row keeps a usable size.
                     int want = x.O.Posters != null ? x.O.Posters.Value - 1 : SpotlightRowsCount(x.O.Rows!.Value);
-                    int rowsWanted = Math.Min(x.O.Rows ?? SpotlightAutoRows(want, w, h, s), Math.Max(1, want));
+                    int rowsWanted = Math.Min(RowsFor(x.O, m => SpotlightAutoRows(want, w, h, s, m)), Math.Max(1, want));
                     // The rows reserve at most 36% of the height (they shrink to fit), so the title
                     // keeps a readable size with many rows.
                     float limit = h - 80 * s - SpotlightReserve(rowsWanted, h, s);
@@ -1172,7 +1240,8 @@ namespace HomeScreenCompanion
                 int want = exact ? x.O.Posters!.Value - 1 : SpotlightRowsCount(x.O.Rows!.Value);
                 var pool = posters.Skip(1).ToList();
                 if (pool.Count == 0 && exact) pool = posters.Take(1).ToList();
-                int rows = x.O.Rows ?? SpotlightAutoRows(Math.Max(1, want), w, h, s);
+                int rows = RowsFor(x.O, m => SpotlightAutoRows(Math.Max(1, want), w, h, s, m));
+                if (x.O.Rows != null && exact) x.RowsUsed = rows;
                 int n = CardsToUse(pool.Count, Math.Max(1, want), rows, exact);
                 if (n > 0 && pool.Count > 0)
                 {
@@ -1262,6 +1331,9 @@ namespace HomeScreenCompanion
             public Ctx(ArtOptions o, bool background) { O = o; Background = background; }
             public ArtOptions O { get; }
             public bool Background { get; }
+            // Rows and Posters both set: the rows the cards were actually drawn on (Rows is "at
+            // most" then); null when the style did not lay the cards out in rows.
+            public int? RowsUsed { get; set; }
             public SKTypeface Face(SKTypeface own) => O.Font != null ? ArtFonts.Face(O.Font) : own;
             public bool Upper(bool own) => O.Case == null ? own : O.Case == "upper";
             public SKColor Colour(SKColor own) => O.ColourValue ?? own;
@@ -1511,7 +1583,8 @@ namespace HomeScreenCompanion
                 // the biggest cards (or the chosen rows), spread as evenly as possible (10 on 3 = 4/3/3).
                 int k = Math.Max(1, Math.Min(n, cap));
                 GridLayout? pick = null;
-                int lo = exactRows ?? 1, hi = exactRows ?? Math.Min(k, maxRows ?? k);
+                // With Rows also set, Rows is the most: the rows up to it that give the biggest cards.
+                int lo = 1, hi = Math.Min(k, exactRows ?? maxRows ?? k);
                 for (int rows = lo; rows <= hi; rows++)
                 {
                     var counts = EvenRows(k, rows);

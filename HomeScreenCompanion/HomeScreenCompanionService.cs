@@ -145,6 +145,7 @@ namespace HomeScreenCompanion
         public bool Success { get; set; }
         public string Message { get; set; } = "";
         public string Image { get; set; } = "";
+        public string Note { get; set; } = "";   // e.g. "16 posters fit best on 4 rows." (Rows is at most when Posters is set)
     }
 
     // The collection art a source would get, from its unsaved settings. Changes nothing.
@@ -163,6 +164,7 @@ namespace HomeScreenCompanion
         public string Background { get; set; } = "";
         public int Titles { get; set; }
         public string Note { get; set; } = "";         // e.g. "this source has 12 titles; posters repeat"
+        [System.Runtime.Serialization.IgnoreDataMember] public string Timing { get; set; } = "";   // for the log only
     }
 
     // What a source (any type) would tag, from its unsaved settings. Changes nothing.
@@ -953,8 +955,8 @@ public class HomeScreenCompanionService : IService
                 var dir = Path.Combine(Plugin.Instance!.DataFolderPath, "collection_art", "_samples");
                 var image = CollectionArtRenderer.Preview(request.Style.Trim().ToLowerInvariant(), request.Background,
                     ArtOptions.Parse(request.Options),
-                    CollectionArtRenderer.ArtTitle(request.Title, string.IsNullOrWhiteSpace(request.Name) ? "Collection" : request.Name.Trim()), dir);
-                return new ArtCustomPreviewResponse { Success = true, Image = image };
+                    CollectionArtRenderer.ArtTitle(request.Title, string.IsNullOrWhiteSpace(request.Name) ? "Collection" : request.Name.Trim()), dir, out var note);
+                return new ArtCustomPreviewResponse { Success = true, Image = image, Note = note };
             }
             catch (Exception ex)
             {
@@ -963,12 +965,22 @@ public class HomeScreenCompanionService : IService
             }
         }
 
+        // Art previews run one at a time, in the order they came in (several Preview art clicks
+        // at once queue instead of failing; the last one asked for finishes last).
+        private static readonly SemaphoreSlim ArtPreviewGate = new SemaphoreSlim(1, 1);
+
         public async Task<object> Post(PreviewCollectionArtRequest request)
         {
-            var result = await PreviewCollectionArt(request.Source ?? new TagConfig());
+            PreviewCollectionArtResponse result;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            await ArtPreviewGate.WaitAsync().ConfigureAwait(false);
+            long waited = sw.ElapsedMilliseconds;
+            try { result = await PreviewCollectionArt(request.Source ?? new TagConfig()); }
+            finally { ArtPreviewGate.Release(); }
             var src = request.Source ?? new TagConfig();
             _logger.Info($"Collection art preview: '{src.Name}' [{src.SourceType}] tag '{src.Tag}' poster '{src.CollectionPosterStyle}' background '{src.CollectionBackgroundStyle}' -> "
-                + (result.Success ? $"drawn from {result.Titles} title(s)" : result.Message));
+                + (result.Success ? $"drawn from {result.Titles} title(s)" : result.Message)
+                + $" in {sw.ElapsedMilliseconds} ms ({(waited > 0 ? $"waited {waited} ms; " : "")}{result.Timing})");
             return result;
         }
 
@@ -979,6 +991,8 @@ public class HomeScreenCompanionService : IService
             if (!poster && !background)
                 return new PreviewCollectionArtResponse { Message = "Choose \"Generate from the titles\" for the poster or the background first." };
 
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var timing = new List<string>();
             // The titles: a Smart Playlist is matched now (like its Preview), Your Next Watch from the
             // first selected user's picks; other sources use the titles that carry the tag since the last run.
             List<BaseItem> items;
@@ -1016,24 +1030,29 @@ public class HomeScreenCompanionService : IService
             Directory.CreateDirectory(tempDir);
             try
             {
-                var cache = new Dictionary<Guid, string?>();
-                int distinct = CollectionArtRenderer.DistinctTitles(items).Count;
-                string repeatNote = "";
-                string? PosterOf(BaseItem item)
-                {
-                    if (!cache.TryGetValue(item.Id, out var path))
-                        cache[item.Id] = path = FetchImageSources(item, _httpClient, tempDir, _providerManager, _libraryManager, _fileSystem).Poster;
-                    return path;
-                }
+                var titles = CollectionArtRenderer.DistinctTitles(items);
+                int distinct = titles.Count;
+                string repeatNote = "", rowsNote = "";
+                // The posters both drawings need, read once and side by side.
+                int need = Math.Max(
+                    poster ? CollectionArtRenderer.PostersFor(source.CollectionPosterStyle, false, ArtOptions.Parse(source.CollectionPosterOptions)) : 0,
+                    background ? CollectionArtRenderer.PostersFor(source.CollectionBackgroundStyle, true, ArtOptions.Parse(source.CollectionBackgroundOptions)) : 0);
+                timing.Add($"titles {clock.ElapsedMilliseconds} ms");
+                clock.Restart();
+                var paths = ArtPosterPaths(titles.Take(need).ToList(), _httpClient, tempDir);
+                timing.Add($"{need} poster files {clock.ElapsedMilliseconds} ms");
                 string Draw(string style, bool bg)
                 {
                     var opts = ArtOptions.Parse(bg ? source.CollectionBackgroundOptions : source.CollectionPosterOptions);
                     if (opts.Posters != null && style.Trim().ToLowerInvariant() != CollectionArtRenderer.Ranked && opts.Posters.Value > distinct)
                         repeatNote = $"This source has {distinct} title{(distinct == 1 ? "" : "s")}; the posters repeat to make {opts.Posters.Value} (never next to a copy).";
-                    var posters = CollectionArtRenderer.DistinctTitles(items).Take(CollectionArtRenderer.PostersFor(style, bg, opts)).Select(PosterOf).Where(p => p != null).Select(p => p!).ToList();
+                    var posters = paths.Take(CollectionArtRenderer.PostersFor(style, bg, opts)).Where(p => p != null).Select(p => p!).ToList();
                     if (posters.Count == 0) return "";
                     var output = Path.Combine(tempDir, bg ? "background.jpg" : "poster.jpg");
-                    CollectionArtRenderer.Render(style, posters, title, bg, output, opts);
+                    clock.Restart();
+                    var note = CollectionArtRenderer.RowsNote(opts, CollectionArtRenderer.Render(style, posters, title, bg, output, opts));
+                    timing.Add($"{(bg ? "background" : "poster")} {clock.ElapsedMilliseconds} ms");
+                    if (note.Length > 0) rowsNote = rowsNote.Length == 0 ? (bg ? "Background: " : "Poster: ") + note : rowsNote + " Background: " + note;
                     return "data:image/jpeg;base64," + Convert.ToBase64String(File.ReadAllBytes(output));
                 }
                 var res = new PreviewCollectionArtResponse
@@ -1043,7 +1062,8 @@ public class HomeScreenCompanionService : IService
                     Poster = poster ? Draw(source.CollectionPosterStyle, false) : "",
                     Background = background ? Draw(source.CollectionBackgroundStyle, true) : ""
                 };
-                res.Note = repeatNote;
+                res.Note = string.Join(" ", new[] { repeatNote, rowsNote }.Where(n => n.Length > 0));
+                res.Timing = string.Join(", ", timing);
                 return res;
             }
             catch (Exception ex)
@@ -2470,6 +2490,27 @@ public class HomeScreenCompanionService : IService
                 log?.Invoke($"Top-list: image refresh for '{item.Name}' failed — {ex.Message}");
                 return first;
             }
+        }
+
+        /// <summary>
+        /// The poster file of each title for generated art, in order (null where a title has
+        /// none): the item's own Primary image file on disk, read as it is. Only the poster is
+        /// looked at (no thumb), nothing is refreshed; a poster Emby only knows by URL is
+        /// downloaded. Done a few titles at a time, so a hundred posters take a moment.
+        /// </summary>
+        internal static List<string?> ArtPosterPaths(IList<BaseItem> items, IHttpClient httpClient, string tempDir)
+        {
+            var result = new string?[items.Count];
+            System.Threading.Tasks.Parallel.For(0, items.Count, new System.Threading.Tasks.ParallelOptions { MaxDegreeOfParallelism = 6 }, i =>
+            {
+                try
+                {
+                    var path = (items[i].ImageInfos ?? Array.Empty<ItemImageInfo>()).FirstOrDefault(im => im.Type == ImageType.Primary)?.Path;
+                    result[i] = EnsureLocalImagePath(httpClient, path, tempDir);
+                }
+                catch { result[i] = null; }
+            });
+            return result.ToList();
         }
 
         private static (string? Poster, string? Thumb) TryFetchImages(BaseItem item, IHttpClient httpClient, string tempDir)
