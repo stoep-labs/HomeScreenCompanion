@@ -853,7 +853,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     + '<select class="selNwPreviewUser" style="flex:1; padding:6px 8px; font-size:inherit; color:inherit; background:var(--plugin-input-bg,rgba(255,255,255,0.08)); border:1px solid var(--plugin-input-border,rgba(255,255,255,0.2)); border-radius:3px;">'
                     + (nwUserId ? '' : '<option value="">-- Select user --</option>')
                     + ordered.map(function (u) {
-                        return '<option value="' + escapeHtml(u.Id) + '"' + (u.Id === nwUserId ? ' selected' : '') + '>' + escapeHtml(u.Name) + (selected.indexOf(u.Id) !== -1 ? '  (ticked on Playlist tab)' : '') + '</option>';
+                        return '<option value="' + escapeHtml(u.Id) + '"' + (u.Id === nwUserId ? ' selected' : '') + '>' + escapeHtml(u.Name + userRatingSuffix(u)) + (selected.indexOf(u.Id) !== -1 ? '  (ticked on Playlist tab)' : '') + '</option>';
                     }).join('') + '</select></div>';
                 body.innerHTML = nwPicker + body.innerHTML;
                 wireNwPicker();
@@ -1722,7 +1722,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '<option value="__any__"' + ('__any__' === savedUserId ? ' selected' : '') + '>Any user</option>' +
                 '<option value="__all__"' + ('__all__' === savedUserId ? ' selected' : '') + '>All users</option>';
             var uOpts = specialOpts + (_miUsers || []).map(function (u) {
-                return '<option value="' + u.Id + '"' + (u.Id === savedUserId ? ' selected' : '') + '>' + u.Name + '</option>';
+                return '<option value="' + u.Id + '"' + (u.Id === savedUserId ? ' selected' : '') + '>' + escapeHtml(u.Name + userRatingSuffix(u)) + '</option>';
             }).join('');
             userHtml = '<select class="selMiUser" is="emby-select" style="flex:0 0 auto;min-width:110px;">' + uOpts + '</select>';
         }
@@ -2422,7 +2422,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                 <label class="selectLabel">User for watch history</label>
                                 <select is="emby-select" class="selAiWatchedUser" style="width:100%;">
                                     <option value="">-- Select user --</option>
-                                    ${(_miUsers || []).map(function(u) { return '<option value="' + u.Id + '"' + (u.Id === (tagConfig.AiRecentlyWatchedUserId || '') ? ' selected' : '') + '>' + u.Name + '</option>'; }).join('')}
+                                    ${(_miUsers || []).map(function(u) { return '<option value="' + u.Id + '"' + (u.Id === (tagConfig.AiRecentlyWatchedUserId || '') ? ' selected' : '') + '>' + escapeHtml(u.Name + userRatingSuffix(u)) + '</option>'; }).join('')}
                                 </select>
                             </div>
                             <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
@@ -3874,14 +3874,123 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     }
 
     // ---- Home Section Tab helpers ----
+    // One user fetch per page load, shared by every user list. Each user carries its parental
+    // rating limit (Policy.MaxParentalRating, null = no limit) and the item types it blocks when
+    // unrated, plus the rating's display name from the server's parental-ratings list.
     var _hseUsersCache = null;
+    var _hseUsersPromise = null;
     function getHseUsers() {
         if (_hseUsersCache) return Promise.resolve(_hseUsersCache);
-        return window.ApiClient.getJSON(window.ApiClient.getUrl('Users', { IsDisabled: false }))
-            .then(function(users) {
-                _hseUsersCache = (users || []).map(function(u) { return { Id: u.Id, Name: u.Name }; });
+        if (_hseUsersPromise) return _hseUsersPromise;
+        var ratingsP = Promise.all([
+            window.ApiClient.getJSON(window.ApiClient.getUrl('Localization/ParentalRatings')).catch(function () { return []; }),
+            window.ApiClient.getJSON(window.ApiClient.getUrl('System/Configuration')).catch(function () { return {}; })
+        ]);
+        _hseUsersPromise = Promise.all([window.ApiClient.getJSON(window.ApiClient.getUrl('Users', { IsDisabled: false })), ratingsP])
+            .then(function(res) {
+                var ratings = res[1][0] || [], country = ((res[1][1] || {}).MetadataCountryCode || '').toUpperCase();
+                _hseUsersCache = (res[0] || []).map(function(u) {
+                    var p = u.Policy || {};
+                    var max = (p.MaxParentalRating === null || p.MaxParentalRating === undefined) ? null : Number(p.MaxParentalRating);
+                    return { Id: u.Id, Name: u.Name, MaxParentalRating: max,
+                        RatingName: max === null ? '' : parentalRatingName(max, ratings, country),
+                        BlockUnratedItems: (p.BlockUnratedItems || []).slice() };
+                });
                 return _hseUsersCache;
-            });
+            })
+            .catch(function (e) { _hseUsersPromise = null; throw e; });
+        return _hseUsersPromise;
+    }
+
+    // Emby's parental-ratings list mixes countries: US names have no prefix, others are "GB-12",
+    // "ZA-13"… Several names share one value. Pick the server's country (prefix stripped), else a
+    // common US film rating, else the shortest name; a value with no name uses the next lower one.
+    var US_COMMON_RATINGS = ['G', 'PG', 'PG-13', 'R', 'NC-17', 'TV-Y', 'TV-Y7', 'TV-Y7-FV', 'TV-14', 'TV-MA', 'X'];
+    function parentalRatingName(value, ratings, country) {
+        // "GB-12" → "GB"; US names such as PG-13, TV-14 and NC-17 have no country prefix.
+        function prefixOf(n) { var m = /^([A-Z]{2})-/.exec(n); return m && ['PG', 'TV', 'NC'].indexOf(m[1]) === -1 ? m[1] : ''; }
+        function best(list) {
+            if (!list.length) return '';
+            var local = country && country !== 'US' ? list.filter(function (r) { return prefixOf(r.Name) === country; }) : [];
+            // Several local names on one value (ZA-7–9PG, ZA-10–12PG): the user may watch all of
+            // them, so show the highest (the list is ordered from mild to strict).
+            if (local.length) return local[local.length - 1].Name.slice(3);
+            var plain = list.filter(function (r) { return !prefixOf(r.Name); });
+            for (var i = 0; i < US_COMMON_RATINGS.length; i++) {
+                for (var j = 0; j < plain.length; j++) if (plain[j].Name === US_COMMON_RATINGS[i]) return plain[j].Name;
+            }
+            var pool = (plain.length ? plain.map(function (r) { return r.Name; }) : list.map(function (r) { return prefixOf(r.Name) ? r.Name.slice(3) : r.Name; }));
+            return pool.sort(function (a, b) { return a.length - b.length; })[0];
+        }
+        var exact = ratings.filter(function (r) { return r.Value === value; });
+        if (exact.length) return best(exact);
+        var lower = ratings.filter(function (r) { return r.Value < value; });
+        if (lower.length) {
+            var top = Math.max.apply(null, lower.map(function (r) { return r.Value; }));
+            return best(lower.filter(function (r) { return r.Value === top; }));
+        }
+        return String(value);
+    }
+
+    // Strictness band for the chip colour: kids (up to PG / 7), teens (12–15), adults (16+).
+    // Uses the age in the name when it has one (e.g. "16"), else Emby's rating value
+    // (5 = PG, 6–8 = 12 to 15, 9+ = 18).
+    function userRatingBand(u) {
+        var ages = (u.RatingName || '').match(/\d{1,2}/g);
+        if (ages && !/^TV-Y7/.test(u.RatingName)) {
+            var a = Math.max.apply(null, ages.map(Number));
+            return a <= 9 ? 'kid' : a <= 15 ? 'teen' : 'adult';
+        }
+        var v = u.MaxParentalRating;
+        return v <= 5 ? 'kid' : v <= 8 ? 'teen' : 'adult';
+    }
+
+    function isUserRestricted(u) { return !!u && u.MaxParentalRating !== null && u.MaxParentalRating !== undefined; }
+
+    // Small coloured chip after a user's name: their max parental rating (none when unlimited)
+    // and a lock when they block unrated items. Inline styles: these lists also render in
+    // dialogs appended to <body>. Solid fills with white text read in light and dark themes.
+    var RATING_CHIP_COLORS = { kid: '#2E7D32', teen: '#C77700', adult: '#C62828' };
+    function userRatingChipHtml(u) {
+        function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+        var html = '';
+        if (isUserRestricted(u)) {
+            html += '<span class="hsc-rating-chip" title="Max rating: ' + esc(u.RatingName) + '" style="display:inline-block;margin-left:6px;padding:0 5px;' +
+                'border-radius:3px;font-size:0.72em;font-weight:700;line-height:1.5;vertical-align:middle;white-space:nowrap;color:#fff;background:' +
+                RATING_CHIP_COLORS[userRatingBand(u)] + ';">' + esc(u.RatingName) + '</span>';
+        }
+        if (u && u.BlockUnratedItems && u.BlockUnratedItems.length) {
+            html += '<span class="hsc-rating-lock" title="Blocks unrated: ' + esc(u.BlockUnratedItems.join(', ')) + '" style="margin-left:4px;font-size:0.8em;vertical-align:middle;cursor:help;">&#128274;</span>';
+        }
+        return html;
+    }
+
+    // Same information as plain text, for <option>s (a native select cannot show the chip).
+    function userRatingSuffix(u) {
+        var s = isUserRestricted(u) ? ' \u00B7 ' + u.RatingName : '';
+        if (u && u.BlockUnratedItems && u.BlockUnratedItems.length) s += ' \uD83D\uDD12';
+        return s;
+    }
+
+    // Quick-select links shared by the dropdown and the plain user lists.
+    function userSelectLinksInnerHtml() {
+        return '<a href="#" class="hsc-user-select-all" style="color:#52B54B;">Select all</a>' +
+            '<a href="#" class="hsc-user-select-none" style="color:inherit;opacity:0.7;">Clear</a>' +
+            '<a href="#" class="hsc-user-select-unrestricted" style="color:inherit;opacity:0.7;" title="Select only users without a parental rating limit">Unrestricted</a>' +
+            '<a href="#" class="hsc-user-select-restricted" style="color:inherit;opacity:0.7;" title="Select only users with a parental rating limit">Restricted</a>';
+    }
+
+    // Applies one of the four links to a list of checkboxes; one change event afterwards so the
+    // list's own listeners (and checkFormState) run once.
+    function applyUserQuickSelect(link, boxes) {
+        var mode = link.classList.contains('hsc-user-select-all') ? 'all'
+            : link.classList.contains('hsc-user-select-none') ? 'none'
+            : link.classList.contains('hsc-user-select-restricted') ? 'restricted' : 'unrestricted';
+        boxes.forEach(function (chk) {
+            var r = chk.dataset.restricted === '1';
+            chk.checked = mode === 'all' || (mode === 'restricted' && r) || (mode === 'unrestricted' && !r);
+        });
+        if (boxes.length) boxes[boxes.length - 1].dispatchEvent(new Event('change', { bubbles: true }));
     }
 
     function buildUserMultiSelectHtml(users, selectedIds, checkboxClass) {
@@ -3892,8 +4001,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var rows = users.map(function(u) {
             var chk = sel.indexOf(u.Id) !== -1 ? ' checked' : '';
             return '<div class="checkboxContainer" style="margin:2px 0;">' +
-                '<label><input type="checkbox" is="emby-checkbox" class="' + escAttr(checkboxClass) + '" value="' + escAttr(u.Id) + '" data-name="' + escAttr(u.Name) + '"' + chk + '>' +
-                '<span>' + escHtml(u.Name) + '</span></label></div>';
+                '<label><input type="checkbox" is="emby-checkbox" class="' + escAttr(checkboxClass) + '" value="' + escAttr(u.Id) + '" data-name="' + escAttr(u.Name) + '" data-restricted="' + (isUserRestricted(u) ? '1' : '0') + '"' + chk + '>' +
+                '<span>' + escHtml(u.Name) + userRatingChipHtml(u) + '</span></label></div>';
         }).join('');
         var checkedNames = users.filter(function(u) { return sel.indexOf(u.Id) !== -1; }).map(function(u) { return u.Name; });
         var lbl = checkedNames.length === 0 ? 'No users selected'
@@ -3910,9 +4019,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             '<i class="md-icon hsc-user-dropdown-caret" style="font-size:1em;margin-left:6px;flex-shrink:0;">expand_more</i>' +
             '</button>' +
             '<div class="filter-dropdown-panel" style="min-width:220px;width:100%;box-sizing:border-box;">' +
-            '<div style="display:flex;gap:12px;padding:2px 0 6px 0;margin-bottom:4px;border-bottom:1px solid var(--line-color);font-size:0.85em;">' +
-            '<a href="#" class="hsc-user-select-all" style="color:#52B54B;">Select all</a>' +
-            '<a href="#" class="hsc-user-select-none" style="color:inherit;opacity:0.7;">Clear</a></div>' +
+            '<div style="display:flex;flex-wrap:wrap;gap:4px 12px;padding:2px 0 6px 0;margin-bottom:4px;border-bottom:1px solid var(--line-color);font-size:0.85em;">' +
+            userSelectLinksInnerHtml() + '</div>' +
             rows + '</div>' +
             '</div>';
     }
@@ -3945,15 +4053,13 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         panel.querySelectorAll('input[type="checkbox"]').forEach(function(chk) {
             chk.addEventListener('change', updateLabel);
         });
-        // Select all / Clear: one change event afterwards so form-state listeners run once.
-        panel.querySelectorAll('.hsc-user-select-all, .hsc-user-select-none').forEach(function(link) {
+        // Select all / Clear / Unrestricted / Restricted: one change event afterwards so
+        // form-state listeners run once.
+        panel.querySelectorAll('.hsc-user-select-all, .hsc-user-select-none, .hsc-user-select-unrestricted, .hsc-user-select-restricted').forEach(function(link) {
             link.addEventListener('click', function(e) {
                 e.preventDefault();
                 e.stopPropagation();
-                var on = link.classList.contains('hsc-user-select-all');
-                var boxes = panel.querySelectorAll('input[type="checkbox"]');
-                boxes.forEach(function(chk) { chk.checked = on; });
-                if (boxes.length) boxes[boxes.length - 1].dispatchEvent(new Event('change', { bubbles: true }));
+                applyUserQuickSelect(link, Array.from(panel.querySelectorAll('input[type="checkbox"]')));
             });
         });
         document.addEventListener('click', function closeUserDrop(e) {
@@ -4882,36 +4988,32 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     // "Select all" / "Clear" links above a plain (always open) per-user checkbox list — same look
     // as the dropdown version in buildUserMultiSelectHtml.
     function userListSelectLinksHtml() {
-        return '<div class="hsc-user-list-links" style="display:flex;gap:12px;padding:2px 0 6px 0;margin-bottom:4px;font-size:0.85em;">' +
-            '<a href="#" class="hsc-user-select-all" style="color:#52B54B;">Select all</a>' +
-            '<a href="#" class="hsc-user-select-none" style="color:inherit;opacity:0.7;">Clear</a></div>';
+        return '<div class="hsc-user-list-links" style="display:flex;flex-wrap:wrap;gap:4px 12px;padding:2px 0 6px 0;margin-bottom:4px;font-size:0.85em;">' +
+            userSelectLinksInnerHtml() + '</div>';
     }
 
     // Wires those links: sets every enabled checkbox in listEl, then fires one change event so
     // the list's own listeners (and checkFormState) run once.
     function wireUserListSelectLinks(linksEl, listEl) {
         if (!linksEl || !listEl) return;
-        linksEl.querySelectorAll('.hsc-user-select-all, .hsc-user-select-none').forEach(function (link) {
+        linksEl.querySelectorAll('.hsc-user-select-all, .hsc-user-select-none, .hsc-user-select-unrestricted, .hsc-user-select-restricted').forEach(function (link) {
             link.addEventListener('click', function (e) {
                 e.preventDefault();
-                var on = link.classList.contains('hsc-user-select-all');
-                var boxes = Array.from(listEl.querySelectorAll('input[type="checkbox"]')).filter(function (c) { return !c.disabled; });
-                boxes.forEach(function (chk) { chk.checked = on; });
-                if (boxes.length) boxes[boxes.length - 1].dispatchEvent(new Event('change', { bubbles: true }));
+                applyUserQuickSelect(link, Array.from(listEl.querySelectorAll('input[type="checkbox"]')).filter(function (c) { return !c.disabled; }));
             });
         });
     }
 
     function renderHscTab(container, config, users) {
         var sourceOptions = users.map(function (u) {
-            return '<option value="' + u.Id + '"' + (config.HomeSyncSourceUserId === u.Id ? ' selected' : '') + '>' + u.Name + '</option>';
+            return '<option value="' + u.Id + '"' + (config.HomeSyncSourceUserId === u.Id ? ' selected' : '') + '>' + escapeHtml(u.Name + userRatingSuffix(u)) + '</option>';
         }).join('');
 
         var targetRows = users.map(function (u) {
             var checked = (config.HomeSyncTargetUserIds || []).indexOf(u.Id) >= 0 ? ' checked' : '';
             return '<div class="hsc-user-row"><label style="display:flex;align-items:center;gap:10px;cursor:pointer;width:100%;">' +
-                '<input is="emby-checkbox" type="checkbox" class="hsc-target-chk" value="' + u.Id + '"' + checked + ' />' +
-                '<span>' + u.Name + '</span>' +
+                '<input is="emby-checkbox" type="checkbox" class="hsc-target-chk" value="' + u.Id + '" data-restricted="' + (isUserRestricted(u) ? '1' : '0') + '"' + checked + ' />' +
+                '<span>' + escapeHtml(u.Name) + userRatingChipHtml(u) + '</span>' +
                 '</label></div>';
         }).join('');
 
@@ -4977,7 +5079,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var container = view.querySelector('#hscContainer');
         if (!container) return;
 
-        window.ApiClient.getJSON(window.ApiClient.getUrl('Users', { IsDisabled: false }))
+        getHseUsers()
             .then(function (users) {
                 renderHscTab(container, lastHscConfig, users || []);
 
@@ -5034,8 +5136,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var cwbUserRows  = users.map(function (u) {
             var checked = cwbUserIds.indexOf(u.Id) >= 0 ? ' checked' : '';
             return '<div class="hsc-user-row"><label style="display:flex;align-items:center;gap:10px;cursor:pointer;width:100%;">' +
-                '<input is="emby-checkbox" type="checkbox" class="cwb-user-chk" value="' + u.Id + '"' + checked + ' />' +
-                '<span>' + u.Name + '</span>' +
+                '<input is="emby-checkbox" type="checkbox" class="cwb-user-chk" value="' + u.Id + '" data-restricted="' + (isUserRestricted(u) ? '1' : '0') + '"' + checked + ' />' +
+                '<span>' + escapeHtml(u.Name) + userRatingChipHtml(u) + '</span>' +
                 '</label></div>';
         }).join('');
         var cwbEnabled   = config.ContinueWatchingBumpEnabled ? ' checked' : '';
@@ -5108,7 +5210,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var container = view.querySelector('#hstContainer');
         if (!container) return;
 
-        window.ApiClient.getJSON(window.ApiClient.getUrl('Users', { IsDisabled: false }))
+        getHseUsers()
             .then(function (users) {
                 renderHstTab(container, lastHscConfig, users || []);
 
@@ -8229,10 +8331,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var container = view.querySelector('#hscManageContainer');
         if (!container) return;
 
-        window.ApiClient.getJSON(window.ApiClient.getUrl('Users', { IsDisabled: false }))
+        getHseUsers()
             .then(function (users) {
                 var userOptions = (users || []).map(function (u) {
-                    return '<option value="' + u.Id + '">' + u.Name + '</option>';
+                    return '<option value="' + u.Id + '">' + escapeHtml(u.Name + userRatingSuffix(u)) + '</option>';
                 }).join('');
 
                 container.innerHTML = [
@@ -8507,6 +8609,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             if (isFirstVisit) view.dataset.hscInit = '1';
 
             originalConfigState = null;
+            // Fresh users (and their rating limits) each time the page is shown.
+            _hseUsersCache = null; _hseUsersPromise = null;
             view._hscLoading = true;
 
             var changeHandler = function(e) {

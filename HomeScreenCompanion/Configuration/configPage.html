@@ -1699,7 +1699,7 @@
                     </div>
                     <div class="src-card">
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:#52B54B;">tv</i> Home Screen tab</div>
-                        Make this source automatically show up as a row on the home screen for specific users, updated every time sync runs. In the user list, <em>Select all</em> and <em>Clear</em> tick or untick everyone at once. Choose <em>Media Type: Collections</em> to show a collection row instead of individual items. The <em>Section Type</em> is <em>Single Collection</em> (needs Create Collection), <em>Dynamic Media (tag)</em> (needs Apply Tag) or <em>This source's playlist (each user's own)</em> (needs Create Playlist; each user sees their own playlist from the source, so tick them on the Playlist tab too). For <em>Your Next Watch</em> the playlist row shows each user their own picks, in pick order (or shuffled on every load when the row's <em>Sort By</em> is <em>Random</em>).
+                        Make this source automatically show up as a row on the home screen for specific users, updated every time sync runs. In the user list, <em>Select all</em> and <em>Clear</em> tick or untick everyone at once; <em>Unrestricted</em> and <em>Restricted</em> tick only the users without or with a parental rating limit (the coloured chip after a name shows that limit, see <em>Home Screen</em> below). Choose <em>Media Type: Collections</em> to show a collection row instead of individual items. The <em>Section Type</em> is <em>Single Collection</em> (needs Create Collection), <em>Dynamic Media (tag)</em> (needs Apply Tag) or <em>This source's playlist (each user's own)</em> (needs Create Playlist; each user sees their own playlist from the source, so tick them on the Playlist tab too). For <em>Your Next Watch</em> the playlist row shows each user their own picks, in pick order (or shuffled on every load when the row's <em>Sort By</em> is <em>Random</em>).
                     </div>
                 </div>
 
@@ -1863,6 +1863,10 @@
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">tune</i>
                     <div><strong>Home Screen Tweaks</strong> — <em>Continue Watching</em>: when a new episode arrives for a series you had watched to the end, the series moves to the front of Continue Watching / Next Up. Watched status is never changed. Runs automatically when new episodes are added, plus the scheduled task <em>Continue Watching Bump</em>.</div>
+                </div>
+                <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">family_restroom</i>
+                    <div><strong>Age limits in user lists</strong> — Every user list in HSC (Target Users, Sync to, Continue Watching, the user pickers) shows a small coloured chip after a user who has a parental rating limit in Emby: their highest allowed rating, e.g. <em>PG</em>, <em>12</em>, <em>PG-13</em>. Green is for children (up to PG), amber for teens (12–15), red for 16 and older; users without a limit get no chip. A &#128274; means the user also blocks unrated items (hover to see which kinds). Next to <em>Select all</em> and <em>Clear</em>, <em>Unrestricted</em> ticks only the users without a limit (adults) and <em>Restricted</em> only those with one (kids), so you can give kids and adults different home screens quickly. In drop-down pickers the rating shows as text after the name. The limits are set per user in Emby (<em>Users → Parental Control</em>); reload this page to see a change.</div>
                 </div>
                 <div class="help-feature-row" style="margin-bottom:0;">
                     <i class="md-icon help-feat-icon">sync</i>
