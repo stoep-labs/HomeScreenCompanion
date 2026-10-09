@@ -175,7 +175,8 @@ namespace HomeScreenCompanion
         public string BadgeStyle { get; set; } = "";
         public string Options { get; set; } = "";
         public string TagName { get; set; } = "";   // unused (kept so older pages still post)
-        public string Variant { get; set; } = "";   // "thumb" = the landscape a Thumb row uses; else the Primary poster
+        public string Variant { get; set; } = "";   // "thumb" = the landscape a Thumb row uses; "real" = a real poster's badge; else the Primary poster
+        public string RealPoster { get; set; } = "";   // Variant "real": the quick "label|size" (drawn when Options is empty)
     }
 
     // The collection art a source would get, from its unsaved settings. Changes nothing.
@@ -1080,7 +1081,10 @@ public class HomeScreenCompanionService : IService
                 Directory.CreateDirectory(dir);
                 var standIn = Path.Combine(dir, "stand-in-0.jpg");
                 if (!File.Exists(standIn)) CollectionArtRenderer.DrawStandInPoster(0, standIn);
-                var image = BadgeRenderer.Preview(BadgeLook.Combine(request.BadgeStyle, request.Options), standIn, dir, (request.Variant ?? "").Trim().ToLowerInvariant());
+                var variant = (request.Variant ?? "").Trim().ToLowerInvariant();
+                var image = variant == "real"
+                    ? BadgeRenderer.RealPosterPreview(RealPosterBadges.OptionOf(string.IsNullOrWhiteSpace(request.RealPoster) ? "top10|m" : request.RealPoster + "|" + (request.Options ?? "")), standIn, dir)
+                    : BadgeRenderer.Preview(BadgeLook.Combine(request.BadgeStyle, request.Options), standIn, dir, variant);
                 return new ArtCustomPreviewResponse { Success = true, Image = image };
             }
             catch (Exception ex)

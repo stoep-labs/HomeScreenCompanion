@@ -6309,11 +6309,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
     // "Real posters" block under Badge Style: the TOP 10 badge on the title's own poster
     // everywhere in Emby (drawn by the server's image enhancer; image files stay untouched).
-    // Stored in HomeSectionSettings.RealPosterBadge: '' = off, else 'label|size'
-    // (label top10 | top10rank, size s | m | l).
+    // Stored in HomeSectionSettings.RealPosterBadge: '' = off, else 'label|size' or
+    // 'label|size|{options}' (label top10 | top10rank, size s | m | l; options = the Customise
+    // look, Number badge fields plus "style" for a preset colour; when set it replaces the square).
     function parseRealPoster(v) {
-        var p = String(v || '').split('|');
-        return { on: !!v, label: p[0] === 'top10rank' ? 'top10rank' : 'top10', size: (p[1] === 's' || p[1] === 'l') ? p[1] : 'm' };
+        var str = String(v || ''), i1 = str.indexOf('|'), i2 = i1 < 0 ? -1 : str.indexOf('|', i1 + 1);
+        var p = [i1 < 0 ? str : str.slice(0, i1), i1 < 0 ? '' : str.slice(i1 + 1, i2 < 0 ? undefined : i2)];
+        var opts = i2 < 0 ? '' : str.slice(i2 + 1).trim();
+        return { on: !!v, label: p[0] === 'top10rank' ? 'top10rank' : 'top10', size: (p[1] === 's' || p[1] === 'l') ? p[1] : 'm', opts: opts === '{}' ? '' : opts };
     }
     function buildRealPosterHtml(value) {
         var rp = parseRealPoster(value);
@@ -6329,9 +6332,18 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '<input is="emby-checkbox" type="checkbox" class="tl-rp-on"' + (rp.on ? ' checked' : '') + ' />' +
                 '<span>Badge the real posters too</span></label></div>' +
             '<div class="tl-rp-opts" style="' + (rp.on ? '' : 'display:none;') + 'margin-left:4px;">' +
+                '<div class="tl-rp-quick">' +
                 '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><span style="' + lbl + '">Label</span>' + seg('label', [['top10', 'TOP 10'], ['top10rank', 'TOP 10 #3']], rp.label) + '</div>' +
                 '<div style="display:flex;align-items:center;gap:10px;"><span style="' + lbl + '">Size</span>' + seg('size', [['s', 'S'], ['m', 'M'], ['l', 'L']], rp.size) + '</div>' +
+                '</div>' +
                 '<div class="fieldDescription" style="margin-top:6px;">The TOP 10 square on the title\'s own poster everywhere in Emby (library, search, item page, every app). Image files are not changed.</div>' +
+            '</div>' +
+            // Same Customise chip as Badge Style (greyed while the tick box is off); the icon is the look the real posters get.
+            '<input type="hidden" class="tl-rp-custom" data-optkind="real" value="' + String(rp.opts).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;') + '">' +
+            '<div class="tl-rp-custom-row" style="display:flex;align-items:center;gap:8px;margin-top:8px;">' +
+                '<img class="tl-rp-icon" alt="" style="width:31px;height:46px;object-fit:contain;display:block;border-radius:2px;" />' +
+                '<button type="button" is="emby-button" class="btnRealPosterCustomise raised"' + custDisabledAttrs(!rp.on, RP_OFF_TIP) + ' style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;' + (rp.on ? '' : 'opacity:0.45;cursor:not-allowed;') + '"><i class="md-icon" style="font-size:1em; margin-right:4px;">settings</i><span>Customise</span></button>' +
+                '<span class="tl-rp-custom-note fieldDescription" style="margin:0;' + (rp.opts ? '' : 'display:none;') + '">Customised (replaces Label and Size)</span>' +
             '</div>' +
             '</div>';
     }
@@ -6340,7 +6352,39 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         if (!on || !on.checked) return '';
         var l = container.querySelector('.tl-rp [data-rp="label"] .artc-on');
         var z = container.querySelector('.tl-rp [data-rp="size"] .artc-on');
-        return (l ? l.getAttribute('data-value') : 'top10') + '|' + (z ? z.getAttribute('data-value') : 'm');
+        var c = container.querySelector('.tl-rp .tl-rp-custom');
+        return (l ? l.getAttribute('data-value') : 'top10') + '|' + (z ? z.getAttribute('data-value') : 'm') + (c && c.value ? '|' + c.value : '');
+    }
+    var RP_OFF_TIP = 'Tick "Badge the real posters too" first';
+    // The real-poster icon (always drawn by the server: today's square, or the Customise look) and
+    // the greyed Label / Size when a Customise look replaces them (shown, never hidden).
+    function refreshRealPosterBlock(block) {
+        var chk = block.querySelector('.tl-rp-on'), c = block.querySelector('.tl-rp-custom');
+        var btn = block.querySelector('.btnRealPosterCustomise'), note = block.querySelector('.tl-rp-custom-note');
+        var quick = block.querySelector('.tl-rp-quick'), icon = block.querySelector('.tl-rp-icon');
+        setCustomiseEnabled(btn, chk.checked, RP_OFF_TIP);
+        var custom = !!(c && c.value);
+        if (note) note.style.display = custom ? '' : 'none';
+        if (quick) { quick.style.opacity = custom ? '0.45' : ''; quick.style.pointerEvents = custom ? 'none' : ''; quick.title = custom ? 'Customised: Reset in Customise to use Label and Size' : ''; }
+        var l = block.querySelector('[data-rp="label"] .artc-on'), z = block.querySelector('[data-rp="size"] .artc-on');
+        var rpVal = (l ? l.getAttribute('data-value') : 'top10') + '|' + (z ? z.getAttribute('data-value') : 'm');
+        var token = rpVal + '|' + (c ? c.value : '');
+        if (!icon || icon.dataset.iconFor === token) return;
+        icon.dataset.iconFor = token;
+        realPosterIconImage(rpVal, c ? c.value : '').then(function (src) { if (icon.dataset.iconFor === token) icon.src = src; }).catch(function () { });
+    }
+    function realPosterIconImage(rpVal, options) {
+        var key = 'real|' + rpVal + '|' + options;
+        if (!_badgeIconCache[key])
+            _badgeIconCache[key] = fetch(window.ApiClient.getUrl('HomeScreenCompanion/BadgeCustomPreview'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
+                body: JSON.stringify({ BadgeStyle: 'neutral', Options: options, Variant: 'real', RealPoster: rpVal })
+            }).then(function (r) { return r.json(); }).then(function (res) {
+                if (!res.Success) throw new Error(res.Message || 'Preview failed');
+                return res.Image;
+            }).catch(function (e) { delete _badgeIconCache[key]; throw e; });
+        return _badgeIconCache[key];
     }
     function initRealPoster(container) {
         container.querySelectorAll('.tl-rp').forEach(function (block) {
@@ -6348,7 +6392,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             block.dataset.rpInit = '1';
             var chk = block.querySelector('.tl-rp-on');
             var optsEl = block.querySelector('.tl-rp-opts');
-            chk.addEventListener('change', function () { optsEl.style.display = chk.checked ? '' : 'none'; });
+            chk.addEventListener('change', function () { optsEl.style.display = chk.checked ? '' : 'none'; refreshRealPosterBlock(block); });
+            var custBtn = block.querySelector('.btnRealPosterCustomise');
+            if (custBtn) custBtn.addEventListener('click', function (e) {
+                e.preventDefault(); e.stopPropagation();
+                if (!chk.checked) return;
+                openBadgeCustomise(block, 'real', container, null);
+            });
+            refreshRealPosterBlock(block);
             block.querySelectorAll('.artc-seg').forEach(function (segEl) {
                 segEl.querySelectorAll('.artc-segbtn').forEach(function (btn) {
                     btn.addEventListener('click', function (e) {
@@ -6523,11 +6574,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var overlay = (view && view.querySelector('#artCustomiseModalOverlay')) || document.querySelector('#artCustomiseModalOverlay');
         if (!overlay) return;
         var tile = kind === 'top10';
-        var optsInput = picker.querySelector('.tl-badge-opts');
-        var presetInput = picker.querySelector('.tl-badge-preset');
+        // 'real': the real-poster badge (Number badge fields; picker = the .tl-rp block). Its preset
+        // colour travels in the options as "style"; unset shape / position mean the TOP 10 square, top right.
+        var real = kind === 'real';
+        var optsInput = picker.querySelector(real ? '.tl-rp-custom' : '.tl-badge-opts');
+        var presetInput = real ? { value: 'neutral' } : picker.querySelector('.tl-badge-preset');
+        if (real) { try { presetInput.value = (optsInput.value && JSON.parse(optsInput.value).style) || 'neutral'; } catch (e) { } }
         var body = overlay.querySelector('.artc-body');
-        overlay.querySelector('.artc-title').textContent = 'Customise ' + (tile ? 'Top 10 tile' : 'number badge');
-        overlay.querySelector('.artc-subtitle').textContent = 'Top-list badge — ' + (tile ? 'Top 10 tile' : 'Number badge');
+        overlay.querySelector('.artc-title').textContent = 'Customise ' + (real ? 'real-poster badge' : tile ? 'Top 10 tile' : 'number badge');
+        overlay.querySelector('.artc-subtitle').textContent = real ? 'Real posters — the badge on the title\'s own poster' : 'Top-list badge — ' + (tile ? 'Top 10 tile' : 'Number badge');
         body.innerHTML = '<div style="padding:20px 0; text-align:center; opacity:0.8;">Loading…</div>';
         overlay.style.zIndex = '20000';
         overlay._artcCancel = onCancel || null;
@@ -6537,6 +6592,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
         getBadgeCustomiseInfo().then(function (info) {
             var def = badgeDefaults(kind);
+            if (real) { def.shape = 'netflix'; def.pos = 'tr'; }
             var stored = {};
             try { stored = optsInput.value ? JSON.parse(optsInput.value) : {}; } catch (e) { stored = {}; }
             if (optsInput.dataset.optkind && optsInput.dataset.optkind !== kind) stored = {};
@@ -6556,7 +6612,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             // One preview card, the image the list's Image Type uses (Thumb = landscape, else Primary).
             var imgSel = container && container.querySelector && container.querySelector('.tlm-image-type, .mtlImageType');
             var imageType = imgSel ? imgSel.value : '';
-            var variant = imageType === 'Thumb' ? 'thumb' : 'primary';
+            var variant = real ? 'real' : imageType === 'Thumb' ? 'thumb' : 'primary';
             var previewBox = variant === 'thumb' ? 'artc-bg' : tile ? 'artc-card43' : 'artc-poster';
             render();
 
@@ -6575,6 +6631,16 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 return any ? JSON.stringify(out) : '';
             }
             function previewStyle() { return tile ? 'top10' : (state.colour && state.colour[0] !== '#' ? state.colour : 'neutral'); }
+            // Real posters: the options plus the preset colour as "style" ('' = today's square).
+            function realOptions() {
+                var v = toOptions(), st = previewStyle();
+                if (st === 'neutral') return v;
+                var o = v ? JSON.parse(v) : {}; o.style = st; return JSON.stringify(o);
+            }
+            function realQuick() {
+                var l = picker.querySelector('[data-rp="label"] .artc-on'), z = picker.querySelector('[data-rp="size"] .artc-on');
+                return (l ? l.getAttribute('data-value') : 'top10') + '|' + (z ? z.getAttribute('data-value') : 'm');
+            }
 
             function seg(f, opts) {
                 return '<div class="artc-seg" data-field="' + f + '">' + opts.map(function (o) {
@@ -6607,7 +6673,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     case 'pos': return !tile && (!noNumber || state.move || state.logo);
                     case 'tilepos': case 'tilebg': return tile;
                     case 'tilebgcolour': return tile && state.tilebg === 'solid';
-                    case 'moveeq': return !!state.move;
+                    case 'moveeq': return !real && !!state.move;
+                    case 'move': case 'weeks': case 'plays': return !real;   // no list history on a real poster
                     default: return true;
                 }
             }
@@ -6647,7 +6714,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     '<div class="artc-wrap">' +
                       '<div class="artc-previewcol">' +
                         '<div class="artc-preview ' + previewBox + '"><img class="artc-img" alt="" /><div class="artc-busy">Drawing…</div></div>' +
-                        '<div class="fieldDescription" style="margin-top:6px;">Drawn with a stand-in poster (' + (variant === 'thumb' ? 'Thumb, landscape' : 'Primary') + ', from the list\'s Image Type). Movement, weeks and plays show sample values.</div>' +
+                        '<div class="fieldDescription" style="margin-top:6px;">' + (real ? 'Drawn with a stand-in poster, as the real posters get it. Reset = the TOP 10 square (Label and Size).' : 'Drawn with a stand-in poster (' + (variant === 'thumb' ? 'Thumb, landscape' : 'Primary') + ', from the list\'s Image Type). Movement, weeks and plays show sample values.') + '</div>' +
                       '</div>' +
                       '<div class="artc-fieldscol">' +
                         section('Number',
@@ -6730,7 +6797,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     fetch(window.ApiClient.getUrl('HomeScreenCompanion/BadgeCustomPreview'), {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
-                        body: JSON.stringify({ BadgeStyle: previewStyle(), Options: toOptions(), Variant: variant })
+                        body: JSON.stringify({ BadgeStyle: previewStyle(), Options: real ? realOptions() : toOptions(), Variant: variant, RealPoster: real ? realQuick() : '' })
                     }).then(function (r) { return r.json(); }).then(function (res) {
                         if (mine !== seq) return;   // a newer drawing is on its way
                         var img = body.querySelector('.artc-img'), b = body.querySelector('.artc-busy');
@@ -6745,6 +6812,19 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
             overlay._artcReset = function () { state = Object.assign({}, def); state.colour = 'neutral'; render(); };
             overlay._artcOk = function () {
+                if (real) {
+                    var rv = realOptions(), rchanged = optsInput.value !== rv;
+                    optsInput.value = rv;
+                    overlay._artcCancel = null;
+                    refreshRealPosterBlock(picker);
+                    if (rchanged) {
+                        var rchk = picker.querySelector('.tl-rp-on');
+                        if (rchk) rchk.dispatchEvent(new Event('change', { bubbles: true }));
+                        setTimeout(checkFormState, 0);
+                    }
+                    overlay.classList.remove('modal-visible');
+                    return;
+                }
                 var val = toOptions();
                 var newPreset = !tile && state.colour && state.colour[0] !== '#' ? state.colour : presetInput.value;
                 var changed = optsInput.value !== val || presetInput.value !== newPreset || optsInput.dataset.optkind !== kind;

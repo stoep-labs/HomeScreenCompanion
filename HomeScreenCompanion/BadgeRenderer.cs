@@ -884,6 +884,43 @@ namespace HomeScreenCompanion
             data.SaveTo(fs);
         }
 
+        /// <summary>
+        /// The real-poster badge with a Customise look: the Number badge drawing (CustomBadge) with
+        /// the options; unset shape / position mean the TOP 10 square in the top-right corner, and
+        /// "style" carries a preset colour. No list extras (movement, weeks, plays) on a real poster.
+        /// </summary>
+        internal static void RealPosterCustom(string sourcePath, string outputPath, int rank, string optionsJson)
+        {
+            var o = BadgeOptions.Parse(optionsJson);
+            if (o.Shape == null) o.Shape = "netflix";
+            if (o.Pos == null) o.Pos = "tr";
+            o.Move = null; o.MoveEq = null; o.Weeks = null; o.Plays = null;
+            var m = Regex.Match(optionsJson ?? "", "\"style\"\\s*:\\s*\"([a-z-]+)\"");
+            CustomBadge(sourcePath, rank, outputPath, m.Success ? m.Groups[1].Value : "neutral", o, null);
+        }
+
+        /// <summary>Rank #1 real-poster badge on the stand-in poster (popup preview and the card's icon).</summary>
+        internal static string RealPosterPreview((string Label, string Size, string Options)? opt, string standInPoster, string tempDir)
+        {
+            var (label, size, options) = opt ?? ("top10", "m", "");
+            Directory.CreateDirectory(tempDir);
+            var outPath = Path.Combine(tempDir, "real-preview-" + Guid.NewGuid().ToString("N") + ".jpg");
+            try
+            {
+                if (options.Length == 0) RealPosterBadge(standInPoster, outPath, 1, label == "top10rank", size);
+                else RealPosterCustom(standInPoster, outPath, 1, options);
+                using var full = SKBitmap.Decode(outPath);
+                int w = 400, h = full.Height * w / full.Width;
+                using var surface = SKSurface.Create(new SKImageInfo(w, h));
+                using (var paint = new SKPaint { FilterQuality = SKFilterQuality.High, IsAntialias = true })
+                    surface.Canvas.DrawBitmap(full, SKRect.Create(0, 0, w, h), paint);
+                using var img = surface.Snapshot();
+                using var data = img.Encode(SKEncodedImageFormat.Jpeg, 88);
+                return "data:image/jpeg;base64," + Convert.ToBase64String(data.ToArray());
+            }
+            finally { try { if (File.Exists(outPath)) File.Delete(outPath); } catch { } }
+        }
+
         private static readonly Dictionary<string, string> ShapeCache = new Dictionary<string, string>();
 
         /// <summary>Rank #1 in the given shape on a stand-in poster, small (JPEG data: URL), for the popup's shape tiles.</summary>
