@@ -6356,12 +6356,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     // stay visible with a short note.
     var NUM_COLOURS = [['#ffffff', 'White'], ['#ececf0', 'Light grey'], ['#141414', 'Page dark'], ['#f5c518', 'Gold'], ['#e50914', 'Red'], ['#52b54b', 'Emby green'], ['#7fd4ff', 'Ice blue'], ['#000000', 'Black']];
     var OUT_COLOURS = [['#9696a0', 'Grey'], ['#000000', 'Black'], ['#ffffff', 'White'], ['#f5c518', 'Gold'], ['#e50914', 'Red'], ['#52b54b', 'Emby green']];
-    var BADGE_FIELDS = ['font', 'num', 'numcolour', 'outcolour', 'outline', 'size', 'shape', 'colour', 'medal', 'shadow', 'pos', 'tilepos', 'tilebg', 'tilebgcolour', 'special', 'move', 'weeks', 'plays', 'logo'];
+    var BADGE_FIELDS = ['font', 'num', 'numcolour', 'outcolour', 'outline', 'size', 'shape', 'colour', 'medal', 'shadow', 'pos', 'tilepos', 'tilebg', 'tilebgcolour', 'special', 'move', 'moveeq', 'weeks', 'plays', 'logo'];
     function badgeDefaults(kind) {
         var tile = kind === 'top10';
         return { font: tile ? 'anton' : 'lemonmilk', num: tile ? 'outline' : 'filled', numcolour: tile ? '#141414' : '#ffffff', outcolour: tile ? '#9696a0' : '#000000',
                  outline: 'normal', size: 'm', shape: 'circle', colour: '', medal: '', shadow: false, pos: 'tl', tilepos: 'beside', tilebg: 'flat', tilebgcolour: '#16223a',
-                 special: '', move: false, weeks: false, plays: false, logo: false };
+                 special: '', move: false, moveeq: false, weeks: false, plays: false, logo: false };
     }
     // The number colour each style starts with (switching style moves an untouched colour along).
     function badgeNumDefault(kind, num) {
@@ -6448,6 +6448,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     // its number fields are always stored: the preview shows what is selected.
                     var big = !tile && state.shape === 'bigoutline' && BIG_KEYS.indexOf(k) >= 0;
                     if (!big && k === 'numcolour' && state.numcolour === badgeNumDefault(kind, state.num)) return;
+                    if (k === 'moveeq' && !state.move) return;   // only with the movement chip on
                     if (!big && state[k] === def[k]) return;
                     out[k] = state[k]; any = true;
                 });
@@ -6486,6 +6487,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     case 'pos': return !tile && (!noNumber || state.move || state.logo);
                     case 'tilepos': case 'tilebg': return tile;
                     case 'tilebgcolour': return tile && state.tilebg === 'solid';
+                    case 'moveeq': return !!state.move;
                     default: return true;
                 }
             }
@@ -6549,6 +6551,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         section('#1 special', field('Rank 1', seg('special', specialOpts()), 'special')) +
                         section('Extras',
                             field('Rank movement ▲▼ / NEW', seg('move', [[false, 'Off'], [true, 'On']]), 'move', 'Compared with the list\'s previous ranking; shows after the list has been ranked twice.') +
+                            field('', '<label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:0.9em;"><input type="checkbox" class="artc-chk" data-field="moveeq"' + (state.moveeq ? ' checked' : '') + ' style="margin:0;" /><span>Show = for unchanged</span></label>', 'moveeq', 'Off: only ▲ / ▼ / NEW; a title whose rank did not change gets no chip.') +
                             field('Weeks in the list', seg('weeks', [[false, 'Off'], [true, 'On']]), 'weeks', '"N wks in list" at the bottom of the poster.') +
                             field('Plays', seg('plays', [[false, 'Off'], [true, 'On']]), 'plays', 'All users\' plays of the title (all time).') +
                             field('TOP 10 logo', seg('logo', [[false, 'Off'], [true, 'On']]), 'logo', tile ? 'Red TOP 10 logo in the corner of the poster card.' : 'Red TOP 10 corner logo; with shape "None" it is the only mark.')) +
@@ -6578,6 +6581,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         });
                     });
                 });
+                body.querySelectorAll('.artc-chk').forEach(function (b) { b.addEventListener('change', function () { set(b.dataset.field, b.checked); }); });
                 body.querySelectorAll('.artc-font').forEach(function (b) { b.addEventListener('click', function () { set('font', b.dataset.value); }); });
                 body.querySelectorAll('.artc-shape').forEach(function (b) { b.addEventListener('click', function () { set('shape', b.dataset.value); }); });
                 body.querySelectorAll('.artc-posdot').forEach(function (b) { b.addEventListener('click', function () { set('pos', b.dataset.value); }); });

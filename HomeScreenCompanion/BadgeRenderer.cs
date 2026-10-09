@@ -31,11 +31,12 @@ namespace HomeScreenCompanion
     ///   special   bigger | crown | glow               rank 1 only
     ///   move, weeks, plays, logo  true | false        extras: rank movement chip, "N wks" line,
     ///                                                 "N plays" line, Netflix-style TOP 10 corner logo
+    ///   moveeq    true | false                        movement chip also shows "=" for an unchanged rank
     /// </summary>
     internal sealed class BadgeOptions
     {
         public string? Font, Num, NumColour, OutColour, Outline, Size, Shape, Colour, Medal, Pos, TilePos, TileBg, TileBgColour, Special;
-        public bool? Shadow, Move, Weeks, Plays, Logo;
+        public bool? Shadow, Move, MoveEq, Weeks, Plays, Logo;
 
         public static readonly BadgeOptions None = new BadgeOptions();
 
@@ -76,6 +77,7 @@ namespace HomeScreenCompanion
                     case "special": if (s == "bigger" || s == "crown" || s == "glow") o.Special = s; break;
                     case "shadow": o.Shadow = b; break;
                     case "move": o.Move = b; break;
+                    case "moveeq": o.MoveEq = b; break;
                     case "weeks": o.Weeks = b; break;
                     case "plays": o.Plays = b; break;
                     case "logo": o.Logo = b; break;
@@ -83,6 +85,9 @@ namespace HomeScreenCompanion
             }
             return o;
         }
+
+        // The movement chip for this title, or null: an unchanged rank ("=") only when moveeq is ticked.
+        internal string? MoveChip(RankExtras ex) => Move != true || ex.Move == null || (ex.Move == "=" && MoveEq != true) ? null : ex.Move;
 
         internal static SKColor Hex(string? hex, SKColor fallback) => hex != null && SKColor.TryParse(hex, out var c) ? c : fallback;
     }
@@ -246,7 +251,7 @@ namespace HomeScreenCompanion
         private static BadgeOptions TileToBadge(BadgeOptions t) => new BadgeOptions
         {
             Font = t.Font, Num = t.Num == "outline" ? null : t.Num, NumColour = t.Num == "outline" ? null : t.NumColour, Medal = t.Medal, Shadow = t.Shadow,
-            Move = t.Move, Weeks = t.Weeks, Plays = t.Plays, Logo = t.Logo
+            Move = t.Move, MoveEq = t.MoveEq, Weeks = t.Weeks, Plays = t.Plays, Logo = t.Logo
         };
 
         // ── the original circle badge (unchanged) ────────────────────────────────────────
@@ -583,15 +588,16 @@ namespace HomeScreenCompanion
             }
 
             // Extras beside the badge: movement chip, TOP 10 logo.
-            if (o.Move == true && ex.Move != null)
+            var mv = o.MoveChip(ex);
+            if (mv != null)
             {
                 float ch = Math.Max(s * 0.07f, r * 0.62f);
-                float cw = Chip(c, ex.Move, 0, 0, ch, true);
+                float cw = Chip(c, mv, 0, 0, ch, true);
                 float x = right ? bounds.Left - m * 0.6f - cw : bounds.Right + m * 0.6f;
                 if (shape == "hidden") x = right ? w - m - cw : m;
                 float y = shape == "hidden" ? (pos.StartsWith("b") ? h - m - ch : m) : bounds.MidY - ch / 2;
                 if (x < 0 || x + cw > w) { x = Math.Max(m, Math.Min(w - m - cw, bounds.Left)); y = pos.StartsWith("b") ? bounds.Top - ch - m * 0.5f : bounds.Bottom + m * 0.5f; }
-                Chip(c, ex.Move, x, y, ch);
+                Chip(c, mv, x, y, ch);
             }
             if (o.Logo == true) NetflixLogoBadge(c, w, h, right ? "tl" : "tr");
         }
@@ -677,7 +683,7 @@ namespace HomeScreenCompanion
             DrawCard(c, poster, card, RadiusFor(pw));
             DrawStatLines(c, card, ex, o, cardH * 0.065f, true);
             if (o.Logo == true) NetflixLogoOn(c, card);
-            if (o.Move == true && ex.Move != null) Chip(c, ex.Move, 24, 16, 92);
+            if (o.MoveChip(ex) is string mv) Chip(c, mv, 24, 16, 92);
             Save(surface, outputPath);
         }
 
@@ -717,7 +723,7 @@ namespace HomeScreenCompanion
             DrawCard(c, poster, card, RadiusFor(pw));
             DrawStatLines(c, card, ex, o, ph * 0.055f, true);
             if (o.Logo == true) NetflixLogoOn(c, card);
-            if (o.Move == true && ex.Move != null) Chip(c, ex.Move, margin + 10, crop + margin + 6, 110);
+            if (o.MoveChip(ex) is string mv) Chip(c, mv, margin + 10, crop + margin + 6, 110);
             Save(surface, outputPath);
         }
 
@@ -896,7 +902,8 @@ namespace HomeScreenCompanion
             bool tile = string.Equals(style, "top10", StringComparison.OrdinalIgnoreCase);
             bool thumb = variant == "thumb";
             const int rank = 1;
-            var extras = new RankExtras { Move = "+2", Weeks = 5, Plays = 48, Sample = true };
+            // Sample movement: "=" when the list shows unchanged ranks, so the tick box is visible in the preview.
+            var extras = new RankExtras { Move = o.MoveEq == true ? "=" : "+2", Weeks = 5, Plays = 48, Sample = true };
             Directory.CreateDirectory(tempDir);
             var ob = Path.Combine(tempDir, "badge-preview-" + Guid.NewGuid().ToString("N"));
             var outPath = ob + (thumb ? "-thumb.jpg" : ".jpg");
