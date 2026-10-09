@@ -114,8 +114,8 @@ namespace HomeScreenCompanion
         // Also used by NextWatchRecommender, so "popular" means the same in both.
         internal static bool Counts(UserItemData d, DateTimeOffset? cutoff)
         {
-            bool watched = d.Played || d.PlayCount > 0;
-            if (!watched) return false;
+            // Played only: Emby also raises PlayCount for a play stopped straight away.
+            if (!d.Played) return false;
             if (!cutoff.HasValue) return true;
             return d.LastPlayedDate.HasValue && d.LastPlayedDate.Value >= cutoff.Value;
         }

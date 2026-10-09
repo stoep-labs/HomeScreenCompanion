@@ -174,7 +174,8 @@ namespace HomeScreenCompanion
                     if (r.Key == null || !_groupByKey.TryGetValue(r.Key, out var g)) continue;
                     records++;
                     h.ByGroup.TryGetValue(g, out var e);
-                    bool played = r.Played || r.PlayCount > 0;
+                    // Watched = Emby's Played flag only: PlayCount also goes up on a play stopped at once.
+                    bool played = r.Played;
                     if (played) { e.Plays++; if (r.LastPlayedDate.HasValue && (!e.Last.HasValue || r.LastPlayedDate > e.Last)) e.Last = r.LastPlayedDate; }
                     if (r.PlaybackPositionTicks > 0) e.Started = true;
                     if (r.IsFavorite) e.Favourite = true;
