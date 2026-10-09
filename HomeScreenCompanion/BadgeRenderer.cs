@@ -32,10 +32,12 @@ namespace HomeScreenCompanion
     ///   move, weeks, plays, logo  true | false        extras: rank movement chip, "N wks" line,
     ///                                                 "N plays" line, Netflix-style TOP 10 corner logo
     ///   moveeq    true | false                        movement chip also shows "=" for an unchanged rank
+    ///   logolabel top10 | top10rank                   TOP 10 logo: plain, or with "#rank" on a second line
+    ///   logosize  s | m | l                           TOP 10 logo size (m = the original size)
     /// </summary>
     internal sealed class BadgeOptions
     {
-        public string? Font, Num, NumColour, OutColour, Outline, Size, Shape, Colour, Medal, Pos, TilePos, TileBg, TileBgColour, Special;
+        public string? Font, Num, NumColour, OutColour, Outline, Size, Shape, Colour, Medal, Pos, TilePos, TileBg, TileBgColour, Special, LogoLabel, LogoSize;
         public bool? Shadow, Move, MoveEq, Weeks, Plays, Logo;
 
         public static readonly BadgeOptions None = new BadgeOptions();
@@ -45,7 +47,7 @@ namespace HomeScreenCompanion
 
         public bool IsDefault => Font == null && Num == null && NumColour == null && OutColour == null && Outline == null && Size == null
             && Shape == null && Colour == null && Medal == null && Pos == null && TilePos == null && TileBg == null && TileBgColour == null
-            && Special == null && Shadow != true && !AnyExtras;
+            && Special == null && LogoLabel == null && LogoSize == null && Shadow != true && !AnyExtras;
 
         public bool AnyExtras => Move == true || Weeks == true || Plays == true || Logo == true;
 
@@ -81,6 +83,8 @@ namespace HomeScreenCompanion
                     case "weeks": o.Weeks = b; break;
                     case "plays": o.Plays = b; break;
                     case "logo": o.Logo = b; break;
+                    case "logolabel": if (s == "top10" || s == "top10rank") o.LogoLabel = s; break;
+                    case "logosize": if (s == "s" || s == "m" || s == "l") o.LogoSize = s; break;
                 }
             }
             return o;
@@ -88,6 +92,11 @@ namespace HomeScreenCompanion
 
         // The movement chip for this title, or null: an unchanged rank ("=") only when moveeq is ticked.
         internal string? MoveChip(RankExtras ex) => Move != true || ex.Move == null || (ex.Move == "=" && MoveEq != true) ? null : ex.Move;
+
+        // TOP 10 logo scale: S / M (the original size) / L.
+        internal float LogoScale => LogoSize == "s" ? 0.75f : LogoSize == "l" ? 1.4f : 1f;
+        // The rank drawn under the logo ("TOP 10 #3"), or null for the plain logo.
+        internal int? LogoRank(int rank) => LogoLabel == "top10rank" ? rank : (int?)null;
 
         internal static SKColor Hex(string? hex, SKColor fallback) => hex != null && SKColor.TryParse(hex, out var c) ? c : fallback;
     }
@@ -251,7 +260,7 @@ namespace HomeScreenCompanion
         private static BadgeOptions TileToBadge(BadgeOptions t) => new BadgeOptions
         {
             Font = t.Font, Num = t.Num == "outline" ? null : t.Num, NumColour = t.Num == "outline" ? null : t.NumColour, Medal = t.Medal, Shadow = t.Shadow,
-            Move = t.Move, MoveEq = t.MoveEq, Weeks = t.Weeks, Plays = t.Plays, Logo = t.Logo
+            Move = t.Move, MoveEq = t.MoveEq, Weeks = t.Weeks, Plays = t.Plays, Logo = t.Logo, LogoLabel = t.LogoLabel, LogoSize = t.LogoSize
         };
 
         // ── the original circle badge (unchanged) ────────────────────────────────────────
@@ -587,7 +596,8 @@ namespace HomeScreenCompanion
                 DrawCrown(c, bounds.MidX, Math.Max(2, bounds.Top - ch * 0.55f), cw, ch);
             }
 
-            // Extras beside the badge: movement chip, TOP 10 logo.
+            // Extras beside the badge: movement chip, TOP 10 logo (top corner opposite the badge).
+            SKRect? logoBox = o.Logo == true ? NetflixLogoRect(w, h, right ? "tl" : "tr", o, rank) : (SKRect?)null;
             var mv = o.MoveChip(ex);
             if (mv != null)
             {
@@ -596,10 +606,10 @@ namespace HomeScreenCompanion
                 float x = right ? bounds.Left - m * 0.6f - cw : bounds.Right + m * 0.6f;
                 if (shape == "hidden") x = right ? w - m - cw : m;
                 float y = shape == "hidden" ? (pos.StartsWith("b") ? h - m - ch : m) : bounds.MidY - ch / 2;
-                if (x < 0 || x + cw > w) { x = Math.Max(m, Math.Min(w - m - cw, bounds.Left)); y = pos.StartsWith("b") ? bounds.Top - ch - m * 0.5f : bounds.Bottom + m * 0.5f; }
+                if (x < 0 || x + cw > w || (logoBox is SKRect lb && lb.IntersectsWith(SKRect.Create(x, y, cw, ch)))) { x = Math.Max(m, Math.Min(w - m - cw, bounds.Left)); y = pos.StartsWith("b") ? bounds.Top - ch - m * 0.5f : bounds.Bottom + m * 0.5f; }
                 Chip(c, mv, x, y, ch);
             }
-            if (o.Logo == true) NetflixLogoBadge(c, w, h, right ? "tl" : "tr");
+            if (logoBox is SKRect lr) DrawLogoBox(c, SKRect.Create(lr.Left, lr.Top, lr.Width, lr.Width * 1.12f), o.LogoRank(rank));
         }
 
         // ── Top 10 tile (customised) ─────────────────────────────────────────────────────
@@ -682,7 +692,7 @@ namespace HomeScreenCompanion
             var card = new SKRect(px, py, px + pw, py + cardH);
             DrawCard(c, poster, card, RadiusFor(pw));
             DrawStatLines(c, card, ex, o, cardH * 0.065f, true);
-            if (o.Logo == true) NetflixLogoOn(c, card);
+            if (o.Logo == true) NetflixLogoOn(c, card, o, rank);
             if (o.MoveChip(ex) is string mv) Chip(c, mv, 24, 16, 92);
             Save(surface, outputPath);
         }
@@ -722,7 +732,7 @@ namespace HomeScreenCompanion
             var card = new SKRect(px, py, px + pw, py + ph);
             DrawCard(c, poster, card, RadiusFor(pw));
             DrawStatLines(c, card, ex, o, ph * 0.055f, true);
-            if (o.Logo == true) NetflixLogoOn(c, card);
+            if (o.Logo == true) NetflixLogoOn(c, card, o, rank);
             if (o.MoveChip(ex) is string mv) Chip(c, mv, margin + 10, crop + margin + 6, 110);
             Save(surface, outputPath);
         }
@@ -825,20 +835,35 @@ namespace HomeScreenCompanion
             }
         }
 
-        // Netflix-style red "TOP 10" logo in a corner of the poster (no rank).
-        private static void NetflixLogoBadge(SKCanvas c, int w, int h, string corner)
+        // Netflix-style red "TOP 10" logo in a top corner of the poster: the whole area it covers
+        // (with the "#rank" line when the label asks for it). Size M = the original 17% of the short side.
+        private static SKRect NetflixLogoRect(int w, int h, string corner, BadgeOptions o, int rank)
         {
-            float s = Math.Min(w, h), bw = s * 0.17f, bh = bw * 1.12f;
-            var box = SKRect.Create(corner == "tl" ? 0 : w - bw, 0, bw, bh);
-            DrawLogo(c, box);
+            float s = Math.Min(w, h), bw = s * 0.17f * o.LogoScale;
+            return SKRect.Create(corner == "tl" ? 0 : w - bw, 0, bw, LogoBoxHeight(bw, o.LogoRank(rank) != null));
         }
-        private static void NetflixLogoOn(SKCanvas c, SKRect card)
+        private static void NetflixLogoOn(SKCanvas c, SKRect card, BadgeOptions o, int rank)
         {
-            float bw = card.Width * 0.2f, bh = bw * 1.12f;
+            float bw = card.Width * 0.2f * o.LogoScale, bh = bw * 1.12f;
             c.Save();
             c.ClipRoundRect(new SKRoundRect(card, RadiusFor((int)card.Width)), SKClipOperation.Intersect, true);
-            DrawLogo(c, SKRect.Create(card.Right - bw, card.Top, bw, bh));
+            DrawLogoBox(c, SKRect.Create(card.Right - bw, card.Top, bw, bh), o.LogoRank(rank));
             c.Restore();
+        }
+        private static float LogoBoxHeight(float bw, bool withRank) => bw * 1.12f + (withRank ? bw * 0.5f : 0);
+        // The TOP 10 logo in "logo" (the TOP / 10 square), with "#rank" on a red second line under it
+        // when rank is given (the real posters' "TOP 10 #3" label and the list tiles' Logo label).
+        private static void DrawLogoBox(SKCanvas c, SKRect logo, int? rank)
+        {
+            if (rank == null) { DrawLogo(c, logo); return; }
+            float bw = logo.Width, bh = logo.Height, rh = bw * 0.5f;
+            using (var bg = new SKPaint { Color = new SKColor(0xE5, 0x09, 0x14), IsAntialias = true })
+                c.DrawRect(SKRect.Create(logo.Left, logo.Top, bw, bh + rh), bg);
+            DrawLogo(c, logo);
+            using (var line = new SKPaint { Color = SKColors.White.WithAlpha(150), IsAntialias = true })
+                c.DrawRect(SKRect.Create(logo.Left + bw * 0.2f, logo.Top + bh - bw * 0.02f, bw * 0.6f, Math.Max(1f, bw * 0.02f)), line);
+            using var t = new SKPaint { Typeface = BadgeFonts.Face("roboto"), Color = SKColors.White, IsAntialias = true };
+            DrawFit(c, "#" + rank, t, logo.MidX, logo.Top + bh + rh * 0.45f, bw * 0.7f, rh * 0.62f);
         }
         private static void DrawLogo(SKCanvas c, SKRect box)
         {
@@ -866,18 +891,7 @@ namespace HomeScreenCompanion
             c.DrawBitmap(src, 0, 0);
             float bw = w * (size == "s" ? 0.14f : size == "l" ? 0.24f : 0.18f), bh = bw * 1.12f;
             var logo = SKRect.Create(w - bw, 0, bw, bh);
-            if (withRank)
-            {
-                float rh = bw * 0.5f;
-                using (var bg = new SKPaint { Color = new SKColor(0xE5, 0x09, 0x14), IsAntialias = true })
-                    c.DrawRect(SKRect.Create(w - bw, 0, bw, bh + rh), bg);
-                DrawLogo(c, logo);
-                using (var line = new SKPaint { Color = SKColors.White.WithAlpha(150), IsAntialias = true })
-                    c.DrawRect(SKRect.Create(w - bw + bw * 0.2f, bh - bw * 0.02f, bw * 0.6f, Math.Max(1f, bw * 0.02f)), line);
-                using var t = new SKPaint { Typeface = BadgeFonts.Face("roboto"), Color = SKColors.White, IsAntialias = true };
-                DrawFit(c, "#" + rank, t, logo.MidX, bh + rh * 0.45f, bw * 0.7f, rh * 0.62f);
-            }
-            else DrawLogo(c, logo);
+            DrawLogoBox(c, logo, withRank ? rank : (int?)null);
             using var img = surface.Snapshot();
             using var data = img.Encode(SKEncodedImageFormat.Jpeg, 92);
             using var fs = File.Create(outputPath);
@@ -907,8 +921,9 @@ namespace HomeScreenCompanion
             var outPath = Path.Combine(tempDir, "real-preview-" + Guid.NewGuid().ToString("N") + ".jpg");
             try
             {
-                if (options.Length == 0) RealPosterBadge(standInPoster, outPath, 1, label == "top10rank", size);
-                else RealPosterCustom(standInPoster, outPath, 1, options);
+                // Rank 7 as the example, like the Badge Style tiles.
+                if (options.Length == 0) RealPosterBadge(standInPoster, outPath, 7, label == "top10rank", size);
+                else RealPosterCustom(standInPoster, outPath, 7, options);
                 using var full = SKBitmap.Decode(outPath);
                 int w = 400, h = full.Height * w / full.Width;
                 using var surface = SKSurface.Create(new SKImageInfo(w, h));
@@ -972,7 +987,7 @@ namespace HomeScreenCompanion
             var o = BadgeOptions.Parse(json);
             bool tile = string.Equals(style, "top10", StringComparison.OrdinalIgnoreCase);
             bool thumb = variant == "thumb";
-            const int rank = 1;
+            const int rank = 7;   // the example rank, like the Badge Style tiles
             // Sample movement: "=" when the list shows unchanged ranks, so the tick box is visible in the preview.
             var extras = new RankExtras { Move = o.MoveEq == true ? "=" : "+2", Weeks = 5, Plays = 48, Sample = true };
             Directory.CreateDirectory(tempDir);

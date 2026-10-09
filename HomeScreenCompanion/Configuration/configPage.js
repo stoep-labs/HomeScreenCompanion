@@ -6527,12 +6527,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     // stay visible with a short note.
     var NUM_COLOURS = [['#ffffff', 'White'], ['#ececf0', 'Light grey'], ['#141414', 'Page dark'], ['#f5c518', 'Gold'], ['#e50914', 'Red'], ['#52b54b', 'Emby green'], ['#7fd4ff', 'Ice blue'], ['#000000', 'Black']];
     var OUT_COLOURS = [['#9696a0', 'Grey'], ['#000000', 'Black'], ['#ffffff', 'White'], ['#f5c518', 'Gold'], ['#e50914', 'Red'], ['#52b54b', 'Emby green']];
-    var BADGE_FIELDS = ['font', 'num', 'numcolour', 'outcolour', 'outline', 'size', 'shape', 'colour', 'medal', 'shadow', 'pos', 'tilepos', 'tilebg', 'tilebgcolour', 'special', 'move', 'moveeq', 'weeks', 'plays', 'logo'];
+    var BADGE_FIELDS = ['font', 'num', 'numcolour', 'outcolour', 'outline', 'size', 'shape', 'colour', 'medal', 'shadow', 'pos', 'tilepos', 'tilebg', 'tilebgcolour', 'special', 'move', 'moveeq', 'weeks', 'plays', 'logo', 'logolabel', 'logosize'];
     function badgeDefaults(kind) {
         var tile = kind === 'top10';
         return { font: tile ? 'anton' : 'lemonmilk', num: tile ? 'outline' : 'filled', numcolour: tile ? '#141414' : '#ffffff', outcolour: tile ? '#9696a0' : '#000000',
                  outline: 'normal', size: 'm', shape: 'circle', colour: '', medal: '', shadow: false, pos: 'tl', tilepos: 'beside', tilebg: 'flat', tilebgcolour: '#16223a',
-                 special: '', move: false, moveeq: false, weeks: false, plays: false, logo: false };
+                 special: '', move: false, moveeq: false, weeks: false, plays: false, logo: false, logolabel: 'top10', logosize: 'm' };
     }
     // The number colour each style starts with (switching style moves an untouched colour along).
     function badgeNumDefault(kind, num) {
@@ -6625,6 +6625,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     var big = !tile && state.shape === 'bigoutline' && BIG_KEYS.indexOf(k) >= 0;
                     if (!big && k === 'numcolour' && state.numcolour === badgeNumDefault(kind, state.num)) return;
                     if (k === 'moveeq' && !state.move) return;   // only with the movement chip on
+                    if ((k === 'logolabel' || k === 'logosize') && !state.logo) return;   // only with the TOP 10 logo on
                     if (!big && state[k] === def[k]) return;
                     out[k] = state[k]; any = true;
                 });
@@ -6674,6 +6675,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     case 'tilepos': case 'tilebg': return tile;
                     case 'tilebgcolour': return tile && state.tilebg === 'solid';
                     case 'moveeq': return !real && !!state.move;
+                    case 'logolabel': case 'logosize': return !real && !!state.logo;   // the list's own tiles (real posters have Label / Size)
                     case 'move': case 'weeks': case 'plays': return !real;   // no list history on a real poster
                     default: return true;
                 }
@@ -6714,7 +6716,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     '<div class="artc-wrap">' +
                       '<div class="artc-previewcol">' +
                         '<div class="artc-preview ' + previewBox + '"><img class="artc-img" alt="" /><div class="artc-busy">Drawing…</div></div>' +
-                        '<div class="fieldDescription" style="margin-top:6px;">' + (real ? 'Drawn with a stand-in poster, as the real posters get it. Reset = the TOP 10 square (Label and Size).' : 'Drawn with a stand-in poster (' + (variant === 'thumb' ? 'Thumb, landscape' : 'Primary') + ', from the list\'s Image Type). Movement, weeks and plays show sample values.') + '</div>' +
+                        '<div class="fieldDescription" style="margin-top:6px;">' + (real ? 'Drawn with a stand-in poster at rank 7, as the real posters get it. Reset = the TOP 10 square (Label and Size).' : 'Drawn with a stand-in poster at rank 7 (' + (variant === 'thumb' ? 'Thumb, landscape' : 'Primary') + ', from the list\'s Image Type), so medal colours and the #1 special do not show here. Movement, weeks and plays show sample values.') + '</div>' +
                       '</div>' +
                       '<div class="artc-fieldscol">' +
                         section('Number',
@@ -6741,7 +6743,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             field('', '<label style="display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:0.9em;"><input type="checkbox" class="artc-chk" data-field="moveeq"' + (state.moveeq ? ' checked' : '') + ' style="margin:0;" /><span>Show = for unchanged</span></label>', 'moveeq', 'Off: only ▲ / ▼ / NEW; a title whose rank did not change gets no chip.') +
                             field('Weeks in the list', seg('weeks', [[false, 'Off'], [true, 'On']]), 'weeks', '"N wks in list" at the bottom of the poster.') +
                             field('Plays', seg('plays', [[false, 'Off'], [true, 'On']]), 'plays', 'All users\' plays of the title (all time).') +
-                            field('TOP 10 logo', seg('logo', [[false, 'Off'], [true, 'On']]), 'logo', tile ? 'Red TOP 10 logo in the corner of the poster card.' : 'Red TOP 10 corner logo; with shape "None" it is the only mark.')) +
+                            field('TOP 10 logo', seg('logo', [[false, 'Off'], [true, 'On']]), 'logo', tile ? 'Red TOP 10 logo in the corner of the poster card.' : 'Red TOP 10 corner logo; with shape "None" it is the only mark.') +
+                            field('Logo label', seg('logolabel', [['top10', 'TOP 10'], ['top10rank', 'TOP 10 #3']]), 'logolabel', 'TOP 10 #3: the title\'s rank on a second line under the logo.') +
+                            field('Logo size', seg('logosize', [['s', 'S'], ['m', 'M'], ['l', 'L']]), 'logosize')) +
                       '</div>' +
                     '</div>';
                 wire();
