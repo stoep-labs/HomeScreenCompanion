@@ -148,8 +148,8 @@ namespace HomeScreenCompanion
         public string Note { get; set; } = "";   // e.g. "16 posters fit best on 4 rows." (Rows is at most when Posters is set)
     }
 
-    // Top-list badge Customise popup: the number fonts, and the live preview (ranks #1, #3, #10
-    // drawn by the real renderer on the list's own posters, or stand-ins). JPEG data: URL.
+    // Top-list badge Customise popup: the number fonts, and the live preview (one card, rank #1
+    // drawn by the real renderer on a stand-in poster). JPEG data: URL.
     [Route("/HomeScreenCompanion/BadgeCustomiseInfo", "GET")]
     [Authenticated(Roles = "Admin")]
     public class BadgeCustomiseInfoRequest : IReturn<BadgeCustomiseInfoResponse> { }
@@ -166,8 +166,8 @@ namespace HomeScreenCompanion
     {
         public string BadgeStyle { get; set; } = "";
         public string Options { get; set; } = "";
-        public string TagName { get; set; } = "";
-        public string Variant { get; set; } = "";   // "primary" / "thumb": only that image; "" = both
+        public string TagName { get; set; } = "";   // unused (kept so older pages still post)
+        public string Variant { get; set; } = "";   // "thumb" = the landscape a Thumb row uses; else the Primary poster
     }
 
     // The collection art a source would get, from its unsaved settings. Changes nothing.
@@ -1023,35 +1023,13 @@ public class HomeScreenCompanionService : IService
         {
             try
             {
+                // A stand-in poster only (like the art Customise preview): no library posters, so it is quick.
                 var dir = Path.Combine(Plugin.Instance!.DataFolderPath, "collection_art", "_samples");
                 Directory.CreateDirectory(dir);
-                var tempDir = Path.Combine(Path.GetTempPath(), "hsc_badge_" + Guid.NewGuid().ToString("N"));
-                Directory.CreateDirectory(tempDir);
-                try
-                {
-                    // The list's own titles first, else any movies with a poster, else stand-ins.
-                    var posters = new List<string>();
-                    var queries = new List<InternalItemsQuery>();
-                    if (!string.IsNullOrWhiteSpace(request.TagName))
-                        queries.Add(new InternalItemsQuery { Tags = new[] { request.TagName.Trim() }, IncludeItemTypes = new[] { "Movie", "Series" }, Recursive = true, IsVirtualItem = false, Limit = 12 });
-                    queries.Add(new InternalItemsQuery { IncludeItemTypes = new[] { "Movie" }, Recursive = true, IsVirtualItem = false, Limit = 40 });
-                    foreach (var q in queries)
-                    {
-                        if (posters.Count >= 3) break;
-                        var items = _libraryManager.GetItemList(q).Where(i => !TopListCollectionMirror.IsTopListItem(i)).ToList();
-                        foreach (var p in ArtPosterPaths(items, _httpClient, tempDir))
-                            if (p != null && !posters.Contains(p) && posters.Count < 3) posters.Add(p);
-                    }
-                    for (int i = 0; posters.Count < 3; i++)
-                    {
-                        var path = Path.Combine(dir, $"stand-in-{i}.jpg");
-                        if (!File.Exists(path)) CollectionArtRenderer.DrawStandInPoster(i, path);
-                        posters.Add(path);
-                    }
-                    var image = BadgeRenderer.Preview(BadgeLook.Combine(request.BadgeStyle, request.Options), posters, null, tempDir, (request.Variant ?? "").Trim().ToLowerInvariant());
-                    return new ArtCustomPreviewResponse { Success = true, Image = image };
-                }
-                finally { try { Directory.Delete(tempDir, true); } catch { } }
+                var standIn = Path.Combine(dir, "stand-in-0.jpg");
+                if (!File.Exists(standIn)) CollectionArtRenderer.DrawStandInPoster(0, standIn);
+                var image = BadgeRenderer.Preview(BadgeLook.Combine(request.BadgeStyle, request.Options), standIn, dir, (request.Variant ?? "").Trim().ToLowerInvariant());
+                return new ArtCustomPreviewResponse { Success = true, Image = image };
             }
             catch (Exception ex)
             {

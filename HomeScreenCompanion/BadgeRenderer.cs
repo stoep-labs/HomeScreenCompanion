@@ -885,80 +885,59 @@ namespace HomeScreenCompanion
 
         // ── popup preview ────────────────────────────────────────────────────────────────
         /// <summary>
-        /// Ranks #1, #3 and #10 drawn by the real code with the popup's look on the given posters
-        /// (and a landscape image for the Number badge's thumb row). Returns a JPEG data: URL.
-        /// Number badge: three posters. Top 10 tile: three tiles over three 4:3 cards.
+        /// One card for the Customise popup: rank #1 drawn by the real code with the popup's look on
+        /// a stand-in poster (no library posters, so it is quick). variant "thumb" = the landscape
+        /// image a Thumb row uses; anything else = the Primary poster (card). JPEG data: URL.
         /// </summary>
-        internal static string Preview(string look, IList<string> posters, string? landscape, string tempDir, string? variant = null)
+        internal static string Preview(string look, string standInPoster, string tempDir, string? variant)
         {
-            var (style, _) = BadgeLook.Split(look);
+            var (style, json) = BadgeLook.Split(look);
+            var o = BadgeOptions.Parse(json);
             bool tile = string.Equals(style, "top10", StringComparison.OrdinalIgnoreCase);
-            int[] ranks = { 1, 3, 10 };
-            var samples = new[] { new RankExtras { Move = "+2", Weeks = 5, Plays = 48, Sample = true }, new RankExtras { Move = "-1", Weeks = 3, Plays = 12, Sample = true }, new RankExtras { Move = "NEW", Weeks = 1, Plays = 3, Sample = true } };
+            bool thumb = variant == "thumb";
+            const int rank = 1;
+            var extras = new RankExtras { Move = "+2", Weeks = 5, Plays = 48, Sample = true };
             Directory.CreateDirectory(tempDir);
-            var rows = new List<List<SKBitmap>>();
+            var ob = Path.Combine(tempDir, "badge-preview-" + Guid.NewGuid().ToString("N"));
+            var outPath = ob + (thumb ? "-thumb.jpg" : ".jpg");
             try
             {
-                var top = new List<SKBitmap>(); var bottom = new List<SKBitmap>();
-                for (int i = 0; i < 3; i++)
+                if (tile)
                 {
-                    var p = posters[i % posters.Count];
-                    var ob = Path.Combine(tempDir, "badge-preview-" + Guid.NewGuid().ToString("N"));
-                    // variant "thumb" / "primary": only the image the list uses (Image Type); else both.
-                    string? land = landscape;
-                    if (!tile && variant == "thumb") land = LandscapeFromPoster(p, ob + "-land.jpg");
-                    RenderRanked(p, tile ? null : land, ranks[i], ob, look, samples[i], (w, ex) => throw ex);
-                    if (tile)
-                    {
-                        if (variant != "primary") top.Add(SKBitmap.Decode(ob + "-thumb.jpg"));
-                        if (variant == "thumb") { foreach (var f in new[] { ob + ".jpg", ob + "-thumb.jpg" }) try { if (File.Exists(f)) File.Delete(f); } catch { } continue; }
-                        using var card = SKBitmap.Decode(ob + ".jpg");
-                        int ch = card.Width * 3 / 4, cy = (card.Height - ch) / 2;
-                        var cropped = new SKBitmap(card.Width, ch);
-                        using (var cc = new SKCanvas(cropped)) cc.DrawBitmap(card, new SKRect(0, cy, card.Width, cy + ch), new SKRect(0, 0, card.Width, ch));
-                        bottom.Add(cropped);
-                    }
-                    else
-                    {
-                        if (variant == "thumb") top.Add(SKBitmap.Decode(ob + "-thumb.jpg"));
-                        else
-                        {
-                            top.Add(SKBitmap.Decode(ob + ".jpg"));
-                            if (land != null && File.Exists(ob + "-thumb.jpg")) bottom.Add(SKBitmap.Decode(ob + "-thumb.jpg"));
-                        }
-                    }
-                    foreach (var f in new[] { ob + ".jpg", ob + "-thumb.jpg", ob + "-land.jpg" }) try { if (File.Exists(f)) File.Delete(f); } catch { }
+                    bool custom = !o.IsDefault;
+                    if (thumb) { if (custom) RenderTile(standInPoster, rank, outPath, o, extras); else TopTenTileRenderer.Render(standInPoster, rank, outPath); }
+                    else { if (custom) RenderCard(standInPoster, rank, outPath, o, extras); else TopTenTileRenderer.RenderPoster(standInPoster, rank, outPath); }
                 }
-                if (top.Count > 0) rows.Add(top);
-                if (bottom.Count > 0) rows.Add(bottom);
+                else if (thumb)
+                    RenderRanked(null, StandInLandscape(standInPoster, tempDir), rank, ob, look, extras, (w, ex) => throw ex);
+                else
+                    RenderRanked(standInPoster, null, rank, ob, look, extras, (w, ex) => throw ex);
 
-                const int W = 900, gap = 10;
-                var heights = rows.Select(r => (W - gap * (r.Count - 1)) / r.Sum(b => b.Width / (float)b.Height)).ToList();
-                int H = (int)Math.Ceiling(heights.Sum() + gap * (rows.Count - 1));
-                using var surface = SKSurface.Create(new SKImageInfo(W, H, SKColorType.Rgba8888, SKAlphaType.Premul));
-                var c = surface.Canvas;
-                c.Clear(new SKColor(0x1E, 0x1E, 0x22));
-                float y = 0;
-                using var paint = new SKPaint { FilterQuality = SKFilterQuality.High, IsAntialias = true };
-                for (int ri = 0; ri < rows.Count; ri++)
-                {
-                    float x = 0, rh = heights[ri];
-                    foreach (var b in rows[ri])
-                    {
-                        float bw = b.Width * rh / b.Height;
-                        c.DrawBitmap(b, SKRect.Create(x, y, bw, rh), paint);
-                        x += bw + gap;
-                    }
-                    y += rh + gap;
-                }
+                using var full = SKBitmap.Decode(outPath);
+                // The Top 10 poster card shows in a 4:3 card (Emby crops its top and bottom): show that part.
+                var src = SKRect.Create(0, 0, full.Width, full.Height);
+                if (tile && !thumb) { float ch = full.Width * 3f / 4f; src = SKRect.Create(0, (full.Height - ch) / 2f, full.Width, ch); }
+                int w = thumb || tile ? 600 : 400, h = (int)(src.Height * w / src.Width);
+                using var surface = SKSurface.Create(new SKImageInfo(w, h));
+                using (var paint = new SKPaint { FilterQuality = SKFilterQuality.High, IsAntialias = true })
+                    surface.Canvas.DrawBitmap(full, src, SKRect.Create(0, 0, w, h), paint);
                 using var img = surface.Snapshot();
                 using var data = img.Encode(SKEncodedImageFormat.Jpeg, 88);
                 return "data:image/jpeg;base64," + Convert.ToBase64String(data.ToArray());
             }
             finally
             {
-                foreach (var r in rows) foreach (var b in r) b?.Dispose();
+                foreach (var f in new[] { ob + ".jpg", ob + "-thumb.jpg" }) try { if (File.Exists(f)) File.Delete(f); } catch { }
             }
+        }
+
+        // The stand-in landscape (cut from the stand-in poster), made once per folder.
+        private static readonly object LandLock = new object();
+        private static string StandInLandscape(string standInPoster, string dir)
+        {
+            var path = Path.Combine(dir, "stand-in-land.jpg");
+            lock (LandLock) if (!File.Exists(path)) LandscapeFromPoster(standInPoster, path);
+            return path;
         }
     }
 }

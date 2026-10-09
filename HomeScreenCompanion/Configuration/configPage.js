@@ -1168,6 +1168,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         overlay.querySelector('.artc-subtitle').textContent = scopeName + ' ' + (bg ? 'background' : 'poster') + ' — ' + (ART_STYLE_NAMES[style] || style);
         body.innerHTML = '<div style="padding:20px 0; text-align:center; opacity:0.8;">Loading…</div>';
         overlay._artcCancel = null;
+        overlay._artcOk = function () { overlay.classList.remove('modal-visible'); };   // until loaded: never the last popup's OK
+        overlay._artcReset = function () { };
         overlay.classList.add('modal-visible');
 
         // Title text and name the art would carry (same as the card's own art).
@@ -6338,7 +6340,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
     // ── Badge Customise popup ────────────────────────────────────────────────────────
     // The same popup as the art Customise (same overlay, OK / Cancel / Reset); the live preview
-    // is drawn by the server (ranks #1, #3, #10). Fields that do not apply to the chosen type
+    // is one card drawn by the server (rank #1 on a stand-in poster). Fields that do not apply to the chosen type
     // stay visible with a short note.
     var NUM_COLOURS = [['#ffffff', 'White'], ['#ececf0', 'Light grey'], ['#141414', 'Page dark'], ['#f5c518', 'Gold'], ['#e50914', 'Red'], ['#52b54b', 'Emby green'], ['#7fd4ff', 'Ice blue'], ['#000000', 'Black']];
     var OUT_COLOURS = [['#9696a0', 'Grey'], ['#000000', 'Black'], ['#ffffff', 'White'], ['#f5c518', 'Gold'], ['#e50914', 'Red'], ['#52b54b', 'Emby green']];
@@ -6392,12 +6394,13 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var optsInput = picker.querySelector('.tl-badge-opts');
         var presetInput = picker.querySelector('.tl-badge-preset');
         var body = overlay.querySelector('.artc-body');
-        var tagName = (container && container.dataset && container.dataset.tlTag) || '';
         overlay.querySelector('.artc-title').textContent = 'Customise ' + (tile ? 'Top 10 tile' : 'number badge');
         overlay.querySelector('.artc-subtitle').textContent = 'Top-list badge — ' + (tile ? 'Top 10 tile' : 'Number badge');
         body.innerHTML = '<div style="padding:20px 0; text-align:center; opacity:0.8;">Loading…</div>';
         overlay.style.zIndex = '20000';
         overlay._artcCancel = onCancel || null;
+        overlay._artcOk = function () { overlay.classList.remove('modal-visible'); };   // until loaded: never the last popup's OK
+        overlay._artcReset = function () { };
         overlay.classList.add('modal-visible');
 
         getBadgeCustomiseInfo().then(function (info) {
@@ -6418,15 +6421,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             // The font drawn when none is chosen (Big numeral has its own); a saved font the server no longer has draws as that.
             function defFont() { return !tile && state.shape === 'bigoutline' ? BIG_LOOK.font : def.font; }
             if (!info.Fonts.some(function (f) { return f.Id === state.font; })) state.font = defFont();
-            // Two previews, one per image the row can use; the list's Image Type picks the one in use.
+            // One preview card, the image the list's Image Type uses (Thumb = landscape, else Primary).
             var imgSel = container && container.querySelector && container.querySelector('.tlm-image-type, .mtlImageType');
             var imageType = imgSel ? imgSel.value : '';
-            var inUse = imageType === 'Thumb' ? 'thumb' : 'primary';
-            var imageTypeLabel = imageType ? imageType : 'Auto (Primary)';
-            var VARIANTS = tile
-                ? [{ id: 'thumb', label: 'Thumb (landscape) — used when the list\'s Image Type is Thumb' }, { id: 'primary', label: 'Primary (poster card) — used when the list\'s Image Type is Primary' }]
-                : [{ id: 'primary', label: 'Primary (poster) — used when the list\'s Image Type is Primary' }, { id: 'thumb', label: 'Thumb (landscape) — used when the list\'s Image Type is Thumb' }];
-            VARIANTS.sort(function (a, b) { return (a.id === inUse ? 0 : 1) - (b.id === inUse ? 0 : 1); });
+            var variant = imageType === 'Thumb' ? 'thumb' : 'primary';
+            var previewBox = variant === 'thumb' ? 'artc-bg' : tile ? 'artc-card43' : 'artc-poster';
             render();
 
             function toOptions() {
@@ -6512,14 +6511,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var shapeNote = ['ribbon', 'diag', 'banner'].indexOf(state.shape) >= 0 ? 'This shape uses the left or right edge (top or bottom for flag/diagonal).' : state.shape === 'netflix' ? 'Red unless you pick a hex colour.' : '';
                 body.innerHTML =
                     '<div class="artc-wrap">' +
-                      '<div class="artc-previewcol" style="width:420px;">' +
-                        VARIANTS.map(function (v) {
-                            return '<div class="artc-variant" data-variant="' + v.id + '">' +
-                                '<div class="artc-variant-label">' + escapeHtml(v.label) + (v.id === inUse ? ' <span class="artc-inuse">In use</span>' : '') + '</div>' +
-                                '<div class="artc-preview" style="width:100%;min-height:90px;"><img class="artc-img" alt="" style="height:auto;" /><div class="artc-busy">Drawing…</div></div>' +
-                            '</div>';
-                        }).join('') +
-                        '<div class="fieldDescription" style="margin-top:6px;">Ranks #1, #3 and #10 drawn by the server. This list\'s Image Type is ' + escapeHtml(imageTypeLabel) + '. Movement, weeks and plays show sample values.</div>' +
+                      '<div class="artc-previewcol">' +
+                        '<div class="artc-preview ' + previewBox + '"><img class="artc-img" alt="" /><div class="artc-busy">Drawing…</div></div>' +
+                        '<div class="fieldDescription" style="margin-top:6px;">Drawn with a stand-in poster (' + (variant === 'thumb' ? 'Thumb, landscape' : 'Primary') + ', from the list\'s Image Type). Movement, weeks and plays show sample values.</div>' +
                       '</div>' +
                       '<div class="artc-fieldscol">' +
                         section('Number',
@@ -6593,24 +6587,22 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var timer = null, seq = 0;
             function refreshPreview() {
                 clearTimeout(timer);
-                body.querySelectorAll('.artc-variant .artc-busy').forEach(function (b) { b.style.display = 'block'; b.textContent = 'Drawing…'; });
+                var busy = body.querySelector('.artc-busy');
+                if (busy) { busy.style.display = 'block'; busy.textContent = 'Drawing…'; }
                 timer = setTimeout(function () {
                     var mine = ++seq;
-                    VARIANTS.forEach(function (v) {
-                        var box = function () { return body.querySelector('.artc-variant[data-variant="' + v.id + '"]'); };
-                        fetch(window.ApiClient.getUrl('HomeScreenCompanion/BadgeCustomPreview'), {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
-                            body: JSON.stringify({ BadgeStyle: previewStyle(), Options: toOptions(), TagName: tagName, Variant: v.id })
-                        }).then(function (r) { return r.json(); }).then(function (res) {
-                            if (mine !== seq || !box()) return;
-                            var img = box().querySelector('.artc-img'), b = box().querySelector('.artc-busy');
-                            if (res.Success && img) { img.src = res.Image; if (b) b.style.display = 'none'; }
-                            else if (b) b.textContent = res.Message || 'Preview failed.';
-                        }).catch(function (e) {
-                            if (mine !== seq || !box()) return;
-                            var b = box().querySelector('.artc-busy'); if (b) b.textContent = 'Preview failed: ' + e.message;
-                        });
+                    fetch(window.ApiClient.getUrl('HomeScreenCompanion/BadgeCustomPreview'), {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
+                        body: JSON.stringify({ BadgeStyle: previewStyle(), Options: toOptions(), Variant: variant })
+                    }).then(function (r) { return r.json(); }).then(function (res) {
+                        if (mine !== seq) return;   // a newer drawing is on its way
+                        var img = body.querySelector('.artc-img'), b = body.querySelector('.artc-busy');
+                        if (res.Success && img) { img.src = res.Image; if (b) b.style.display = 'none'; }
+                        else if (b) b.textContent = res.Message || 'Preview failed.';
+                    }).catch(function (e) {
+                        if (mine !== seq) return;
+                        var b = body.querySelector('.artc-busy'); if (b) b.textContent = 'Preview failed: ' + e.message;
                     });
                 }, 300);
             }
