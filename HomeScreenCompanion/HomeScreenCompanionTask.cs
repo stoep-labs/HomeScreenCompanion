@@ -1599,6 +1599,120 @@ namespace HomeScreenCompanion
             }
         }
 
+        /// <summary>
+        /// Run Group on a top-list card: rebuilds just that list — its folder, tiles and badges
+        /// (the same code the full sync uses), its home sections and its collection mirror. No
+        /// source is fetched and no other list is touched. Manual movie lists are rebuilt from
+        /// their current entries by <paramref name="rebuildManual"/> (the PrepareManualFolder code).
+        /// </summary>
+        public async Task<(bool Success, string Message)> RunSingleTopListAsync(
+            string tagName, Func<TopListHomeSection, (bool Ok, string Message)> rebuildManual, CancellationToken cancellationToken)
+        {
+            if (IsRunning) return (false, "A sync is already running — try again when it has finished.");
+            IsRunning = true;
+            lock (ExecutionLog) ExecutionLog.Clear();
+            LastStartedUtc = DateTime.UtcNow;
+            LastRunStatus = "Running...";
+            try
+            {
+                return await Task.Run(() => RunSingleTopListCore(tagName, rebuildManual, cancellationToken), cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                LastRunStatus = $"Failed: {ex.Message}";
+                _log.Error($"Top-list '{tagName}' failed — {ex.Message}");
+                return (false, ex.Message);
+            }
+            finally
+            {
+                IsRunning = false;
+                PersistLog();
+            }
+        }
+
+        private (bool Success, string Message) RunSingleTopListCore(
+            string tagName, Func<TopListHomeSection, (bool Ok, string Message)> rebuildManual, CancellationToken cancellationToken)
+        {
+            var config = Plugin.Instance?.Configuration;
+            var startTime = DateTime.Now;
+            _log = new RunLog(ExecutionLog, _logger, "", config?.ExtendedConsoleOutput ?? false);
+            _log.Rule();
+            _log.Info($"Home Screen Companion v{Plugin.Instance?.Version}  ·  {startTime:yyyy-MM-dd HH:mm}  ·  Single top-list: {tagName}");
+            _log.Rule();
+            if (config == null) { LastRunStatus = "Failed: no config"; _log.Error("Plugin configuration could not be loaded"); return (false, "Config not found"); }
+
+            var tl = (config.TopLists ?? new List<TopListHomeSection>())
+                .FirstOrDefault(t => string.Equals(t.TagName, tagName, StringComparison.OrdinalIgnoreCase));
+            if (tl == null)
+            {
+                LastRunStatus = "Failed: top-list not found";
+                _log.Error($"Top-list '{tagName}' was not found in the saved settings — save your settings and try again");
+                return (false, $"Top-list '{tagName}' not found in saved config");
+            }
+
+            bool isShow = ShowTopList.IsShowList(tl);
+            bool byTag = isShow
+                ? !string.IsNullOrWhiteSpace(tl.ShowSourceTag)
+                : (config.Tags ?? new List<TagConfig>()).Any(t => string.Equals((t.Tag ?? "").Trim(), tl.TagName, StringComparison.OrdinalIgnoreCase));
+            int warnings = 0, errors = 0;
+            string listSummary;
+
+            _log.Blank();
+            _log.Info("» Top-list");
+            if (byTag)
+            {
+                // Same rebuild as the full sync, limited to this list.
+                SyncTopListFolders(config, false, tl.TagName);
+                var tlFolder = Path.Combine(Plugin.Instance!.DataFolderPath, "toplists", SanitizeTopListFolderName(tl.TagName));
+                listSummary = isShow ? $"{RunLog.Plural(tl.ShowEntries?.Count ?? 0, "show")} ranked"
+                    : $"{RunLog.Plural(Directory.Exists(tlFolder) ? Directory.GetFiles(tlFolder, "*.strm").Length : 0, "movie")} synced to its library folder";
+            }
+            else if (isShow)
+            {
+                var ranked = (tl.ShowEntries ?? new List<ShowTopListEntry>())
+                    .Select(e => Guid.TryParse(e.SeriesId, out var g) ? _libraryManager.GetItemById(g) : null)
+                    .Where(i => i is MediaBrowser.Controller.Entities.TV.Series).Select(i => i!).ToList();
+                var lines = new ShowTopList(_libraryManager, _userManager, _userDataManager, _httpClient, _jsonSerializer, _logger, _providerManager, _fileSystem)
+                    .Apply(config, tl, ranked);
+                Plugin.Instance!.SaveConfiguration();
+                _log.Ok($"Show top-list '{tl.TagName}': {RunLog.Plural(ranked.Count, "show")} re-ranked");
+                foreach (var line in lines) _log.Debug("    " + line);
+                listSummary = $"{RunLog.Plural(ranked.Count, "show")} ranked";
+            }
+            else
+            {
+                var (ok, msg) = rebuildManual(tl);
+                if (ok) _log.Ok($"Top-list '{tl.TagName}': {msg}");
+                else { errors++; _log.Error($"Top-list '{tl.TagName}' failed — {msg}"); }
+                try { _libraryMonitor?.ReportFileSystemChanged(Path.Combine(Plugin.Instance!.DataFolderPath, "toplists", SanitizeTopListFolderName(tl.TagName))); }
+                catch { }
+                listSummary = ok ? msg : "rebuild failed";
+            }
+
+            if (!isShow)
+            {
+                _log.Blank();
+                _log.Info("» Home sections");
+                TopListSyncTask.SyncAll(_libraryManager, _userViewManager, _userManager, _jsonSerializer, _logger, cancellationToken, _log, tl.TagName);
+
+                _log.Blank();
+                _log.Info("» Collection mirror");
+                var folder = Path.Combine(Plugin.Instance!.DataFolderPath, "toplists", SanitizeTopListFolderName(tl.TagName));
+                var changes = TopListCollectionMirror.SyncFolder(folder, cancellationToken).GetAwaiter().GetResult();
+                if (TopListCollectionMirror.Enabled || changes > 0)
+                    _log.Ok($"Top-list '{tl.TagName}': {RunLog.Plural(changes, "collection membership")} changed");
+                else
+                    _log.Skip($"Top-list '{tl.TagName}': collection mirror is off — nothing to do");
+            }
+
+            string finalStatus = BuildFinalStatus(false, errors, errors == 0 && warnings > 0 ? 1 : 0);
+            LastRunStatus = $"{finalStatus} ({DateTime.Now:HH:mm})";
+            _log.Rule();
+            _log.Info($"Top-list '{tl.TagName}': {listSummary}  ·  {RunLog.Elapsed(DateTime.Now - startTime)}");
+            _log.Rule();
+            return (errors == 0, $"Top-list '{tl.TagName}': {listSummary}");
+        }
+
         // Set while PreviewEntryAsync runs: the single-entry run uses this unsaved source, changes
         // nothing and stops once the source's matches are known.
         private SourcePreview? _preview;
@@ -5659,7 +5773,8 @@ namespace HomeScreenCompanion
                 _libraryManager.UpdateItem(item, item.Parent, ItemUpdateType.MetadataEdit, null);
         }
 
-        private void SyncTopListFolders(PluginConfiguration config, bool dryRun)
+        // onlyTag: Run Group on one top-list — rebuild just that list and leave the other folders alone.
+        private void SyncTopListFolders(PluginConfiguration config, bool dryRun, string? onlyTag = null)
         {
             var dataPath = Plugin.Instance.DataFolderPath;
             var topListsPath = Path.Combine(dataPath, "toplists");
@@ -5670,7 +5785,7 @@ namespace HomeScreenCompanion
                     configuredNames.Add(SanitizeTopListFolderName(tl.TagName));
 
             // Remove folders for tags that no longer exist in config
-            if (Directory.Exists(topListsPath))
+            if (onlyTag == null && Directory.Exists(topListsPath))
             {
                 foreach (var dir in Directory.GetDirectories(topListsPath))
                 {
@@ -5727,6 +5842,7 @@ namespace HomeScreenCompanion
             foreach (var tl in config.TopLists ?? new List<TopListHomeSection>())
             {
                 if (string.IsNullOrWhiteSpace(tl.TagName)) continue;
+                if (onlyTag != null && !string.Equals(tl.TagName, onlyTag, StringComparison.OrdinalIgnoreCase)) continue;
                 if (ShowTopList.IsShowList(tl))
                 {
                     // No .strm folder: shows are ranked with tags. Lists fed by a tag are rebuilt

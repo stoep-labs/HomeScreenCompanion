@@ -96,6 +96,14 @@ namespace HomeScreenCompanion
         public string Message { get; set; } = "";
     }
 
+    // Run Group on a top-list card: rebuilds just that list (folder, tiles, home sections, collection mirror).
+    [Route("/HomeScreenCompanion/TopList/RunOne", "POST")]
+    [Authenticated(Roles = "Admin")]
+    public class RunOneTopListRequest : IReturn<RunEntryResponse>
+    {
+        public string TagName { get; set; } = "";
+    }
+
     // Small examples of each collection art style for the style picker (drawn from stand-in posters).
     [Route("/HomeScreenCompanion/ArtStyleSamples", "GET")]
     [Authenticated(Roles = "Admin")]
@@ -942,6 +950,36 @@ public class HomeScreenCompanionService : IService
                 return new RunEntryResponse { Success = false, Message = "Task not initialized" };
             var (success, message) = await task.RunSingleEntryAsync(request.EntryName, CancellationToken.None);
             return new RunEntryResponse { Success = success, Message = message };
+        }
+
+        public async Task<object> Post(RunOneTopListRequest request)
+        {
+            if (string.IsNullOrWhiteSpace(request.TagName))
+                return new RunEntryResponse { Success = false, Message = "No top-list name provided" };
+            var task = HomeScreenCompanionTask.Instance;
+            if (task == null)
+                return new RunEntryResponse { Success = false, Message = "Task not initialized" };
+            var (success, message) = await task.RunSingleTopListAsync(request.TagName.Trim(), RebuildManualTopList, CancellationToken.None);
+            return new RunEntryResponse { Success = success, Message = message };
+        }
+
+        // A manual movie list is rebuilt from the entries in its folder, in their current order,
+        // with its saved badge look — the same code as saving the list.
+        private (bool Ok, string Message) RebuildManualTopList(TopListHomeSection tl)
+        {
+            var settings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            try { settings = _jsonSerializer.DeserializeFromString<Dictionary<string, string>>(tl.HomeSectionSettings ?? "{}") ?? settings; }
+            catch { }
+            var badgeStyle = settings.TryGetValue("BadgeStyle", out var bs) && !string.IsNullOrEmpty(bs) ? bs : "neutral";
+            var badgeOptions = settings.TryGetValue("BadgeOptions", out var bo) ? bo ?? "" : "";
+            var folderPath = Path.Combine(Plugin.Instance.DataFolderPath, "toplists", SanitizeFolderName(tl.TagName));
+            var items = ReadTopListMovies(folderPath)
+                .Select(m => new ManualTopListItem { ImdbId = m.ImdbId ?? "", ItemId = m.ItemId ?? "" })
+                .ToList();
+            if (items.Count == 0) return (false, "the list has no movies");
+            var r = Post(new PrepareManualTopListFolderRequest { ListName = tl.TagName, BadgeStyle = badgeStyle, BadgeOptions = badgeOptions, Items = items }) as PrepareTopListFolderResponse;
+            if (r == null || !r.Success) return (false, r?.Message ?? "unknown error");
+            return (true, $"{r.FilesCreated} of {items.Count} movie(s) synced to its library folder");
         }
 
         private const int PreviewMaxItems = 250;

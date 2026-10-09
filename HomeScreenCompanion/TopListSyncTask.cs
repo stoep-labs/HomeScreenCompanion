@@ -187,11 +187,12 @@ namespace HomeScreenCompanion
             IJsonSerializer jsonSerializer,
             ILogger logger,
             CancellationToken cancellationToken,
-            RunLog? log = null)
+            RunLog? log = null,
+            string? onlyTag = null)
         {
             // Inside the main sync the lines belong to that run's log, which it saves itself.
             if (log != null)
-                return SyncAllCore(libraryManager, userViewManager, userManager, jsonSerializer, logger, cancellationToken, log);
+                return SyncAllCore(libraryManager, userViewManager, userManager, jsonSerializer, logger, cancellationToken, log, onlyTag);
 
             // Standalone (scheduled task or the UI): this task's own log — keep it across restarts.
             try
@@ -215,7 +216,8 @@ namespace HomeScreenCompanion
             IJsonSerializer jsonSerializer,
             ILogger logger,
             CancellationToken cancellationToken,
-            RunLog? log)
+            RunLog? log,
+            string? onlyTag = null)
         {
             var config = Plugin.Instance?.Configuration;
             var startTime = DateTime.Now;
@@ -252,6 +254,8 @@ namespace HomeScreenCompanion
 
             foreach (var tl in topLists)
             {
+                // Run Group on one top-list: only that list's sections.
+                if (onlyTag != null && !string.Equals(tl.TagName, onlyTag, StringComparison.OrdinalIgnoreCase)) continue;
                 string tlName = tl.TagName ?? "(unnamed)";
                 _log.Section($"Top-list '{tlName}'");
                 if (ShowTopList.IsShowList(tl)) { _log.Skip($"Top-list '{tlName}': show list — its row is kept up to date when the list is saved"); continue; }
@@ -358,6 +362,14 @@ namespace HomeScreenCompanion
                     _log.Ok($"Top-list '{tlName}': {RunLog.Plural(tlUpdated, "section")} updated{(tlRemoved > 0 ? $", {tlRemoved} removed" : "")}");
                 else
                     _log.Skip($"Top-list '{tlName}': no home sections to update");
+            }
+
+            if (onlyTag != null)
+            {
+                // Run Group on one top-list: the sweep over every other row below belongs to the full sync.
+                GrantTopListLibraryAccess(topLists.Where(t => string.Equals(t.TagName, onlyTag, StringComparison.OrdinalIgnoreCase)).ToList(), userManager, libraryManager, logger);
+                Plugin.Instance?.SaveConfiguration();
+                return (totalUpdated, $"Updated {totalUpdated} section(s) of top-list '{onlyTag}'.");
             }
 
             // Ensure ALL top-list libraries are excluded from every TAG items-type section.

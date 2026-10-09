@@ -3340,16 +3340,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         window.Dashboard.alert('Request failed.');
                     });
                 };
-                var _saveBtn = (row.closest('#HomeScreenCompanionConfigPage') || activeView()).querySelector('.btn-save');
-                var isDirty = _saveBtn && !_saveBtn.disabled;
-                if (isDirty) {
-                    if (confirm('You have unsaved changes. Save and run?')) {
-                        _saveBtn.click();
-                        setTimeout(doRun, 800);
-                    }
-                } else {
-                    doRun();
-                }
+                saveIfDirtyThenRun(row.closest('#HomeScreenCompanionConfigPage') || activeView(), doRun);
             }
 
             var btnTest = e.target.closest('.btnTestUrl');
@@ -3832,6 +3823,27 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var el = view.querySelector(sel);
             if (el) el.dataset.loaded = '';
         });
+    }
+
+    // Run Group (Sources and Top Lists): with unsaved changes, ask "Save and run?", save, then run.
+    // waitForTopLists: also wait until the top-list forms have been saved (that save rebuilds the
+    // list and can take a while) — the run starts once nothing is left to save.
+    function saveIfDirtyThenRun(view, doRun, waitForTopLists) {
+        var _saveBtn = view ? view.querySelector('.btn-save') : null;
+        var isDirty = _saveBtn && !_saveBtn.disabled;
+        if (!isDirty) { doRun(); return; }
+        if (!confirm('You have unsaved changes. Save and run?')) return;
+        _saveBtn.click();
+        if (!waitForTopLists) { setTimeout(doRun, 800); return; }
+        var deadline = Date.now() + 600000;
+        (function waitSaved() {
+            var tlCont = view.querySelector('#tlContainer');
+            var saving = _saveBtn.innerHTML.indexOf('hourglass_empty') !== -1;
+            var pending = tlCont && tlCont.querySelector('.tag-body[data-dirty="1"]');
+            if (!saving && !pending) { setTimeout(doRun, 800); return; }
+            if (!saving && pending) return; // the save failed and said so — do not run
+            if (Date.now() < deadline) setTimeout(waitSaved, 300);
+        })();
     }
 
     function refreshStatus(view) {
@@ -7262,6 +7274,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var labelStyle = 'font-size:0.82em;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;opacity:0.65;display:block;margin-bottom:5px;';
         var fieldStyle = 'margin-bottom:14px;';
 
+        // Run Group: same button as on a source card (look, size, place next to Remove).
+        var runHtml = '<button type="button" is="emby-button" class="raised button-submit btnRunEntry btnTlRun" data-name="' + escAttr(tagName) + '" style="background:#0099d5 !important; color:#fff !important;"><i class="md-icon" style="margin-right:5px;">play_arrow</i><span class="btnRunEntryLabel">Run Group</span></button>';
         var deleteHtml = '<button type="button" is="emby-button" class="raised btnTlDelete" data-name="' + escAttr(tagName) + '" style="background:#cc3333 !important;color:#fff;"><i class="md-icon" style="margin-right:5px;">delete</i>Delete top-list</button>';
         // Copy (same look and place as on a source card): the saved list, to paste on another server.
         var copyBarHtml = '<div style="display:flex;justify-content:flex-end;margin-bottom:4px;">' +
@@ -7368,7 +7382,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                     '<div class="mtl-error" style="color:#cc3333;font-size:0.85em;min-height:1.2em;margin-top:12px;margin-bottom:4px;"></div>' +
                     '<div style="border-top:1px solid var(--line-color);padding-top:16px;margin-top:8px;display:flex;gap:10px;align-items:center;justify-content:flex-end;">' +
-                    deleteHtml +
+                    runHtml + deleteHtml +
                     '</div>';
 
                 body.innerHTML = '';
@@ -7605,7 +7619,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                     '<div class="tlm-error" style="color:#cc3333;font-size:0.85em;min-height:1.2em;margin-bottom:4px;"></div>' +
                     '<div style="border-top:1px solid var(--line-color);padding-top:16px;display:flex;gap:10px;align-items:center;justify-content:flex-end;">' +
-                    deleteHtml +
+                    runHtml + deleteHtml +
                     '</div>';
 
                 body.innerHTML = '';
@@ -8662,6 +8676,40 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                 if (btn.classList.contains('btnCopyTopList')) {
                     copyTopListToClipboard(btn.closest('.tag-row'), btn);
+                    return;
+                }
+
+                if (btn.classList.contains('btnTlRun')) {
+                    var runName = btn.dataset.name;
+                    var runBtn = btn;
+                    var doTlRun = function () {
+                        var lbl = runBtn.querySelector('.btnRunEntryLabel');
+                        var btnSaveEl = view.querySelector('.btn-save');
+                        var dotEl = view.querySelector('#dotStatus');
+                        var labelEl = view.querySelector('#lastRunStatusLabel');
+                        lbl.textContent = 'Running…';
+                        runBtn.disabled = true;
+                        if (btnSaveEl) { btnSaveEl.disabled = true; btnSaveEl.style.opacity = '0.5'; btnSaveEl.querySelector('span').textContent = 'Sync in progress...'; }
+                        if (dotEl) { dotEl.className = 'status-dot running'; }
+                        if (labelEl) labelEl.textContent = 'Running...';
+                        fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/RunOne'), {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
+                            body: JSON.stringify({ TagName: runName })
+                        }).then(function (r) { return r.json(); })
+                        .then(function (result) {
+                            lbl.textContent = 'Run Group';
+                            runBtn.disabled = false;
+                            invalidateTagTabs(view); refreshStatus(view);
+                            window.Dashboard.alert(result.Success ? ('Done: ' + result.Message) : ('Failed: ' + result.Message));
+                        }).catch(function () {
+                            lbl.textContent = 'Run Group';
+                            runBtn.disabled = false;
+                            refreshStatus(view);
+                            window.Dashboard.alert('Request failed.');
+                        });
+                    };
+                    saveIfDirtyThenRun(view, doTlRun, true);
                     return;
                 }
 
