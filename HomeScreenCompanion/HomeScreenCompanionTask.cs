@@ -2777,6 +2777,30 @@ namespace HomeScreenCompanion
             (t.PlaylistUserIds ?? new List<string>()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
         // The InternalId (as a section's ParentId wants it) of a user's playlist from this source.
+        // A user's own playlists with this exact name. Scoped to the user, so another user's
+        // private playlist is never returned (playlists HSC makes are private to their user).
+        private List<BaseItem> OwnPlaylistsNamed(User user, string name)
+        {
+            try
+            {
+                return _libraryManager.GetItemList(new InternalItemsQuery
+                {
+                    User = user,
+                    IncludeItemTypes = new[] { "Playlist" },
+                    Name = name,
+                    Recursive = true
+                }).Where(p => p.GetType().Name.Contains("Playlist")
+                           && string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase)).ToList();
+            }
+            catch { return new List<BaseItem>(); }
+        }
+
+        private int PlaylistEntryCount(BaseItem playlist)
+        {
+            try { return _libraryManager.GetItemList(new InternalItemsQuery { ListIds = new[] { playlist.InternalId } }).Length; }
+            catch { return 0; }
+        }
+
         private string? PlaylistInternalIdFor(TagConfig t, string userId)
         {
             var mapping = t.PlaylistMappings?.FirstOrDefault(m => string.Equals(m.UserId, userId, StringComparison.OrdinalIgnoreCase));
@@ -3056,39 +3080,52 @@ namespace HomeScreenCompanion
                                 existingPlaylist = candidate;
                         }
 
-                        // 2. Name-based recovery: only when a mapping existed but the stored playlist is gone.
-                        // Skipped when mapping == null (user has never had a playlist) to prevent
-                        // accidentally claiming another user's same-named playlist.
-                        if (existingPlaylist == null && mapping != null)
+                        // Playlists already mapped to other users of this source — never claimed here.
+                        var claimedByOthers = (tagConfig.PlaylistMappings ?? new List<PlaylistMapping>())
+                            .Where(m => !string.Equals(m.UserId, userId, StringComparison.OrdinalIgnoreCase)
+                                     && Guid.TryParse(m.PlaylistId, out _))
+                            .Select(m => Guid.Parse(m.PlaylistId))
+                            .ToHashSet();
+
+                        // 2. This user's own playlists with this name (a user-scoped query only sees
+                        // the user's private playlists, never another user's). Adopts one made by an
+                        // earlier run whose id was not confirmed, and removes duplicates of it.
+                        var ownSameName = OwnPlaylistsNamed(plUser, plName)
+                            .Where(p => !claimedByOthers.Contains(p.Id))
+                            .ToList();
+                        if (existingPlaylist == null && ownSameName.Count > 0)
                         {
-                            var claimedByOthers = (tagConfig.PlaylistMappings ?? new List<PlaylistMapping>())
-                                .Where(m => !string.Equals(m.UserId, userId, StringComparison.OrdinalIgnoreCase)
-                                         && Guid.TryParse(m.PlaylistId, out _))
-                                .Select(m => Guid.Parse(m.PlaylistId))
-                                .ToHashSet();
-
-                            var plQuery = _libraryManager.QueryItems(new InternalItemsQuery
+                            existingPlaylist = ownSameName
+                                .OrderByDescending(p => PlaylistEntryCount(p))
+                                .ThenByDescending(p => p.DateCreated)
+                                .First();
+                            if (mapping == null)
                             {
-                                IncludeItemTypes = new[] { "Playlist" },
-                                SearchTerm = plName,
-                                Limit = 10
-                            });
-                            existingPlaylist = plQuery.Items.FirstOrDefault(p =>
-                                p.Name.Equals(plName, StringComparison.OrdinalIgnoreCase)
-                                && !claimedByOthers.Contains(p.Id));
-
-                            if (existingPlaylist != null)
+                                mapping = new PlaylistMapping { UserId = userId };
+                                tagConfig.PlaylistMappings ??= new List<PlaylistMapping>();
+                                tagConfig.PlaylistMappings.Add(mapping);
+                            }
+                            mapping.PlaylistId = existingPlaylist.Id.ToString();
+                            plMappingChanged = true;
+                            _log.Info($"  Playlist \"{plName}\": {plUser.Name}'s existing playlist linked (id {existingPlaylist.Id})");
+                        }
+                        if (existingPlaylist != null)
+                        {
+                            foreach (var dup in ownSameName.Where(p => p.Id != existingPlaylist.Id))
                             {
-                                mapping.PlaylistId = existingPlaylist.Id.ToString();
-                                plMappingChanged = true;
-                                _log.Debug($"  {plUser.Name}: stored playlist id was stale — re-linked by name to {existingPlaylist.Id}");
+                                try
+                                {
+                                    _libraryManager.DeleteItem(dup, new DeleteOptions { DeleteFileLocation = false });
+                                    _log.Info($"  Playlist \"{plName}\": removed duplicate playlist of {plUser.Name} (id {dup.Id})");
+                                }
+                                catch (Exception ex) { _log.Warn($"Playlist \"{plName}\": duplicate of {plUser.Name} could not be removed: {ex.Message}"); }
                             }
                         }
 
                         if (existingPlaylist == null)
                         {
                             // 3. Create new playlist
-                            await _playlistManager.CreatePlaylist(new PlaylistCreationRequest
+                            var created = await _playlistManager.CreatePlaylist(new PlaylistCreationRequest
                             {
                                 Name = plName,
                                 ItemIdList = desiredPlIdList.ToArray(),
@@ -3102,26 +3139,25 @@ namespace HomeScreenCompanion
                                 tagConfig.PlaylistMappings.Add(mapping);
                             }
 
-                            // CreatePlaylist may return Id as InternalId (long) rather than a Guid depending
-                            // on Emby version — confirm the real Guid by querying back by name immediately.
-                            // Exclude playlists already claimed by other users in this run.
-                            var claimedAtCreate = (tagConfig.PlaylistMappings ?? new List<PlaylistMapping>())
-                                .Where(m => !string.Equals(m.UserId, userId, StringComparison.OrdinalIgnoreCase)
-                                         && Guid.TryParse(m.PlaylistId, out _))
-                                .Select(m => Guid.Parse(m.PlaylistId))
-                                .ToHashSet();
-
-                            var confirmQuery = _libraryManager.QueryItems(new InternalItemsQuery
+                            // The id Emby returns (a Guid or an InternalId depending on the Emby
+                            // version); else this user's own newest playlist with the name, retried
+                            // briefly (a search right after creating can miss it under load).
+                            BaseItem? newPl = null;
+                            var createdId = created?.Id;
+                            if (!string.IsNullOrEmpty(createdId))
                             {
-                                IncludeItemTypes = new[] { "Playlist" },
-                                SearchTerm = plName,
-                                Limit = 20
-                            });
-                            var newPl = confirmQuery.Items
-                                .Where(p => p.Name.Equals(plName, StringComparison.OrdinalIgnoreCase)
-                                         && !claimedAtCreate.Contains(p.Id))
-                                .OrderByDescending(p => p.DateCreated)
-                                .FirstOrDefault();
+                                if (Guid.TryParse(createdId, out var cg)) newPl = _libraryManager.GetItemById(cg);
+                                else if (long.TryParse(createdId, out var cl)) newPl = _libraryManager.GetItemById(cl);
+                                if (newPl != null && !newPl.GetType().Name.Contains("Playlist")) newPl = null;
+                            }
+                            for (int attempt = 0; newPl == null && attempt < 5; attempt++)
+                            {
+                                if (attempt > 0) await Task.Delay(1000);
+                                newPl = OwnPlaylistsNamed(plUser, plName)
+                                    .Where(p => !claimedByOthers.Contains(p.Id))
+                                    .OrderByDescending(p => p.DateCreated)
+                                    .FirstOrDefault();
+                            }
 
                             if (newPl != null)
                             {
