@@ -49,9 +49,20 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         return document.scrollingElement || document.documentElement;
     }
 
+    function isOpaqueBg(c) {
+        return !!c && c !== 'transparent' && c !== 'rgba(0, 0, 0, 0)' && !/rgba\([^)]*,\s*0\)$/.test(c);
+    }
+
     function applyPluginTheme() {
-        var candidates = ['.skinHeader', '.mainDrawer', '.contentScrollSlider', 'body'];
+        // Decide light/dark from the HSC page itself (the settings page can be light while the
+        // home screen / drawer is dark): first non-transparent background up from the page.
         var bg = null;
+        var page = activeView();
+        for (var a = page; a && a.nodeType === 1; a = a.parentElement) {
+            var ac = getComputedStyle(a).backgroundColor;
+            if (isOpaqueBg(ac)) { bg = ac; break; }
+        }
+        var candidates = bg ? [] : ['.skinHeader', '.mainDrawer', '.contentScrollSlider', 'body'];
         for (var i = 0; i < candidates.length; i++) {
             var el = document.querySelector(candidates[i]);
             if (!el) continue;
@@ -8996,6 +9007,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 document.body.insertAdjacentHTML('beforeend', customCss);
             }
             applyPluginTheme();
+            // Re-check the theme whenever a popup opens: popups open from clicks, so a capture
+            // listener runs just before any open handler on the HSC page.
+            if (!window._hscThemeClickHook) {
+                window._hscThemeClickHook = true;
+                document.addEventListener('click', function () {
+                    var v = activeView();
+                    if (v && v.isConnected && v.offsetParent !== null) applyPluginTheme();
+                }, true);
+            }
 
             var form = view.querySelector('.HomeScreenCompanionForm');
             var isFirstVisit = !view.dataset.hscInit;
