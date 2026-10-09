@@ -4710,6 +4710,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var releaseUrl = 'https://github.com/soderlund91/HomeScreenCompanion/releases/tag/v' + currentVer;
                 footerVer.innerHTML = '<a href="' + releaseUrl + '" target="_blank" style="color:inherit;text-decoration:none;">v' + currentVer + '</a>';
             }
+            var chip = view.querySelector('.hsc-version-chip');
+            if (chip && currentVer) {
+                chip.innerHTML = '<a href="https://github.com/soderlund91/HomeScreenCompanion/releases/tag/v' + currentVer + '" target="_blank">v' + currentVer + '</a>';
+                chip.style.display = '';
+            }
             if (!currentVer) return;
 
             fetch('https://api.github.com/repos/soderlund91/HomeScreenCompanion/releases/latest')
