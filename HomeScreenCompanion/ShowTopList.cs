@@ -140,7 +140,9 @@ namespace HomeScreenCompanion
             var entries = new List<ShowTopListEntry>();
             int rank = 0;
 
-            foreach (var series in rankedSeries.Take(tl.MaxItems > 0 ? Math.Min(tl.MaxItems, MaxRanks) : MaxRanks))
+            var ranked = rankedSeries.Take(tl.MaxItems > 0 ? Math.Min(tl.MaxItems, MaxRanks) : MaxRanks).ToList();
+            var rankExtras = TopListHistory.Update(tl.TagName, ranked, badgeStyle, _jsonSerializer, _libraryManager, _userManager, _userDataManager, m => _logger.Warn(m));
+            foreach (var series in ranked)
             {
                 rank++;
                 try
@@ -159,7 +161,7 @@ namespace HomeScreenCompanion
                         continue;
                     }
 
-                    ApplyArtAndDetails(tagItem, series, rank, folder, tempDir, badgeStyle);
+                    ApplyArtAndDetails(tagItem, series, rank, folder, tempDir, badgeStyle, rankExtras.TryGetValue(series.Id, out var rx) ? rx : null);
                     SetFavourite(users, tagItem, true);
                     entries.Add(new ShowTopListEntry { SeriesId = series.Id.ToString("N"), TagName = tagName });
                     log.Add($"✔ #{rank} {series.Name}");
@@ -245,7 +247,7 @@ namespace HomeScreenCompanion
             try
             {
                 var settings = _jsonSerializer.DeserializeFromString<Dictionary<string, string>>(tl.HomeSectionSettings ?? "{}");
-                if (settings != null && settings.TryGetValue("BadgeStyle", out var bs) && !string.IsNullOrWhiteSpace(bs)) return bs;
+                if (settings != null) return BadgeLook.FromSettings(settings, "top10");
             }
             catch { }
             return "top10";
@@ -253,7 +255,7 @@ namespace HomeScreenCompanion
 
         // Ranked art is drawn exactly as for movie top-lists (same styles, same code); the tag
         // item shows it as its Primary and Thumb image.
-        private void ApplyArtAndDetails(BaseItem tagItem, BaseItem series, int rank, string folder, string tempDir, string badgeStyle)
+        private void ApplyArtAndDetails(BaseItem tagItem, BaseItem series, int rank, string folder, string tempDir, string badgeStyle, RankExtras? extras)
         {
             var outputBase = Path.Combine(folder, $"{rank:00}");
             var posterPath = outputBase + ".jpg";
@@ -261,7 +263,7 @@ namespace HomeScreenCompanion
             foreach (var old in new[] { posterPath, thumbPath })
                 try { if (File.Exists(old)) File.Delete(old); } catch { }
             HomeScreenCompanionService.WriteRankedImages(series, rank, outputBase, badgeStyle, tempDir,
-                _httpClient, _providerManager, _libraryManager, _fileSystem, m => _logger.Warn(m));
+                _httpClient, _providerManager, _libraryManager, _fileSystem, m => _logger.Warn(m), extras);
 
             var images = (tagItem.ImageInfos ?? Array.Empty<ItemImageInfo>()).ToList();
             if (File.Exists(posterPath))

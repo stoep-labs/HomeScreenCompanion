@@ -1144,6 +1144,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         overlay.querySelector('.artc-title').textContent = 'Customise ' + (bg ? 'background' : 'poster');
         overlay.querySelector('.artc-subtitle').textContent = scopeName + ' ' + (bg ? 'background' : 'poster') + ' — ' + (ART_STYLE_NAMES[style] || style);
         body.innerHTML = '<div style="padding:20px 0; text-align:center; opacity:0.8;">Loading…</div>';
+        overlay._artcCancel = null;
         overlay.classList.add('modal-visible');
 
         // Title text and name the art would carry (same as the card's own art).
@@ -1341,7 +1342,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
         if (!overlay._artcWired) {
             overlay._artcWired = true;
-            overlay.querySelector('.btnArtcCancel').addEventListener('click', function () { overlay.classList.remove('modal-visible'); });
+            overlay.querySelector('.btnArtcCancel').addEventListener('click', function () {
+                var undo = overlay._artcCancel; overlay._artcCancel = null;
+                overlay.classList.remove('modal-visible');
+                if (undo) undo();
+            });
             overlay.querySelector('.btnArtcOk').addEventListener('click', function () { if (overlay._artcOk) overlay._artcOk(); });
             overlay.querySelector('.btnArtcReset').addEventListener('click', function () { if (overlay._artcReset) overlay._artcReset(); });
         }
@@ -5857,6 +5862,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var errEl      = ui.errEl;
         var modal      = ui.modal;
         var badgeStyle = ui.badgeStyle || 'neutral';
+        var badgeOptions = ui.badgeOptions;   // undefined: keep what the list has
         var tok = window.ApiClient.accessToken ? window.ApiClient.accessToken() : '';
         var snapshotId = null;
         var pendingLibraryId = null;
@@ -6006,6 +6012,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var storedSettings = {};
                 try { storedSettings = JSON.parse((existing && existing.HomeSectionSettings) || '{}'); } catch (e) {}
                 var cardSizeOffset = ui.cardSizeOffset != null ? normCardSize(ui.cardSizeOffset) : normCardSize(storedSettings.CardSizeOffset);
+                if (badgeOptions == null) badgeOptions = storedSettings.BadgeOptions || '';
                 var hseSettings = JSON.stringify({
                     SectionType: 'items',
                     DisplayMode: displayMode,
@@ -6014,7 +6021,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     ViewType: '',
                     ImageType: imageType,
                     CardSizeOffset: cardSizeOffset,
-                    BadgeStyle: badgeStyle,
+                    BadgeStyle: badgeStyle, BadgeOptions: badgeOptions,
                     SortBy: 'SortName',
                     SortOrder: 'Ascending',
                     ScrollDirection: '',
@@ -6203,40 +6210,58 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }); // end step 0 wrapper
     }
 
-    var _badgeStyles = [
-        { val: 'neutral',    label: 'Neutral',    bg: 'rgba(0,0,0,0.82)',        textColor: '#fff' },
-        { val: 'slate-grey', label: 'Slate grey', bg: 'rgba(65,65,75,0.88)',     textColor: '#fff' },
-        { val: 'emby-green', label: 'Emby green', bg: 'rgba(82,181,75,0.78)',    textColor: '#fff' },
-        { val: 'ocean-blue', label: 'Ocean blue', bg: 'rgba(46,134,193,0.82)',   textColor: '#fff' },
-        { val: 'soft-red',   label: 'Soft red',   bg: 'rgba(201,69,69,0.82)',    textColor: '#fff' },
-        { val: 'violet',     label: 'Violet',     bg: 'rgba(123,82,181,0.82)',   textColor: '#fff' },
-        { val: 'none',       label: 'No number',  bg: 'transparent',             textColor: '#fff', noNumber: true },
-        { val: 'top10',      label: 'Top 10 tile', bg: '#141414',                textColor: '#141414', tile: true }
+    // ── Top-list badge: Number badge / Top 10 tile / No number ───────────────────────
+    // The list's BadgeStyle keeps today's values: a colour preset (neutral, slate-grey, …) means
+    // Number badge in that colour, 'top10' the Top 10 tile, 'none' no number. Customise options
+    // live next to it in BadgeOptions (JSON, '' = today's look; only changed fields are stored).
+    var BADGE_PRESETS = [
+        { val: 'neutral',    label: 'Neutral',    bg: 'rgba(0,0,0,0.82)' },
+        { val: 'slate-grey', label: 'Slate grey', bg: 'rgba(65,65,75,0.88)' },
+        { val: 'emby-green', label: 'Emby green', bg: 'rgba(82,181,75,0.78)' },
+        { val: 'ocean-blue', label: 'Ocean blue', bg: 'rgba(46,134,193,0.82)' },
+        { val: 'soft-red',   label: 'Soft red',   bg: 'rgba(201,69,69,0.82)' },
+        { val: 'violet',     label: 'Violet',     bg: 'rgba(123,82,181,0.82)' }
     ];
+    function isBadgePreset(v) { return BADGE_PRESETS.some(function (p) { return p.val === v; }); }
+    function badgeKindOf(style) { return style === 'top10' ? 'top10' : style === 'none' ? 'none' : 'badge'; }
 
-    function buildBadgePickerHtml(selectedVal) {
+    function buildBadgePickerHtml(selectedVal, optionsJson) {
         var sel = selectedVal || 'neutral';
-        var cardBase = 'cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 12px;border-radius:6px;border:2px solid transparent;transition:border-color 0.15s;';
-        var cardActive = cardBase + 'border-color:#52B54B;';
-        var cardInactive = cardBase + 'border-color:var(--line-color,rgba(255,255,255,0.12));';
-        return '<div style="margin-bottom:16px;">' +
+        var kind = badgeKindOf(sel);
+        var preset = isBadgePreset(sel) ? sel : 'neutral';
+        var presetBg = (BADGE_PRESETS.filter(function (p) { return p.val === preset; })[0] || BADGE_PRESETS[0]).bg;
+        var esc = function (v) { return String(v || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); };
+        var cardBase = 'cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 12px;border-radius:6px;border:2px solid transparent;transition:border-color 0.15s;min-width:96px;';
+        var on = 'border-color:#52B54B;', off = 'border-color:var(--line-color,rgba(255,255,255,0.12));';
+        var custBtn = function (k) {
+            return '<button type="button" class="btnBadgeCustomise" data-kind="' + k + '" style="cursor:pointer;background:transparent;border:1px solid rgba(128,128,128,0.35);color:var(--theme-text-secondary);font-size:0.78em;padding:3px 8px;border-radius:4px;display:inline-flex;align-items:center;gap:3px;"><i class="md-icon" style="font-size:1.1em;">settings</i>Customise</button>';
+        };
+        var opts = [
+            { k: 'badge', label: 'Number badge', art: '<div class="tl-badge-swatch" style="width:46px;height:46px;border-radius:50%;background:' + presetBg + ';display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;color:#fff;font-family:sans-serif;">7</div>' },
+            { k: 'top10', label: 'Top 10 tile', art: '<div style="width:82px;height:46px;border-radius:4px;background:#141414;display:flex;align-items:flex-end;justify-content:center;gap:2px;overflow:hidden;"><span style="font-size:44px;line-height:40px;font-weight:900;color:#141414;-webkit-text-stroke:1.5px #9696a0;font-family:Impact,sans-serif;">7</span><span style="width:24px;height:36px;margin-bottom:5px;border-radius:2px;background:linear-gradient(160deg,#6b7a8f,#2c3440);"></span></div>' },
+            { k: 'none', label: 'No number', art: '<div style="width:46px;height:46px;border-radius:4px;background:linear-gradient(160deg,#6b7a8f,#2c3440);"></div>' }
+        ];
+        return '<div class="tl-badge-picker" style="margin-bottom:16px;">' +
             '<span style="font-size:0.82em;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;opacity:0.65;display:block;margin-bottom:8px;">Badge Style</span>' +
-            '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
-            _badgeStyles.map(function (s) {
-                var active = s.val === sel;
-                return '<label class="tl-badge-opt" style="' + (active ? cardActive : cardInactive) + '">' +
-                    '<input type="radio" name="tlBadgeStyle" value="' + s.val + '" style="position:absolute;opacity:0;pointer-events:none;"' + (active ? ' checked' : '') + '>' +
-                    (s.tile
-                        ? '<div style="width:82px;height:46px;border-radius:4px;background:' + s.bg + ';display:flex;align-items:flex-end;justify-content:center;gap:2px;overflow:hidden;"><span style="font-size:44px;line-height:40px;font-weight:900;color:' + s.textColor + ';-webkit-text-stroke:1.5px #9696a0;font-family:Impact,sans-serif;">7</span><span style="width:24px;height:36px;margin-bottom:5px;border-radius:2px;background:linear-gradient(160deg,#6b7a8f,#2c3440);"></span></div>'
-                        : '<div style="width:46px;height:46px;border-radius:50%;background:' + s.bg + ';display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;color:' + s.textColor + ';font-family:sans-serif;">' + (s.noNumber ? '' : '7') + '</div>') +
-                    '<span style="font-size:0.78em;opacity:0.8;white-space:nowrap;">' + s.label + '</span>' +
-                    '</label>';
+            '<input type="hidden" class="tl-badge-preset" value="' + esc(preset) + '">' +
+            '<input type="hidden" class="tl-badge-opts" data-optkind="' + kind + '" value="' + esc(optionsJson || '') + '">' +
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:stretch;">' +
+            opts.map(function (o) {
+                var active = o.k === kind;
+                return '<div style="display:flex;flex-direction:column;align-items:center;gap:6px;">' +
+                    '<label class="tl-badge-opt" data-kind="' + o.k + '" style="' + cardBase + (active ? on : off) + '">' +
+                    '<input type="radio" name="tlBadgeStyle" value="' + o.k + '" style="position:absolute;opacity:0;pointer-events:none;"' + (active ? ' checked' : '') + '>' +
+                    o.art + '<span style="font-size:0.78em;opacity:0.8;white-space:nowrap;">' + o.label + '</span></label>' +
+                    (o.k !== 'none' ? custBtn(o.k) : '') +
+                    '</div>';
             }).join('') +
-            '</div></div>';
+            '</div>' +
+            '<div class="tl-badge-custom-note fieldDescription" style="margin-top:6px;' + (optionsJson ? '' : 'display:none;') + '">Customised (⚙ Customise to change or reset).</div>' +
+            '</div>';
     }
 
-    function initBadgePicker(container) {
-        var cardBase = 'cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 12px;border-radius:6px;border:2px solid transparent;transition:border-color 0.15s;';
+    function initBadgePicker(container, tagName) {
+        if (container && container.dataset) container.dataset.tlTag = tagName || '';
         var opts = Array.from(container.querySelectorAll('.tl-badge-opt'));
         opts.forEach(function (label) {
             label.addEventListener('click', function () {
@@ -6244,11 +6269,264 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 label.style.borderColor = '#52B54B';
             });
         });
+        container.querySelectorAll('.btnBadgeCustomise').forEach(function (btn) {
+            btn.addEventListener('click', function (e) {
+                e.preventDefault(); e.stopPropagation();
+                var picker = btn.closest('.tl-badge-picker');
+                // Customise also picks that type.
+                var radio = picker.querySelector('input[name="tlBadgeStyle"][value="' + btn.dataset.kind + '"]');
+                var before = picker.querySelector('input[name="tlBadgeStyle"]:checked');
+                var undo = null;
+                if (radio && !radio.checked) {
+                    undo = function () {
+                        if (!before) return;
+                        before.checked = true;
+                        before.dispatchEvent(new Event('change', { bubbles: true }));
+                        opts.forEach(function (l) { l.style.borderColor = l.dataset.kind === before.value ? '#52B54B' : 'var(--line-color,rgba(255,255,255,0.12))'; });
+                    };
+                    radio.checked = true;
+                    radio.dispatchEvent(new Event('change', { bubbles: true }));
+                    opts.forEach(function (l) { l.style.borderColor = l.dataset.kind === btn.dataset.kind ? '#52B54B' : 'var(--line-color,rgba(255,255,255,0.12))'; });
+                }
+                openBadgeCustomise(picker, btn.dataset.kind, container, undo);
+            });
+        });
     }
 
     function readBadgeStyle(container) {
         var checked = container.querySelector('input[name="tlBadgeStyle"]:checked');
-        return checked ? checked.value : 'neutral';
+        var kind = checked ? checked.value : 'badge';
+        if (kind === 'top10' || kind === 'none') return kind;
+        var preset = container.querySelector('.tl-badge-preset');
+        return (preset && preset.value) || 'neutral';
+    }
+
+    function readBadgeOptions(container) {
+        var checked = container.querySelector('input[name="tlBadgeStyle"]:checked');
+        if (checked && checked.value === 'none') return '';
+        var input = container.querySelector('.tl-badge-opts');
+        if (!input) return '';
+        // Options belong to the type they were made for; another type starts from its own look.
+        if (checked && input.dataset.optkind && input.dataset.optkind !== checked.value) return '';
+        return input.value || '';
+    }
+
+    // ── Badge Customise popup ────────────────────────────────────────────────────────
+    // The same popup as the art Customise (same overlay, OK / Cancel / Reset); the live preview
+    // is drawn by the server (ranks #1, #3, #10). Fields that do not apply to the chosen type
+    // stay visible with a short note.
+    var NUM_COLOURS = [['#ffffff', 'White'], ['#ececf0', 'Light grey'], ['#141414', 'Page dark'], ['#f5c518', 'Gold'], ['#e50914', 'Red'], ['#52b54b', 'Emby green'], ['#7fd4ff', 'Ice blue'], ['#000000', 'Black']];
+    var OUT_COLOURS = [['#9696a0', 'Grey'], ['#000000', 'Black'], ['#ffffff', 'White'], ['#f5c518', 'Gold'], ['#e50914', 'Red'], ['#52b54b', 'Emby green']];
+    var BADGE_FIELDS = ['font', 'num', 'numcolour', 'outcolour', 'outline', 'size', 'shape', 'colour', 'medal', 'shadow', 'pos', 'tilepos', 'tilebg', 'tilebgcolour', 'special', 'move', 'weeks', 'plays', 'logo'];
+    function badgeDefaults(kind) {
+        var tile = kind === 'top10';
+        return { font: tile ? 'anton' : 'lemonmilk', num: tile ? 'outline' : 'filled', numcolour: tile ? '#141414' : '#ffffff', outcolour: tile ? '#9696a0' : '#000000',
+                 outline: 'normal', size: 'm', shape: 'circle', colour: '', medal: '', shadow: false, pos: 'tl', tilepos: 'beside', tilebg: 'flat', tilebgcolour: '#16223a',
+                 special: '', move: false, weeks: false, plays: false, logo: false };
+    }
+    // The number colour each style starts with (switching style moves an untouched colour along).
+    function badgeNumDefault(kind, num) {
+        if (kind === 'top10') return num === 'outline' ? '#141414' : num === 'gradient' ? '#52b54b' : '#ececf0';
+        return num === 'gradient' ? '#52b54b' : '#ffffff';
+    }
+    var _badgeInfoPromise = null;
+    function getBadgeCustomiseInfo() {
+        if (!_badgeInfoPromise)
+            _badgeInfoPromise = window.ApiClient.getJSON(window.ApiClient.getUrl('HomeScreenCompanion/BadgeCustomiseInfo'))
+                .catch(function (e) { _badgeInfoPromise = null; throw e; });
+        return _badgeInfoPromise;
+    }
+
+    function openBadgeCustomise(picker, kind, container, onCancel) {
+        var view = picker.closest('#HomeScreenCompanionConfigPage') || activeView();
+        var overlay = (view && view.querySelector('#artCustomiseModalOverlay')) || document.querySelector('#artCustomiseModalOverlay');
+        if (!overlay) return;
+        var tile = kind === 'top10';
+        var optsInput = picker.querySelector('.tl-badge-opts');
+        var presetInput = picker.querySelector('.tl-badge-preset');
+        var body = overlay.querySelector('.artc-body');
+        var tagName = (container && container.dataset && container.dataset.tlTag) || '';
+        overlay.querySelector('.artc-title').textContent = 'Customise ' + (tile ? 'Top 10 tile' : 'number badge');
+        overlay.querySelector('.artc-subtitle').textContent = 'Top-list badge — ' + (tile ? 'Top 10 tile' : 'Number badge');
+        body.innerHTML = '<div style="padding:20px 0; text-align:center; opacity:0.8;">Loading…</div>';
+        overlay.style.zIndex = '20000';
+        overlay._artcCancel = onCancel || null;
+        overlay.classList.add('modal-visible');
+
+        getBadgeCustomiseInfo().then(function (info) {
+            var def = badgeDefaults(kind);
+            var stored = {};
+            try { stored = optsInput.value ? JSON.parse(optsInput.value) : {}; } catch (e) { stored = {}; }
+            if (optsInput.dataset.optkind && optsInput.dataset.optkind !== kind) stored = {};
+            var state = Object.assign({}, def);
+            BADGE_FIELDS.forEach(function (k) { if (stored[k] !== undefined && stored[k] !== null) state[k] = stored[k]; });
+            // The badge colour: a preset id (kept in BadgeStyle) or a hex in the options.
+            var preset = presetInput.value || 'neutral';
+            state.colour = stored.colour || preset;
+            if (stored.numcolour == null) state.numcolour = badgeNumDefault(kind, state.num);
+            render();
+
+            function toOptions() {
+                var out = {}, any = false;
+                BADGE_FIELDS.forEach(function (k) {
+                    if (k === 'colour') { if (state.colour && state.colour[0] === '#') { out.colour = state.colour; any = true; } return; }
+                    if (k === 'numcolour' && state.numcolour === badgeNumDefault(kind, state.num)) return;
+                    if (state[k] === def[k]) return;
+                    out[k] = state[k]; any = true;
+                });
+                return any ? JSON.stringify(out) : '';
+            }
+            function previewStyle() { return tile ? 'top10' : (state.colour && state.colour[0] !== '#' ? state.colour : 'neutral'); }
+
+            function seg(f, opts) {
+                return '<div class="artc-seg" data-field="' + f + '">' + opts.map(function (o) {
+                    return '<button type="button" class="artc-segbtn' + (String(state[f]) === String(o[0]) ? ' artc-on' : '') + '" data-value="' + o[0] + '">' + o[1] + '</button>';
+                }).join('') + '</div>';
+            }
+            function colours(f, list) {
+                return '<div class="artc-colours" data-field="' + f + '">' + list.map(function (c) {
+                    return '<button type="button" class="artc-swatch' + (state[f] === c[0] ? ' artc-on' : '') + '" data-value="' + c[0] + '" title="' + c[1] + '" style="background:' + (c[2] || c[0]) + ';"></button>';
+                }).join('') + '<input type="text" class="artc-hex" data-field="' + f + '" maxlength="7" value="' + escapeHtml(state[f] && state[f][0] === '#' ? state[f] : '') + '" placeholder="#rrggbb" spellcheck="false" /></div>';
+            }
+            function field(label, html, f, note) {
+                return '<div class="artc-field" data-f="' + f + '"><div class="artc-label">' + label + '</div>' + html +
+                    '<div class="artc-hint"' + (note ? '' : ' style="display:none;"') + '>' + escapeHtml(note || '') + '</div></div>';
+            }
+            function render() {
+                var badgeOnly = tile ? 'Number badge only.' : '';
+                var tileOnly = tile ? '' : 'Top 10 tile only.';
+                var fonts = '<div class="artc-fonts">' + info.Fonts.map(function (f) {
+                    return '<button type="button" class="artc-font' + (state.font === f.Id ? ' artc-on' : '') + '" data-value="' + f.Id + '" title="' + escapeHtml(f.Name) + '">' +
+                        (f.Sample ? '<img src="' + f.Sample + '" alt="' + escapeHtml(f.Name) + '" />' : escapeHtml(f.Name)) + '</button>';
+                }).join('') + '</div>';
+                var badgeCols = BADGE_PRESETS.map(function (p) { return [p.val, p.label, p.bg]; });
+                var shapeNote = ['ribbon', 'diag', 'banner'].indexOf(state.shape) >= 0 ? 'This shape uses the left or right edge (top or bottom for flag/diagonal).' : state.shape === 'netflix' ? 'Red unless you pick a hex colour.' : '';
+                body.innerHTML =
+                    '<div class="artc-wrap">' +
+                      '<div class="artc-previewcol" style="width:420px;">' +
+                        '<div class="artc-preview" style="width:100%;min-height:120px;"><img class="artc-img" alt="" style="height:auto;" /><div class="artc-busy">Drawing…</div></div>' +
+                        '<div class="fieldDescription" style="margin-top:6px;">Ranks #1, #3 and #10 drawn by the server' + (tile ? ' (landscape tile above, poster-row card below)' : '') + '. Movement, weeks and plays show sample values.</div>' +
+                      '</div>' +
+                      '<div class="artc-fieldscol">' +
+                        '<div class="artc-section">Number</div>' +
+                        field('Font', fonts, 'font') +
+                        field('Style', seg('num', [['filled', 'Filled'], ['outline', 'Outline'], ['gradient', 'Gradient'], ['metallic', 'Metallic']]), 'num') +
+                        field('Number colour', colours('numcolour', NUM_COLOURS), 'numcolour', state.num === 'metallic' ? 'Metallic uses chrome.' : '') +
+                        field('Outline colour', colours('outcolour', OUT_COLOURS), 'outcolour', state.num !== 'outline' ? 'Used by the Outline style.' : '') +
+                        field('Outline', seg('outline', [['thin', 'Thin'], ['normal', 'Normal'], ['thick', 'Thick']]), 'outline', state.num !== 'outline' ? 'Used by the Outline style.' : '') +
+                        field('Size', seg('size', [['s', 'S'], ['m', 'M'], ['l', 'L'], ['xl', 'XL']]), 'size', badgeOnly || (tile ? '' : '')) +
+                        '<div class="artc-section">Shape</div>' +
+                        field('Shape', seg('shape', [['circle', 'Circle'], ['roundsq', 'Rounded square'], ['pill', 'Pill #1'], ['ribbon', 'Ribbon'], ['banner', 'Flag'], ['diag', 'Diagonal'], ['netflix', 'TOP 10 square'], ['numonly', 'Number only'], ['bigoutline', 'Big numeral'], ['hidden', 'None (extras only)']]), 'shape', badgeOnly || shapeNote) +
+                        '<div class="artc-section">Colours</div>' +
+                        field('Badge colour', colours('colour', badgeCols), 'colour', badgeOnly) +
+                        field('Medal colours for 1–3', seg('medal', [['', 'Off'], ['flat', 'Flat'], ['metal', 'Metallic']]), 'medal') +
+                        field('Shadow', seg('shadow', [[false, 'Off'], [true, 'On']]), 'shadow') +
+                        '<div class="artc-section">Position</div>' +
+                        field('Number badge', seg('pos', [['tl', 'Top left'], ['tr', 'Top right'], ['bl', 'Bottom left'], ['br', 'Bottom right'], ['bc', 'Bottom centre']]), 'pos', badgeOnly) +
+                        field('Top 10 tile', seg('tilepos', [['beside', 'Beside the poster'], ['behind', 'Tucked behind']]), 'tilepos', tileOnly) +
+                        '<div class="artc-section">Tile background</div>' +
+                        field('Background', seg('tilebg', [['flat', 'Flat #141414'], ['solid', 'Solid colour'], ['blur', 'Blurred poster']]), 'tilebg', tileOnly) +
+                        field('Solid colour', colours('tilebgcolour', [['#16223a', 'Navy'], ['#1e1e22', 'Charcoal'], ['#2a0a0a', 'Dark red'], ['#0f2a16', 'Dark green']]), 'tilebgcolour', tileOnly || (state.tilebg !== 'solid' ? 'Used by Solid colour.' : '')) +
+                        '<div class="artc-section">#1 special</div>' +
+                        field('Rank 1', seg('special', [['', 'None'], ['bigger', 'Bigger'], ['crown', 'Crown'], ['glow', 'Glow']]), 'special') +
+                        '<div class="artc-section">Extras</div>' +
+                        field('Rank movement ▲▼ / NEW', seg('move', [[false, 'Off'], [true, 'On']]), 'move', 'Compared with the list\'s previous ranking; shows after the list has been ranked twice.') +
+                        field('Weeks in the list', seg('weeks', [[false, 'Off'], [true, 'On']]), 'weeks', '"N wks in list" at the bottom of the poster.') +
+                        field('Plays', seg('plays', [[false, 'Off'], [true, 'On']]), 'plays', 'All users\' plays of the title (all time).') +
+                        field('TOP 10 logo', seg('logo', [[false, 'Off'], [true, 'On']]), 'logo', 'Red TOP 10 corner logo; with shape "None" it is the only mark.') +
+                      '</div>' +
+                    '</div>';
+                wire();
+                refreshPreview();
+            }
+            function set(f, v) {
+                if (f === 'num') { if (state.numcolour === badgeNumDefault(kind, state.num)) state.numcolour = badgeNumDefault(kind, v); }
+                state[f] = v; render();
+            }
+            function wire() {
+                body.querySelectorAll('.artc-seg').forEach(function (g) {
+                    g.querySelectorAll('.artc-segbtn').forEach(function (b) {
+                        b.addEventListener('click', function () {
+                            var v = b.dataset.value, f = g.dataset.field;
+                            set(f, v === 'true' ? true : v === 'false' ? false : v);
+                        });
+                    });
+                });
+                body.querySelectorAll('.artc-font').forEach(function (b) { b.addEventListener('click', function () { set('font', b.dataset.value); }); });
+                body.querySelectorAll('.artc-colours').forEach(function (g) {
+                    var f = g.dataset.field;
+                    g.querySelectorAll('.artc-swatch').forEach(function (b) { b.addEventListener('click', function () { set(f, b.dataset.value); }); });
+                    var hex = g.querySelector('.artc-hex');
+                    hex.addEventListener('input', function () {
+                        var v = hex.value.trim().toLowerCase();
+                        if (v && v[0] !== '#') v = '#' + v;
+                        if (/^#[0-9a-f]{6}$/.test(v)) {
+                            state[f] = v;
+                            g.querySelectorAll('.artc-swatch').forEach(function (s) { s.classList.toggle('artc-on', s.dataset.value === v); });
+                            refreshPreview();
+                        }
+                    });
+                });
+            }
+            var timer = null, seq = 0;
+            function refreshPreview() {
+                clearTimeout(timer);
+                var busy = body.querySelector('.artc-busy');
+                if (busy) { busy.style.display = 'block'; busy.textContent = 'Drawing…'; }
+                timer = setTimeout(function () {
+                    var mine = ++seq;
+                    fetch(window.ApiClient.getUrl('HomeScreenCompanion/BadgeCustomPreview'), {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
+                        body: JSON.stringify({ BadgeStyle: previewStyle(), Options: toOptions(), TagName: tagName })
+                    }).then(function (r) { return r.json(); }).then(function (res) {
+                        if (mine !== seq) return;
+                        var img = body.querySelector('.artc-img'), b = body.querySelector('.artc-busy');
+                        if (res.Success && img) { img.src = res.Image; if (b) b.style.display = 'none'; }
+                        else if (b) b.textContent = res.Message || 'Preview failed.';
+                    }).catch(function (e) {
+                        if (mine !== seq) return;
+                        var b = body.querySelector('.artc-busy'); if (b) b.textContent = 'Preview failed: ' + e.message;
+                    });
+                }, 300);
+            }
+
+            overlay._artcReset = function () { state = Object.assign({}, def); state.colour = 'neutral'; render(); };
+            overlay._artcOk = function () {
+                var val = toOptions();
+                var newPreset = !tile && state.colour && state.colour[0] !== '#' ? state.colour : presetInput.value;
+                var changed = optsInput.value !== val || presetInput.value !== newPreset || optsInput.dataset.optkind !== kind;
+                optsInput.value = val;
+                optsInput.dataset.optkind = kind;
+                overlay._artcCancel = null;
+                presetInput.value = newPreset || 'neutral';
+                var sw = picker.querySelector('.tl-badge-swatch');
+                var p = BADGE_PRESETS.filter(function (x) { return x.val === presetInput.value; })[0];
+                if (sw) sw.style.background = state.colour && state.colour[0] === '#' ? state.colour : (p ? p.bg : sw.style.background);
+                var note = picker.querySelector('.tl-badge-custom-note');
+                if (note) note.style.display = val ? '' : 'none';
+                if (changed) {
+                    optsInput.dispatchEvent(new Event('change', { bubbles: true }));
+                    setTimeout(checkFormState, 0);
+                }
+                overlay.classList.remove('modal-visible');
+            };
+        }).catch(function (e) {
+            body.innerHTML = '<div style="padding:12px 0;">Could not load the options: ' + escapeHtml(e && e.message || String(e)) + '</div>';
+            overlay._artcOk = function () { overlay.classList.remove('modal-visible'); };
+            overlay._artcReset = function () { };
+        });
+
+        if (!overlay._artcWired) {
+            overlay._artcWired = true;
+            overlay.querySelector('.btnArtcCancel').addEventListener('click', function () {
+                var undo = overlay._artcCancel; overlay._artcCancel = null;
+                overlay.classList.remove('modal-visible');
+                if (undo) undo();
+            });
+            overlay.querySelector('.btnArtcOk').addEventListener('click', function () { if (overlay._artcOk) overlay._artcOk(); });
+            overlay.querySelector('.btnArtcReset').addEventListener('click', function () { if (overlay._artcReset) overlay._artcReset(); });
+        }
     }
 
     // isShows: the tag is on shows, so this saves a show top-list (TopList/PrepareShowList, no
@@ -6335,7 +6613,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '<label style="' + labelStyle + '">Card Size</label>' +
                 '<select is="emby-select" class="tlm-card-size" style="width:100%;">' + cardSizeOptionsHtml(preset ? preset.cardSizeOffset : '0') + '</select></div>' +
 
-                buildBadgePickerHtml(preset ? preset.badgeStyle : (isShows ? 'top10' : 'neutral')) +
+                buildBadgePickerHtml(preset ? preset.badgeStyle : (isShows ? 'top10' : 'neutral'), preset ? preset.badgeOptions : '') +
 
                 '<div style="' + fieldStyle + '">' +
                 '<label style="' + labelStyle + '">Max items <span style="font-weight:400;text-transform:none;letter-spacing:0;opacity:0.7;">' + (isShows ? '(up to 10 shows)' : '(0 = all)') + '</span></label>' +
@@ -6350,7 +6628,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '</div>';
 
             renderBox(html);
-            initBadgePicker(modal);
+            initBadgePicker(modal, tagName);
             modal.querySelectorAll('.mtlKindSwitch button').forEach(function (b) {
                 b.addEventListener('click', function () {
                     if ((b.dataset.kind === 'Shows') === !!isShows) return;
@@ -6387,6 +6665,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var imageType     = modal.querySelector('.tlm-image-type').value;
                 var cardSize      = normCardSize(modal.querySelector('.tlm-card-size').value);
                 var badgeStyle    = readBadgeStyle(modal);
+                var badgeOptions  = readBadgeOptions(modal);
                 var maxItems      = Math.max(0, parseInt(modal.querySelector('.tlm-max-items').value, 10) || 0);
                 var tok = window.ApiClient.accessToken ? window.ApiClient.accessToken() : '';
 
@@ -6400,7 +6679,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         body: JSON.stringify({
                             ListName: listName, CustomName: customName, DisplayMode: displayMode, ImageType: imageType,
                             CardSizeOffset: parseInt(cardSize, 10),
-                            UserIds: selectedUserIds, SourceTag: tagName, BadgeStyle: badgeStyle, MaxItems: maxItems
+                            UserIds: selectedUserIds, SourceTag: tagName, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions, MaxItems: maxItems
                         })
                     })
                     .then(function (r) { return r.json(); })
@@ -6421,14 +6700,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/PrepareFolder'), {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json', 'X-Emby-Token': tok },
-                    body: JSON.stringify({ TagName: tagName, MaxItems: maxItems, BadgeStyle: badgeStyle })
+                    body: JSON.stringify({ TagName: tagName, MaxItems: maxItems, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions })
                 })
                 .then(function (r) { return r.json(); })
                 .then(function (prepareResult) {
                     if (!prepareResult.Success) throw new Error(prepareResult.Message || 'Failed to create folder.');
                     executeTopListCreationSteps(
                         tagName, displayName, selectedUserIds, displayMode, customName, imageType, maxItems,
-                        prepareResult, { saveBtn: saveBtn, errEl: errEl, modal: modal, badgeStyle: badgeStyle, cardSizeOffset: cardSize }, onSuccess
+                        prepareResult, { saveBtn: saveBtn, errEl: errEl, modal: modal, badgeStyle: badgeStyle, badgeOptions: badgeOptions, cardSizeOffset: cardSize }, onSuccess
                     );
                 })
                 .catch(function (err) {
@@ -6515,6 +6794,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var presetImageType  = (preset && preset.imageType)   || '';
             var presetCardSize   = (preset && preset.cardSizeOffset) || '0';
             var presetBadgeStyle = (preset && preset.badgeStyle)  || (isShows ? 'top10' : 'neutral');
+            var presetBadgeOptions = (preset && preset.badgeOptions) || '';
 
             var displayOptions = [
                 { val: '',               label: 'Always' },
@@ -6613,7 +6893,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '</div>' +
 
                 '<div style="border-top:1px solid var(--line-color);padding-top:14px;margin-top:4px;">' +
-                buildBadgePickerHtml(presetBadgeStyle) +
+                buildBadgePickerHtml(presetBadgeStyle, presetBadgeOptions) +
                 '</div>' +
 
                 '<div class="mtl-error" style="color:#cc3333;font-size:0.85em;min-height:1.2em;margin-top:12px;margin-bottom:4px;"></div>' +
@@ -6770,6 +7050,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var imageType       = modal.querySelector('.mtlImageType').value;
                 var cardSize        = normCardSize(modal.querySelector('.mtlCardSize').value);
                 var badgeStyle      = readBadgeStyle(modal);
+                var badgeOptions    = readBadgeOptions(modal);
                 var selectedUserIds = Array.from(modal.querySelectorAll('.chkMtlUser:checked')).map(function (c) { return c.value; });
 
                 if (!listName)                    { errEl.textContent = 'Please enter a name for the list.'; return; }
@@ -6788,7 +7069,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             CardSizeOffset: parseInt(cardSize, 10),
                             UserIds: selectedUserIds,
                             SourceTag: sourceTag,
-                            BadgeStyle: badgeStyle,
+                            BadgeStyle: badgeStyle, BadgeOptions: badgeOptions,
                             SeriesIds: sourceTag ? [] : selectedMovies.map(function (m) { return m.ItemId; })
                         })
                     })
@@ -6816,7 +7097,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     headers: { 'Content-Type': 'application/json', 'X-Emby-Token': tok2 },
                     body: JSON.stringify({
                         ListName: listName,
-                        BadgeStyle: badgeStyle,
+                        BadgeStyle: badgeStyle, BadgeOptions: badgeOptions,
                         Items: selectedMovies.map(function (m) { return { ImdbId: m.ImdbId, ItemId: m.ItemId }; })
                     })
                 })
@@ -6825,7 +7106,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     if (!prepareResult.Success) throw new Error(prepareResult.Message || 'Failed to create folder.');
                     executeTopListCreationSteps(
                         listName, customNameVal, selectedUserIds, displayMode, customNameVal, imageType, 0,
-                        prepareResult, { saveBtn: createBtn, errEl: errEl, modal: modal, badgeStyle: badgeStyle, cardSizeOffset: cardSize }, function () {
+                        prepareResult, { saveBtn: createBtn, errEl: errEl, modal: modal, badgeStyle: badgeStyle, badgeOptions: badgeOptions, cardSizeOffset: cardSize }, function () {
                             document.removeEventListener('keydown', onEsc);
                             if (typeof onSuccess === 'function') onSuccess();
                         }
@@ -6898,6 +7179,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var presetImageType  = data.ImageType    || editJson.imageType    || '';
                 var presetCardSize   = data.CardSizeOffset != null ? String(data.CardSizeOffset) : (editJson.cardSizeOffset || '0');
                 var presetBadgeStyle = data.BadgeStyle   || editJson.badgeStyle   || (isShows ? 'top10' : 'neutral');
+                var presetBadgeOptions = data.BadgeOptions != null ? data.BadgeOptions : (editJson.badgeOptions || '');
                 var presetCustomName = data.CustomName   || editJson.customName   || '';
                 var presetMovies     = data.Movies       || [];
 
@@ -6965,7 +7247,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     '</div>' +
 
                     '<div style="border-top:1px solid var(--line-color);padding-top:14px;margin-top:4px;">' +
-                    buildBadgePickerHtml(presetBadgeStyle) +
+                    buildBadgePickerHtml(presetBadgeStyle, presetBadgeOptions) +
                     '</div>' +
 
                     '<div class="mtl-error" style="color:#cc3333;font-size:0.85em;min-height:1.2em;margin-top:12px;margin-bottom:4px;"></div>' +
@@ -6975,7 +7257,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                 body.innerHTML = '';
                 body.appendChild(wrapper);
-                initBadgePicker(body);
+                initBadgePicker(body, tagName);
                 wireUserMultiSelect(wrapper);
 
                 var selectedMovies = presetMovies.slice();
@@ -7075,6 +7357,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         imageType: wrapper.querySelector('.mtlImageType').value,
                         cardSize: wrapper.querySelector('.mtlCardSize').value,
                         badgeStyle: readBadgeStyle(body),
+                        badgeOptions: readBadgeOptions(body),
                         userIds: Array.from(wrapper.querySelectorAll('.chkMtlUser:checked')).map(function (c) { return c.value; }).sort(),
                         movies: selectedMovies.map(function (m) { return m.ItemId; })
                     });
@@ -7098,6 +7381,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         var imageType       = wrapper.querySelector('.mtlImageType').value;
                         var cardSize        = normCardSize(wrapper.querySelector('.mtlCardSize').value);
                         var badgeStyle      = readBadgeStyle(body);
+                        var badgeOptions    = readBadgeOptions(body);
                         var userIds         = Array.from(wrapper.querySelectorAll('.chkMtlUser:checked')).map(function (c) { return c.value; });
 
                         if (userIds.length === 0)      { reject(new Error('Please select at least one target user.')); return; }
@@ -7111,7 +7395,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                 body: JSON.stringify({
                                     ListName: tagName, CustomName: customNameVal, DisplayMode: displayMode, ImageType: imageType,
                                     CardSizeOffset: parseInt(cardSize, 10),
-                                    UserIds: userIds, BadgeStyle: badgeStyle,
+                                    UserIds: userIds, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions,
                                     SeriesIds: selectedMovies.map(function (m) { return m.ItemId; })
                                 })
                             })
@@ -7127,7 +7411,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json', 'X-Emby-Token': tok2 },
                             body: JSON.stringify({
-                                ListName: tagName, BadgeStyle: badgeStyle,
+                                ListName: tagName, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions,
                                 Items: selectedMovies.map(function (m) { return { ImdbId: m.ImdbId, ItemId: m.ItemId }; })
                             })
                         })
@@ -7138,7 +7422,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             var errEl = wrapper.querySelector('.mtl-error');
                             executeTopListCreationSteps(
                                 tagName, customNameVal, userIds, displayMode, customNameVal, imageType, 0,
-                                prepareResult, { saveBtn: fakeBtn, errEl: errEl, modal: body, innerBox: wrapper, badgeStyle: badgeStyle, cardSizeOffset: cardSize, closeHandler: resolve, silent: true },
+                                prepareResult, { saveBtn: fakeBtn, errEl: errEl, modal: body, innerBox: wrapper, badgeStyle: badgeStyle, badgeOptions: badgeOptions, cardSizeOffset: cardSize, closeHandler: resolve, silent: true },
                                 resolve
                             );
                         })
@@ -7157,6 +7441,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var presetImageType  = editJson.imageType   || '';
                 var presetCardSize   = editJson.cardSizeOffset || '0';
                 var presetBadgeStyle = editJson.badgeStyle  || 'neutral';
+                var presetBadgeOptions = editJson.badgeOptions || '';
                 var presetCustomName = editJson.customName  || '';
                 var presetMaxItems   = editJson.maxItems    || '0';
 
@@ -7195,7 +7480,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     '<label style="' + labelStyle + '">Card Size</label>' +
                     '<select is="emby-select" class="tlm-card-size" style="width:100%;">' + cardSizeOptionsHtml(presetCardSize) + '</select></div>' +
 
-                    buildBadgePickerHtml(presetBadgeStyle) +
+                    buildBadgePickerHtml(presetBadgeStyle, presetBadgeOptions) +
 
                     '<div style="' + fieldStyle + '">' +
                     '<label style="' + labelStyle + '">Max items <span style="font-weight:400;text-transform:none;letter-spacing:0;opacity:0.7;">' + (isShows ? '(up to 10 shows)' : '(0 = all)') + '</span></label>' +
@@ -7209,7 +7494,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                 body.innerHTML = '';
                 body.appendChild(wrapper);
-                initBadgePicker(body);
+                initBadgePicker(body, editJson.sourceTag || tagName);
                 wireUserMultiSelect(wrapper);
 
                 if (presetCustomName) wrapper.querySelector('.tlm-custom-name').value = presetCustomName;
@@ -7224,6 +7509,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         imageType: wrapper.querySelector('.tlm-image-type').value,
                         cardSize: wrapper.querySelector('.tlm-card-size').value,
                         badgeStyle: readBadgeStyle(body),
+                        badgeOptions: readBadgeOptions(body),
                         maxItems: wrapper.querySelector('.tlm-max-items').value,
                         userIds: Array.from(wrapper.querySelectorAll('.chkTlmUser:checked')).map(function (c) { return c.value; }).sort()
                     });
@@ -7251,6 +7537,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         var imageType     = wrapper.querySelector('.tlm-image-type').value;
                         var cardSize      = normCardSize(wrapper.querySelector('.tlm-card-size').value);
                         var badgeStyle    = readBadgeStyle(body);
+                        var badgeOptions  = readBadgeOptions(body);
                         var maxItems      = Math.max(0, parseInt(wrapper.querySelector('.tlm-max-items').value, 10) || 0);
                         var tok2 = window.ApiClient.accessToken ? window.ApiClient.accessToken() : '';
 
@@ -7261,7 +7548,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                 body: JSON.stringify({
                                     ListName: tagName, CustomName: customNameVal, DisplayMode: displayMode, ImageType: imageType,
                                     CardSizeOffset: parseInt(cardSize, 10),
-                                    UserIds: userIds, SourceTag: editJson.sourceTag || tagName, BadgeStyle: badgeStyle, MaxItems: maxItems
+                                    UserIds: userIds, SourceTag: editJson.sourceTag || tagName, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions, MaxItems: maxItems
                                 })
                             })
                             .then(function (r) { return r.json(); })
@@ -7276,7 +7563,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/PrepareFolder'), {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json', 'X-Emby-Token': tok2 },
-                            body: JSON.stringify({ TagName: tagName, MaxItems: maxItems, BadgeStyle: badgeStyle })
+                            body: JSON.stringify({ TagName: tagName, MaxItems: maxItems, BadgeStyle: badgeStyle, BadgeOptions: badgeOptions })
                         })
                         .then(function (r) { return r.json(); })
                         .then(function (prepareResult) {
@@ -7285,7 +7572,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             var errEl = wrapper.querySelector('.tlm-error');
                             executeTopListCreationSteps(
                                 tagName, customNameVal, userIds, displayMode, customNameVal, imageType, maxItems,
-                                prepareResult, { saveBtn: fakeBtn, errEl: errEl, modal: body, innerBox: wrapper, badgeStyle: badgeStyle, cardSizeOffset: cardSize, closeHandler: resolve, silent: true },
+                                prepareResult, { saveBtn: fakeBtn, errEl: errEl, modal: body, innerBox: wrapper, badgeStyle: badgeStyle, badgeOptions: badgeOptions, cardSizeOffset: cardSize, closeHandler: resolve, silent: true },
                                 resolve
                             );
                         })
@@ -7785,6 +8072,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             imageType:      r.ImageType || '',
             cardSizeOffset: normCardSize(r.CardSizeOffset),
             badgeStyle:     r.BadgeStyle || (isShows ? 'top10' : 'neutral'),
+            badgeOptions:   r.BadgeOptions || '',
             maxItems:       String(r.MaxItems || '0'),
             movies:         r.Items || [],
             notices:        r.Notices || []
@@ -7978,7 +8266,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             executeTopListCreationSteps(
                                 tl.TagName, tl.CustomName || tl.TagName, tl.UserIds || [], tl.DisplayMode || '', tl.CustomName || tl.TagName,
                                 tl.ImageType || '', tl.MaxItems || 0, { FolderPath: tl.FolderPath, FilesCreated: 0 },
-                                { saveBtn: dummyBtn, errEl: dummyErr, modal: dummyModal, badgeStyle: tl.BadgeStyle || 'neutral', cardSizeOffset: tl.CardSizeOffset, silent: true, closeHandler: resolve }
+                                { saveBtn: dummyBtn, errEl: dummyErr, modal: dummyModal, badgeStyle: tl.BadgeStyle || 'neutral', badgeOptions: tl.BadgeOptions || '', cardSizeOffset: tl.CardSizeOffset, silent: true, closeHandler: resolve }
                             ).catch(reject);
                         }).catch(function (err) {
                             failures.push((tl.CustomName || tl.TagName) + ': ' + (err && err.message ? err.message : err));
@@ -8090,6 +8378,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     imageType:   settings.ImageType   || '',
                     cardSizeOffset: normCardSize(settings.CardSizeOffset),
                     badgeStyle:  settings.BadgeStyle  || 'neutral',
+                    badgeOptions: settings.BadgeOptions || '',
                     maxItems:    settings.MaxItems    || 0
                 };
             });
@@ -8119,6 +8408,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         imageType:   item.imageType,
                         cardSizeOffset: item.cardSizeOffset,
                         badgeStyle:  item.badgeStyle,
+                        badgeOptions: item.badgeOptions || '',
                         maxItems:    String(item.maxItems || '0')
                     }));
                     return '<div class="tag-row" data-tlname="' + escAttr(item.tagName.toLowerCase()) + '" data-ismanual="' + (isManual ? '1' : '0') + '" data-count="' + item.count + '" data-editjson="' + editJson + '">' +

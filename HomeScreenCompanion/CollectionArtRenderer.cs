@@ -452,7 +452,7 @@ namespace HomeScreenCompanion
         }
 
         // A plain poster-shaped gradient in one of twelve hues, with a lighter "title" bar.
-        private static void DrawStandInPoster(int i, string path)
+        internal static void DrawStandInPoster(int i, string path)
         {
             const int w = 300, h = 450;
             float hue = (i * 47) % 360;

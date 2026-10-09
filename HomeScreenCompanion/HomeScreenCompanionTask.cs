@@ -5766,8 +5766,8 @@ namespace HomeScreenCompanion
                     try
                     {
                         var tlSettings = _jsonSerializer.DeserializeFromString<Dictionary<string, string>>(tl.HomeSectionSettings);
-                        if (tlSettings != null && tlSettings.TryGetValue("BadgeStyle", out var bs) && !string.IsNullOrEmpty(bs))
-                            badgeStyle = bs;
+                        if (tlSettings != null)
+                            badgeStyle = BadgeLook.FromSettings(tlSettings, "neutral");
                         if (effectiveMaxItems <= 0 && tlSettings != null
                             && tlSettings.TryGetValue("MaxItems", out var miStr)
                             && int.TryParse(miStr, out var parsedMax) && parsedMax > 0)
@@ -5825,6 +5825,8 @@ namespace HomeScreenCompanion
 
                 int digits = Math.Max(2, selected.Count.ToString().Length);
                 int count = 0;
+                var rankExtras = TopListHistory.Update(tl.TagName, selected.Select(s => s.Item).ToList(), badgeStyle,
+                    _jsonSerializer, _libraryManager, _userManager, _userDataManager, m => _log.Warn(m));
                 var tempDir = Path.Combine(Path.GetTempPath(), "hsc_" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(tempDir);
                 try
@@ -5837,7 +5839,8 @@ namespace HomeScreenCompanion
                             HomeScreenCompanionService.BuildTopListNfo(entry.Item, sortPrefix));
                         HomeScreenCompanionService.WriteRankedImages(
                             entry.Item, count, Path.Combine(folderPath, entry.BaseName), badgeStyle, tempDir,
-                            _httpClient, _providerManager, _libraryManager, _fileSystem, m => _log.Warn(m));
+                            _httpClient, _providerManager, _libraryManager, _fileSystem, m => _log.Warn(m),
+                            rankExtras.TryGetValue(entry.Item.Id, out var rx) ? rx : null);
                         // .strm last: the folder is a watched library, and Emby creates the item the
                         // moment it sees the .strm — the nfo and badged images must already be there.
                         File.WriteAllText(Path.Combine(folderPath, entry.BaseName + ".strm"), entry.FilePath);

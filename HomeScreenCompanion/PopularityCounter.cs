@@ -82,6 +82,35 @@ namespace HomeScreenCompanion
             return viewers.ToDictionary(kv => kv.Key, kv => kv.Value.Count);
         }
 
+        /// <summary>
+        /// Plays per title for the top-list "N plays" badge extra: every user's play count added
+        /// up (a show: its episodes' plays). Emby keeps one record per user and item, so this is
+        /// all-time.
+        /// </summary>
+        public Dictionary<Guid, int> CountPlays(List<BaseItem> titles)
+        {
+            var target = new Dictionary<string, Guid>(StringComparer.OrdinalIgnoreCase);
+            var seriesByInternalId = new Dictionary<long, Guid>();
+            foreach (var title in titles)
+            {
+                if (title is Series) seriesByInternalId[title.InternalId] = title.Id;
+                else { var k = KeyOf(title); if (k.Length > 0 && !target.ContainsKey(k)) target[k] = title.Id; }
+            }
+            if (seriesByInternalId.Count > 0)
+                foreach (var ep in _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "Episode" }, SeriesIds = seriesByInternalId.Keys.ToArray(), Recursive = true, IsVirtualItem = false }).OfType<Episode>())
+                    if (seriesByInternalId.TryGetValue(ep.SeriesId, out var sid)) { var k = KeyOf(ep); if (k.Length > 0 && !target.ContainsKey(k)) target[k] = sid; }
+
+            var plays = new Dictionary<Guid, int>();
+            foreach (var user in _userManager.GetUserList(new UserQuery { IsDisabled = false }))
+                foreach (var record in RecordsOf(user.InternalId))
+                {
+                    if (record.Key == null || !target.TryGetValue(record.Key, out var id)) continue;
+                    int n = record.Played ? Math.Max(record.PlayCount, 1) : 0;
+                    if (n > 0) plays[id] = (plays.TryGetValue(id, out var v) ? v : 0) + n;
+                }
+            return plays;
+        }
+
         // Also used by NextWatchRecommender, so "popular" means the same in both.
         internal static bool Counts(UserItemData d, DateTimeOffset? cutoff)
         {

@@ -148,6 +148,26 @@ namespace HomeScreenCompanion
         public string Note { get; set; } = "";   // e.g. "16 posters fit best on 4 rows." (Rows is at most when Posters is set)
     }
 
+    // Top-list badge Customise popup: the number fonts, and the live preview (ranks #1, #3, #10
+    // drawn by the real renderer on the list's own posters, or stand-ins). JPEG data: URL.
+    [Route("/HomeScreenCompanion/BadgeCustomiseInfo", "GET")]
+    [Authenticated(Roles = "Admin")]
+    public class BadgeCustomiseInfoRequest : IReturn<BadgeCustomiseInfoResponse> { }
+
+    public class BadgeCustomiseInfoResponse
+    {
+        public List<ArtFontInfo> Fonts { get; set; } = new List<ArtFontInfo>();
+    }
+
+    [Route("/HomeScreenCompanion/BadgeCustomPreview", "POST")]
+    [Authenticated(Roles = "Admin")]
+    public class BadgeCustomPreviewRequest : IReturn<ArtCustomPreviewResponse>
+    {
+        public string BadgeStyle { get; set; } = "";
+        public string Options { get; set; } = "";
+        public string TagName { get; set; } = "";
+    }
+
     // The collection art a source would get, from its unsaved settings. Changes nothing.
     [Route("/HomeScreenCompanion/PreviewCollectionArt", "POST")]
     [Authenticated(Roles = "Admin")]
@@ -269,6 +289,7 @@ namespace HomeScreenCompanion
         public string TagName { get; set; } = "";
         public int MaxItems { get; set; } = 0;
         public string BadgeStyle { get; set; } = "neutral";
+        public string BadgeOptions { get; set; } = "";
     }
     public class PrepareTopListFolderResponse
     {
@@ -306,6 +327,7 @@ namespace HomeScreenCompanion
         public string ImageType { get; set; } = "";
         public string CardSizeOffset { get; set; } = "0";
         public string BadgeStyle { get; set; } = "neutral";
+        public string BadgeOptions { get; set; } = "";
         public List<string> UserIds { get; set; } = new List<string>();
         public string Message { get; set; } = "";
         public string ContentType { get; set; } = "Movies";
@@ -339,6 +361,7 @@ namespace HomeScreenCompanion
         // When set, the shows come from this tag (rebuilt on every sync) and SeriesIds is ignored.
         public string SourceTag { get; set; } = "";
         public string BadgeStyle { get; set; } = "top10";
+        public string BadgeOptions { get; set; } = "";
         public int MaxItems { get; set; }   // 1–10; 0 = 10
         // Emby's ContentSection.CardSizeOffset (-1 = smaller cards); null keeps the stored value.
         public int? CardSizeOffset { get; set; }
@@ -464,6 +487,7 @@ namespace HomeScreenCompanion
         public string ListName { get; set; } = "";
         public List<ManualTopListItem> Items { get; set; } = new List<ManualTopListItem>();
         public string BadgeStyle { get; set; } = "neutral";
+        public string BadgeOptions { get; set; } = "";
     }
     public class ManualTopListItem
     {
@@ -583,6 +607,7 @@ namespace HomeScreenCompanion
         public string ImageType { get; set; } = "";
         public string CardSizeOffset { get; set; } = "0";
         public string BadgeStyle { get; set; } = "neutral";
+        public string BadgeOptions { get; set; } = "";
         public int MaxItems { get; set; }
         public List<string> UserIds { get; set; } = new List<string>();
         public string FolderPath { get; set; } = "";
@@ -676,6 +701,7 @@ namespace HomeScreenCompanion
         public string ImageType { get; set; } = "";
         public string CardSizeOffset { get; set; } = "0";
         public string BadgeStyle { get; set; } = "";
+        public string BadgeOptions { get; set; } = "";
         public int MaxItems { get; set; }
         public List<string> UserIds { get; set; } = new List<string>();
         // Manual lists: the ranked titles, in order.
@@ -709,6 +735,7 @@ namespace HomeScreenCompanion
         public string ImageType { get; set; } = "";
         public string CardSizeOffset { get; set; } = "0";
         public string BadgeStyle { get; set; } = "";
+        public string BadgeOptions { get; set; } = "";
         public int MaxItems { get; set; }
         public List<string> UserIds { get; set; } = new List<string>();
         // Same shape as the create dialog's own picks (movies: Guid ItemId; shows: internal id).
@@ -961,6 +988,59 @@ public class HomeScreenCompanionService : IService
             catch (Exception ex)
             {
                 _logger.Warn($"Art preview '{request.Style}' failed: {ex.Message}");
+                return new ArtCustomPreviewResponse { Message = "Preview failed: " + ex.Message };
+            }
+        }
+
+        public object Get(BadgeCustomiseInfoRequest request)
+        {
+            var res = new BadgeCustomiseInfoResponse();
+            foreach (var f in BadgeFonts.All)
+            {
+                string sample = "";
+                try { sample = BadgeFonts.Sample(f.Id); } catch (Exception ex) { _logger.Warn($"Badge font sample '{f.Id}' failed: {ex.Message}"); }
+                res.Fonts.Add(new ArtFontInfo { Id = f.Id, Name = f.Name, Group = "", Sample = sample });
+            }
+            return res;
+        }
+
+        public object Post(BadgeCustomPreviewRequest request)
+        {
+            try
+            {
+                var dir = Path.Combine(Plugin.Instance!.DataFolderPath, "collection_art", "_samples");
+                Directory.CreateDirectory(dir);
+                var tempDir = Path.Combine(Path.GetTempPath(), "hsc_badge_" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(tempDir);
+                try
+                {
+                    // The list's own titles first, else any movies with a poster, else stand-ins.
+                    var posters = new List<string>();
+                    var queries = new List<InternalItemsQuery>();
+                    if (!string.IsNullOrWhiteSpace(request.TagName))
+                        queries.Add(new InternalItemsQuery { Tags = new[] { request.TagName.Trim() }, IncludeItemTypes = new[] { "Movie", "Series" }, Recursive = true, IsVirtualItem = false, Limit = 12 });
+                    queries.Add(new InternalItemsQuery { IncludeItemTypes = new[] { "Movie" }, Recursive = true, IsVirtualItem = false, Limit = 40 });
+                    foreach (var q in queries)
+                    {
+                        if (posters.Count >= 3) break;
+                        var items = _libraryManager.GetItemList(q).Where(i => !TopListCollectionMirror.IsTopListItem(i)).ToList();
+                        foreach (var p in ArtPosterPaths(items, _httpClient, tempDir))
+                            if (p != null && !posters.Contains(p) && posters.Count < 3) posters.Add(p);
+                    }
+                    for (int i = 0; posters.Count < 3; i++)
+                    {
+                        var path = Path.Combine(dir, $"stand-in-{i}.jpg");
+                        if (!File.Exists(path)) CollectionArtRenderer.DrawStandInPoster(i, path);
+                        posters.Add(path);
+                    }
+                    var image = BadgeRenderer.Preview(BadgeLook.Combine(request.BadgeStyle, request.Options), posters, null, tempDir);
+                    return new ArtCustomPreviewResponse { Success = true, Image = image };
+                }
+                finally { try { Directory.Delete(tempDir, true); } catch { } }
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn($"Badge preview failed: {ex.Message}");
                 return new ArtCustomPreviewResponse { Message = "Preview failed: " + ex.Message };
             }
         }
@@ -1884,6 +1964,9 @@ public class HomeScreenCompanionService : IService
                 // Second pass: write .strm, .nfo and ranked poster
                 int digits = Math.Max(2, selected.Count.ToString().Length);
                 int count = 0;
+                var look = BadgeLook.Combine(request.BadgeStyle, request.BadgeOptions);
+                var rankExtras = TopListHistory.Update(request.TagName, selected.Select(x => x.Item).ToList(), look,
+                    _jsonSerializer, _libraryManager, _userManager, _userDataManager, m => _logger.Warn(m));
                 var tempDir = Path.Combine(Path.GetTempPath(), "hsc_toplist_" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(tempDir);
                 try
@@ -1894,7 +1977,7 @@ public class HomeScreenCompanionService : IService
                     var sortPrefix = count.ToString().PadLeft(digits, '0');
                     var fileName = entry.BaseName;
                     File.WriteAllText(Path.Combine(folderPath, fileName + ".nfo"), BuildTopListNfo(entry.Item, sortPrefix));
-                    WriteRankedImages(entry.Item, count, Path.Combine(folderPath, fileName), request.BadgeStyle, tempDir);
+                    WriteRankedImages(entry.Item, count, Path.Combine(folderPath, fileName), look, tempDir, rankExtras.TryGetValue(entry.Item.Id, out var rx) ? rx : null);
                     // .strm last: the folder is a watched library, and Emby creates the item the
                     // moment it sees the .strm — the nfo and badged images must already be there.
                     File.WriteAllText(Path.Combine(folderPath, fileName + ".strm"), entry.FilePath);
@@ -2295,6 +2378,9 @@ public class HomeScreenCompanionService : IService
 
                 int digits = Math.Max(2, selected.Count.ToString().Length);
                 int count  = 0;
+                var look = BadgeLook.Combine(request.BadgeStyle, request.BadgeOptions);
+                var rankExtras = TopListHistory.Update(request.ListName, selected.Select(x => x.Item).ToList(), look,
+                    _jsonSerializer, _libraryManager, _userManager, _userDataManager, m => _logger.Warn(m));
                 var tempDir2 = Path.Combine(Path.GetTempPath(), "hsc_toplist_" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(tempDir2);
                 try
@@ -2304,7 +2390,7 @@ public class HomeScreenCompanionService : IService
                     count++;
                     var sortPrefix = count.ToString().PadLeft(digits, '0');
                     File.WriteAllText(Path.Combine(folderPath, entry.BaseName + ".nfo"), BuildTopListNfo(entry.Item, sortPrefix));
-                    WriteRankedImages(entry.Item, count, Path.Combine(folderPath, entry.BaseName), request.BadgeStyle, tempDir2);
+                    WriteRankedImages(entry.Item, count, Path.Combine(folderPath, entry.BaseName), look, tempDir2, rankExtras.TryGetValue(entry.Item.Id, out var rx) ? rx : null);
                     // .strm last — see PrepareTopListFolderRequest handler.
                     File.WriteAllText(Path.Combine(folderPath, entry.BaseName + ".strm"), entry.FilePath);
                 }
@@ -2401,49 +2487,21 @@ public class HomeScreenCompanionService : IService
         }
 
         // Renders <outputBase>.jpg and <outputBase>-thumb.jpg for a top-list entry, badged with
-        // its rank. Fetches (and if needed refreshes) the source images first.
+        // its rank. Fetches (and if needed refreshes) the source images first. badgeStyle is the
+        // list's look: its BadgeStyle, or "BadgeStyle|BadgeOptions" when it is customised.
         internal static void WriteRankedImages(
             BaseItem item, int rank, string outputBase, string badgeStyle, string tempDir,
             IHttpClient httpClient, IProviderManager providerManager, ILibraryManager libraryManager,
-            IFileSystem fileSystem, Action<string>? log = null)
+            IFileSystem fileSystem, Action<string>? log = null, RankExtras? extras = null)
         {
             var (poster, thumb) = FetchImageSources(item, httpClient, tempDir, providerManager, libraryManager, fileSystem, log);
-
-            // "top10": Netflix-style art composed from the poster — a portrait version for the
-            // Primary image and a landscape tile for the Thumb, so the row works with either image
-            // type. The big numeral only has room for ranks 1-10; later ranks get the circle badge.
-            if (string.Equals(badgeStyle, "top10", StringComparison.OrdinalIgnoreCase))
-            {
-                bool tile = poster != null && rank <= 10;
-
-                if (tile)
-                    try { TopTenTileRenderer.RenderPoster(poster!, rank, outputBase + ".jpg"); }
-                    catch (Exception ex) { log?.Invoke($"Top-list: top 10 poster failed for '{item.Name}' — {ex.Message}"); }
-                else if (poster != null)
-                    try { CreateRankedPoster(poster, rank, outputBase + ".jpg", "neutral"); }
-                    catch (Exception ex) { log?.Invoke($"Top-list: poster badge failed for '{item.Name}' — {ex.Message}"); }
-
-                if (tile)
-                    try { TopTenTileRenderer.Render(poster!, rank, outputBase + "-thumb.jpg"); }
-                    catch (Exception ex) { log?.Invoke($"Top-list: top 10 tile failed for '{item.Name}' — {ex.Message}"); }
-                else if (thumb != null)
-                    try { CreateRankedPoster(thumb, rank, outputBase + "-thumb.jpg", "neutral"); }
-                    catch (Exception ex) { log?.Invoke($"Top-list: thumb badge failed for '{item.Name}' — {ex.Message}"); }
-                return;
-            }
-
-            if (poster != null)
-                try { CreateRankedPoster(poster, rank, outputBase + ".jpg", badgeStyle); }
-                catch (Exception ex) { log?.Invoke($"Top-list: poster badge failed for '{item.Name}' — {ex.Message}"); }
-
-            if (thumb != null)
-                try { CreateRankedPoster(thumb, rank, outputBase + "-thumb.jpg", badgeStyle); }
-                catch (Exception ex) { log?.Invoke($"Top-list: thumb badge failed for '{item.Name}' — {ex.Message}"); }
+            BadgeRenderer.RenderRanked(poster, thumb, rank, outputBase, badgeStyle, extras,
+                (what, ex) => log?.Invoke($"Top-list: {what} failed for '{item.Name}' — {ex.Message}"));
         }
 
-        private void WriteRankedImages(BaseItem item, int rank, string outputBase, string badgeStyle, string tempDir)
+        private void WriteRankedImages(BaseItem item, int rank, string outputBase, string badgeStyle, string tempDir, RankExtras? extras = null)
             => WriteRankedImages(item, rank, outputBase, badgeStyle, tempDir,
-                _httpClient, _providerManager, _libraryManager, _fileSystem, m => _logger.Info(m));
+                _httpClient, _providerManager, _libraryManager, _fileSystem, m => _logger.Info(m), extras);
 
         // Produces the local source files a top-list entry's ranked poster/thumb are rendered
         // from. Returned paths are files that exist on disk (or null when nothing is available).
@@ -2574,92 +2632,7 @@ public class HomeScreenCompanionService : IService
         }
 
         internal static void CreateRankedPoster(string sourcePath, int rank, string outputPath, string badgeStyle = "neutral")
-        {
-            // "none" means no rank badge at all: the source image is copied as-is so the rest of
-            // the pipeline (ApplyRankedImages, DateModified refresh) still finds a file on disk.
-            if (string.Equals(badgeStyle, "none", StringComparison.OrdinalIgnoreCase))
-            {
-                File.Copy(sourcePath, outputPath, overwrite: true);
-                return;
-            }
-
-            using var original = SKBitmap.Decode(sourcePath);
-            if (original == null)
-                throw new InvalidOperationException($"SkiaSharp could not decode '{sourcePath}' (unsupported format or corrupt file)");
-
-            using var surface = SKSurface.Create(new SKImageInfo(original.Width, original.Height))
-                ?? throw new InvalidOperationException($"SkiaSharp could not create a {original.Width}x{original.Height} surface");
-            var canvas = surface.Canvas;
-            canvas.DrawBitmap(original, 0, 0);
-
-            float shortSide = Math.Min(original.Width, original.Height);
-            float radius = shortSide * 0.15f;
-            float margin = shortSide * 0.04f;
-            float cx = margin + radius;
-            float cy = margin + radius;
-
-            SKColor bgColor;
-            SKColor textColor;
-            switch (badgeStyle?.ToLowerInvariant())
-            {
-                case "slate-grey":
-                    bgColor   = new SKColor(0x41, 0x41, 0x4B, 224);
-                    textColor = SKColors.White;
-                    break;
-                case "emby-green":
-                    bgColor   = new SKColor(0x52, 0xB5, 0x4B, 200);
-                    textColor = SKColors.White;
-                    break;
-                case "ocean-blue":
-                    bgColor   = new SKColor(0x2E, 0x86, 0xC1, 210);
-                    textColor = SKColors.White;
-                    break;
-                case "soft-red":
-                    bgColor   = new SKColor(0xC9, 0x45, 0x45, 210);
-                    textColor = SKColors.White;
-                    break;
-                case "violet":
-                    bgColor   = new SKColor(0x7B, 0x52, 0xB5, 210);
-                    textColor = SKColors.White;
-                    break;
-                default:
-                    bgColor   = new SKColor(0, 0, 0, 210);
-                    textColor = SKColors.White;
-                    break;
-            }
-
-            using var bgPaint = new SKPaint { Color = bgColor, IsAntialias = true };
-            canvas.DrawCircle(cx, cy, radius, bgPaint);
-
-            var text = rank.ToString();
-            float fontSize = radius * 1.1f;
-
-            using var fontStream = System.Reflection.Assembly.GetExecutingAssembly()
-                .GetManifestResourceStream("HomeScreenCompanion.LemonMilk.otf");
-            using var typeface = fontStream != null ? SKTypeface.FromStream(fontStream) : SKTypeface.Default;
-            using var textPaint = new SKPaint
-            {
-                Color = textColor,
-                TextSize = fontSize,
-                IsAntialias = true,
-                Typeface = typeface
-            };
-
-            float maxTextWidth = radius * 1.6f;
-            while (textPaint.MeasureText(text) > maxTextWidth && textPaint.TextSize > 1f)
-                textPaint.TextSize -= 1f;
-
-            float textWidth = textPaint.MeasureText(text);
-            var metrics = textPaint.FontMetrics;
-            float textX = cx - textWidth / 2;
-            float textY = cy - (metrics.Ascent + metrics.Descent) / 2;
-            canvas.DrawText(text, textX, textY, textPaint);
-
-            using var image = surface.Snapshot();
-            using var data = image.Encode(SKEncodedImageFormat.Jpeg, 92);
-            using var stream = File.Create(outputPath);
-            data.SaveTo(stream);
-        }
+            => BadgeRenderer.CreateRankedPoster(sourcePath, rank, outputPath, badgeStyle);
 
         public object Get(GetTopListsRequest request)
         {
@@ -2725,6 +2698,7 @@ public class HomeScreenCompanionService : IService
                 var imageType   = "";
                 var cardSize    = "0";
                 var badgeStyle  = "neutral";
+                var badgeOptions = "";
                 var userIds     = new List<string>();
                 if (tlConfig != null)
                 {
@@ -2736,6 +2710,7 @@ public class HomeScreenCompanionService : IService
                         imageType   = settings.TryGetValue("ImageType",   out var it) ? it  : "";
                         cardSize    = settings.TryGetValue("CardSizeOffset", out var cs) && !string.IsNullOrEmpty(cs) ? cs : "0";
                         badgeStyle  = settings.TryGetValue("BadgeStyle",  out var bs) ? bs  : "neutral";
+                        badgeOptions = settings.TryGetValue("BadgeOptions", out var bo) ? bo ?? "" : "";
                     }
                     catch { }
                     userIds = tlConfig.HomeSectionUserIds ?? new List<string>();
@@ -2752,6 +2727,7 @@ public class HomeScreenCompanionService : IService
                     ImageType   = imageType,
                     CardSizeOffset = cardSize,
                     BadgeStyle  = badgeStyle,
+                    BadgeOptions = badgeOptions,
                     UserIds     = userIds
                 };
             }
@@ -2817,6 +2793,7 @@ public class HomeScreenCompanionService : IService
                 if (request.CardSizeOffset.HasValue)
                     settings["CardSizeOffset"] = Math.Max(-3, Math.Min(3, request.CardSizeOffset.Value)).ToString(System.Globalization.CultureInfo.InvariantCulture);
                 settings["BadgeStyle"] = string.IsNullOrWhiteSpace(request.BadgeStyle) ? "top10" : request.BadgeStyle.Trim();
+                settings["BadgeOptions"] = (request.BadgeOptions ?? "").Trim();
                 tl.HomeSectionSettings = _jsonSerializer.SerializeToString(settings);
 
                 var log = NewShowTopList().Apply(config, tl, series);
@@ -2860,6 +2837,7 @@ public class HomeScreenCompanionService : IService
                 ImageType   = settings.TryGetValue("ImageType", out var it) ? it : "",
                 CardSizeOffset = settings.TryGetValue("CardSizeOffset", out var cs) && !string.IsNullOrEmpty(cs) ? cs : "0",
                 BadgeStyle  = settings.TryGetValue("BadgeStyle", out var bs) && !string.IsNullOrWhiteSpace(bs) ? bs : "top10",
+                BadgeOptions = settings.TryGetValue("BadgeOptions", out var bo) ? bo ?? "" : "",
                 UserIds     = tl.HomeSectionUserIds ?? new List<string>()
             };
         }
@@ -3435,6 +3413,7 @@ public class HomeScreenCompanionService : IService
                         try { settings = _jsonSerializer.DeserializeFromString<Dictionary<string, string>>(tl.HomeSectionSettings) ?? settings; }
                         catch { }
                         var badgeStyle = settings.TryGetValue("BadgeStyle", out var bs) && !string.IsNullOrEmpty(bs) ? bs : "neutral";
+                        var badgeOptions = settings.TryGetValue("BadgeOptions", out var bo) ? bo ?? "" : "";
                         var folderPath = Path.Combine(dataPath, "toplists", SanitizeFolderName(tl.TagName));
 
                         // Rebuild the folder so the library (existing or about to be created) has content.
@@ -3449,7 +3428,7 @@ public class HomeScreenCompanionService : IService
                                     .ToList();
                                 if (items.Count > 0)
                                 {
-                                    var r = Post(new PrepareManualTopListFolderRequest { ListName = tl.TagName, BadgeStyle = badgeStyle, Items = items }) as PrepareTopListFolderResponse;
+                                    var r = Post(new PrepareManualTopListFolderRequest { ListName = tl.TagName, BadgeStyle = badgeStyle, BadgeOptions = badgeOptions, Items = items }) as PrepareTopListFolderResponse;
                                     if (r == null || !r.Success)
                                         response.Warnings.Add($"Top-list '{tl.TagName}': files could not be rebuilt ({r?.Message ?? "unknown error"}).");
                                     else if (r.FilesCreated < items.Count)
@@ -3463,7 +3442,7 @@ public class HomeScreenCompanionService : IService
                             }
                             else
                             {
-                                var r = Post(new PrepareTopListFolderRequest { TagName = tl.TagName, MaxItems = tl.MaxItems, BadgeStyle = badgeStyle }) as PrepareTopListFolderResponse;
+                                var r = Post(new PrepareTopListFolderRequest { TagName = tl.TagName, MaxItems = tl.MaxItems, BadgeStyle = badgeStyle, BadgeOptions = badgeOptions }) as PrepareTopListFolderResponse;
                                 if (r == null || !r.Success)
                                     response.Warnings.Add($"Top-list '{tl.TagName}': files could not be rebuilt ({r?.Message ?? "unknown error"}).");
                             }
@@ -3485,6 +3464,7 @@ public class HomeScreenCompanionService : IService
                                 ImageType   = settings.TryGetValue("ImageType", out var it) ? it : "",
                                 CardSizeOffset = settings.TryGetValue("CardSizeOffset", out var cs) && !string.IsNullOrEmpty(cs) ? cs : "0",
                                 BadgeStyle  = badgeStyle,
+                                BadgeOptions = badgeOptions,
                                 MaxItems    = tl.MaxItems,
                                 UserIds     = tl.HomeSectionUserIds.ToList(),
                                 FolderPath  = folderPath
@@ -4225,6 +4205,7 @@ public class HomeScreenCompanionService : IService
             file.ImageType   = Setting("ImageType");
             file.CardSizeOffset = Setting("CardSizeOffset").Length > 0 ? Setting("CardSizeOffset") : "0";
             file.BadgeStyle  = Setting("BadgeStyle");
+            file.BadgeOptions = Setting("BadgeOptions");
             file.MaxItems    = tl.MaxItems;
             file.UserIds     = (tl.HomeSectionUserIds ?? new List<string>()).Where(u => !string.IsNullOrWhiteSpace(u)).ToList();
 
@@ -4296,6 +4277,7 @@ public class HomeScreenCompanionService : IService
                 response.ImageType   = file.ImageType ?? "";
                 response.CardSizeOffset = string.IsNullOrWhiteSpace(file.CardSizeOffset) ? "0" : file.CardSizeOffset;
                 response.BadgeStyle  = file.BadgeStyle ?? "";
+                response.BadgeOptions = file.BadgeOptions ?? "";
                 response.MaxItems    = Math.Max(0, file.MaxItems);
 
                 // Users: by name, case-insensitive (as for sources).
