@@ -1235,7 +1235,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         '<div class="artc-section">Layout</div>' +
                         field('Tilt', seg('tilt', [['straight', 'Straight'], ['left', 'Left'], ['right', 'Right']]), 'tilt') +
                         field('Rows', segCustom('rows', [[0, 'Auto'], [2, '2'], [3, '3'], [4, '4'], [5, '5']]), 'rows') +
-                        field('Posters', segCustom('posters', [[0, 'Auto' + (autoPosters ? ' (' + autoPosters + ')' : '')], [4, '4'], [6, '6'], [9, '9'], [12, '12'], [16, '16'], [20, '20']]), 'posters') +
+                        field('Posters', segCustom('posters', [[0, postersAutoLabel()], [4, '4'], [6, '6'], [9, '9'], [12, '12'], [16, '16'], [20, '20']]), 'posters') +
                         '<div class="artc-section">Title</div>' +
                         field('Show title', seg('title', [[true, 'On'], [false, 'Off']]), 'title') +
                         field('Font', fonts, 'font', titleOff) +
@@ -1251,6 +1251,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 refreshPreview();
             }
             function set(f, v) { state[f] = v; render(); }
+            // The style's own count on Auto; with Rows set the rows fill the width, so no number.
+            function postersAutoLabel() { return 'Auto' + (autoPosters && !state.rows ? ' (' + autoPosters + ')' : ''); }
             function wire() {
                 body.querySelectorAll('.artc-seg').forEach(function (g) {
                     g.querySelectorAll('.artc-segbtn').forEach(function (b) {
@@ -1270,6 +1272,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         g.querySelectorAll('.artc-segbtn').forEach(function (b) { b.classList.toggle('artc-on', String(b.dataset.value) === String(n)); });
                         inp.classList.toggle('artc-on', !g.querySelector('.artc-segbtn.artc-on'));
                         if (f === 'posters') updatePostersHint();
+                        if (f === 'rows') { var a = body.querySelector('.artc-seg[data-field="posters"] .artc-segbtn[data-value="0"]'); if (a) a.textContent = postersAutoLabel(); }
                         refreshPreview();
                     });
                 });
