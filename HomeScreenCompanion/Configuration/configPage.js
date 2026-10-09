@@ -6267,6 +6267,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     function isBadgePreset(v) { return BADGE_PRESETS.some(function (p) { return p.val === v; }); }
     function badgeKindOf(style) { return style === 'top10' ? 'top10' : style === 'none' ? 'none' : 'badge'; }
 
+    var _badgePickerSeq = 0;
     function buildBadgePickerHtml(selectedVal, optionsJson) {
         var sel = selectedVal || 'neutral';
         var kind = badgeKindOf(sel);
@@ -6282,6 +6283,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             { k: 'top10', label: 'Top 10 tile', art: '<div style="width:82px;height:46px;border-radius:4px;background:#141414;display:flex;align-items:flex-end;justify-content:center;gap:2px;overflow:hidden;"><span style="font-size:44px;line-height:40px;font-weight:900;color:#141414;-webkit-text-stroke:1.5px #9696a0;font-family:Impact,sans-serif;">7</span><span style="width:24px;height:36px;margin-bottom:5px;border-radius:2px;background:linear-gradient(160deg,#6b7a8f,#2c3440);"></span></div>' },
             { k: 'none', label: 'No number', art: '<div style="width:46px;height:46px;border-radius:4px;background:linear-gradient(160deg,#6b7a8f,#2c3440);"></div>' }
         ];
+        // Each picker gets its own radio group: with one shared name, opening a second top-list
+        // card (or the create popup) unticked the first card's choice, so its Save lit up.
+        var radioName = 'tlBadgeStyle_' + (++_badgePickerSeq);
         return '<div class="tl-badge-picker" style="margin-bottom:16px;">' +
             '<span style="font-size:0.82em;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;opacity:0.65;display:block;margin-bottom:8px;">Badge Style</span>' +
             '<input type="hidden" class="tl-badge-preset" value="' + esc(preset) + '">' +
@@ -6290,7 +6294,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             opts.map(function (o) {
                 var active = o.k === kind;
                 return '<label class="tl-badge-opt" data-kind="' + o.k + '" style="' + cardBase + (active ? on : off) + '">' +
-                    '<input type="radio" name="tlBadgeStyle" value="' + o.k + '" style="position:absolute;opacity:0;pointer-events:none;"' + (active ? ' checked' : '') + '>' +
+                    '<input type="radio" name="' + radioName + '" value="' + o.k + '" style="position:absolute;opacity:0;pointer-events:none;"' + (active ? ' checked' : '') + '>' +
                     o.art + '<span style="font-size:0.78em;opacity:0.8;white-space:nowrap;">' + o.label + '</span></label>';
             }).join('') +
             '</div>' +
@@ -6315,7 +6319,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var btn = picker.querySelector('.btnBadgeCustomise');
             if (!btn) return;
             function sync() {
-                var checked = picker.querySelector('input[name="tlBadgeStyle"]:checked');
+                var checked = picker.querySelector('input[name^="tlBadgeStyle"]:checked');
                 setCustomiseEnabled(btn, !!checked && checked.value !== 'none', BADGE_NOTHING_TIP);
                 // "Customised" only for the type the options were made for.
                 var note = picker.querySelector('.tl-badge-custom-note'), optsIn = picker.querySelector('.tl-badge-opts');
@@ -6325,7 +6329,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             sync();
             btn.addEventListener('click', function (e) {
                 e.preventDefault(); e.stopPropagation();
-                var checked = picker.querySelector('input[name="tlBadgeStyle"]:checked');
+                var checked = picker.querySelector('input[name^="tlBadgeStyle"]:checked');
                 if (!checked || checked.value === 'none') return;
                 openBadgeCustomise(picker, checked.value, container, null);
             });
@@ -6333,7 +6337,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     }
 
     function readBadgeStyle(container) {
-        var checked = container.querySelector('input[name="tlBadgeStyle"]:checked');
+        var checked = container.querySelector('input[name^="tlBadgeStyle"]:checked');
         var kind = checked ? checked.value : 'badge';
         if (kind === 'top10' || kind === 'none') return kind;
         var preset = container.querySelector('.tl-badge-preset');
@@ -6341,7 +6345,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     }
 
     function readBadgeOptions(container) {
-        var checked = container.querySelector('input[name="tlBadgeStyle"]:checked');
+        var checked = container.querySelector('input[name^="tlBadgeStyle"]:checked');
         if (checked && checked.value === 'none') return '';
         var input = container.querySelector('.tl-badge-opts');
         if (!input) return '';
