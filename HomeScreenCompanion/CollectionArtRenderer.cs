@@ -34,7 +34,15 @@ namespace HomeScreenCompanion
         {
             var st = (style ?? "").Trim().ToLowerInvariant();
             if (opts?.Posters != null && st != Ranked) return opts.Posters.Value;
-            switch ((style ?? "").Trim().ToLowerInvariant())
+            // Rows chosen but no count: the style's own count rounded up to full rows.
+            if (opts?.Rows != null)
+            {
+                int r = opts.Rows.Value;
+                if (st == Fan) return FullRowsCount(background ? 7 : 5, r);
+                if (st == HeroStrip || (st == Spotlight && !background)) return 1 + FullRowsCount(background && st == HeroStrip ? 6 : 5, r);
+                if (st == Spotlight) return 1 + FullRowsCount(4, r);
+            }
+            switch (st)
             {
                 case Collage: return background ? 40 : 9;
                 case Wall: return 20;
@@ -44,6 +52,47 @@ namespace HomeScreenCompanion
                 case Spotlight: return background ? 5 : 6;
                 default: return background ? 14 : 12;
             }
+        }
+
+        // The smallest multiple of rows that is at least count (5 cards on 2 rows -> 6).
+        private static int FullRowsCount(int count, int rows) => rows <= 1 ? count : rows * (int)Math.Ceiling(count / (double)rows);
+
+        // How many of the available cards to use: the asked count when Posters is set (laid out
+        // as evenly as possible), else the wanted count trimmed to full rows.
+        private static int CardsToUse(int available, int wanted, int rows, bool exact)
+        {
+            int n = Math.Min(available, wanted);
+            if (!exact && rows > 1 && n >= rows) n -= n % rows;
+            return Math.Max(0, n);
+        }
+
+        // count cards over rows as evenly as possible, the fuller rows first (10 on 3 -> 4/3/3).
+        private static int[] EvenRows(int count, int rows)
+        {
+            rows = Math.Max(1, Math.Min(rows, Math.Max(1, count)));
+            var a = new int[rows];
+            for (int i = 0; i < rows; i++) a[i] = count / rows + (i < count % rows ? 1 : 0);
+            return a;
+        }
+
+        // Rows for a strip of n cards when Posters is set but Rows is auto: one row up to perRow.
+        private static int AutoStripRows(int n, int perRow) => Math.Max(1, (int)Math.Ceiling(n / (double)perRow));
+
+        // Turns what draw() paints by deg about (cx, cy), shrunk so a bw x bh block still fits
+        // inside a fw x fh box (no shrinking when deg is 0, nothing is turned then).
+        private static void Tilted(SKCanvas c, float deg, float cx, float cy, float bw, float bh, float fw, float fh, Action draw)
+        {
+            if (deg == 0) { draw(); return; }
+            double rad = Math.Abs(deg) * Math.PI / 180;
+            float rw = (float)(bw * Math.Cos(rad) + bh * Math.Sin(rad)), rh = (float)(bw * Math.Sin(rad) + bh * Math.Cos(rad));
+            float k = Math.Min(1f, Math.Min(fw / rw, fh / rh));
+            c.Save();
+            c.Translate(cx, cy);
+            c.RotateDegrees(deg);
+            c.Scale(k);
+            c.Translate(-cx, -cy);
+            draw();
+            c.Restore();
         }
 
         public const int PosterW = 1000, PosterH = 1500;
@@ -123,7 +172,8 @@ namespace HomeScreenCompanion
         public static string Preview(string style, bool background, ArtOptions opts, string title, string tempDir)
         {
             Directory.CreateDirectory(tempDir);
-            int count = opts.Posters != null ? Math.Max(1, PostersFor(style, background, opts)) : 12;
+            int count = opts.Posters != null ? Math.Max(1, PostersFor(style, background, opts))
+                      : opts.Rows != null ? Math.Max(12, PostersFor(style, background, opts)) : 12;
             var posters = new List<string>();
             for (int i = 0; i < count; i++)
             {
@@ -149,7 +199,8 @@ namespace HomeScreenCompanion
         }
 
         /// <summary>What every Customise field is for <paramref name="style"/> when nothing is set
-        /// (today's look), with a short note for each field the style ignores.</summary>
+        /// (today's look), with a short note for each field the style ignores. Tilt, Rows and Posters
+        /// work on every style (Ranked keeps its top 4 / 5, so only its tilt applies).</summary>
         public static ArtOptionDefaults Defaults(string style, bool background)
         {
             var st = (style ?? "").Trim().ToLowerInvariant();
@@ -165,8 +216,7 @@ namespace HomeScreenCompanion
             d.Pos = st == Wall ? "mc" : look == HeroStrip ? (background ? "tl" : "bc") : look == Spotlight ? "ml"
                   : st == Ranked ? (background ? "tl" : "tc") : "bc";
             d.Darken = st == Grid ? 72 : st == Fan ? 55 : st == Wall ? 35 : look == HeroStrip ? (background ? 35 : 25) : 0;
-            if (st != Wall && st != Collage && st != Grid) d.Hints["tilt"] = "Tilt is used by Wall, Grid and Collage only.";
-            if (st != Wall && st != Collage && st != Grid) d.Hints["rows"] = "Rows are used by Wall, Grid and Collage only.";
+            if (st == Ranked) d.Hints["rows"] = "Ranked keeps its own layout of the top " + (background ? 5 : 4) + ".";
             if (st == Ranked) d.Hints["posters"] = "Ranked always shows the top " + (background ? 5 : 4) + ".";
             if (st == Ranked) d.Hints["darken"] = "Ranked has a plain dark background.";
             if (st == Wall) d.Hints["pos"] = "The centre spot keeps the gold title band; any other spot puts the title over the wall.";
@@ -259,7 +309,7 @@ namespace HomeScreenCompanion
             int titleGap = hasTitle ? (background ? 30 : 40) : 0;
             var region = SKRect.Create(m, m, w - 2 * m, h - 2 * m - titleH - titleGap);
             var g = BestGrid(posters.Count, (int)region.Width, (int)region.Height, 22, x.O.Posters ?? (background ? 14 : 12),
-                             x.O.Rows ?? (background ? 2 : (int?)null), x.O.Rows);
+                             x.O.Rows ?? (background ? 2 : (int?)null), x.O.Rows, x.O.Posters != null);
 
             float radius = RadiusFor(g.CardW);
             var cells = g.Cells(region);
@@ -362,7 +412,24 @@ namespace HomeScreenCompanion
         private static void DrawCollage(SKCanvas c, List<SKBitmap> posters, string title, int w, int h, Ctx x)
         {
             int n = posters.Count, rows, cols;
-            if (x.O.Rows != null)
+            int[]? rowCounts = null;
+            if (x.O.Posters != null)
+            {
+                // Customise "Posters": each poster once, rows of even length spanning the width
+                // (12 on 3 rows = 4/4/4; 10 on 3 = 4/3/3). Rows auto: the rows whose cells come
+                // closest to a poster's shape.
+                int best = 1; double bestErr = double.MaxValue;
+                for (int r = 1; r <= Math.Min(n, 8); r++)
+                {
+                    if (x.O.Rows != null && r != Math.Min(n, x.O.Rows.Value)) continue;
+                    int c0 = (int)Math.Ceiling(n / (double)r);
+                    double err = Math.Abs(Math.Log((h / (double)r) / (w / (double)c0) / PosterRatio));
+                    if (err < bestErr - 1e-9) { bestErr = err; best = r; }
+                }
+                rowCounts = EvenRows(n, best);
+                rows = rowCounts.Length; cols = rowCounts[0];
+            }
+            else if (x.O.Rows != null)
             {
                 rows = x.O.Rows.Value;
                 cols = Math.Max(1, (int)Math.Round(w / (h / (double)rows / PosterRatio)));
@@ -385,6 +452,21 @@ namespace HomeScreenCompanion
                 c.Scale(k);
                 c.Translate(-w / 2f, -h / 2f);
             }
+            if (rowCounts != null)
+            {
+                int i0 = 0;
+                for (int r = 0; r < rowCounts.Length; r++)
+                {
+                    float y0 = (float)Math.Round(r * h / (double)rowCounts.Length), y1 = (float)Math.Round((r + 1) * h / (double)rowCounts.Length);
+                    for (int col = 0; col < rowCounts[r]; col++, i0++)
+                    {
+                        float x0 = (float)Math.Round(col * w / (double)rowCounts[r]), x1 = (float)Math.Round((col + 1) * w / (double)rowCounts[r]);
+                        var p = posters[i0];
+                        c.DrawBitmap(p, CoverSource(p.Width, p.Height, (int)(x1 - x0), (int)(y1 - y0)), new SKRect(x0, y0, x1, y1), paint);
+                    }
+                }
+            }
+            else
             for (int i = 0; i < rows * cols; i++)
             {
                 int pick = i;
@@ -445,25 +527,62 @@ namespace HomeScreenCompanion
             float s = MockScale(background, w);
             MockBackdrop(c, posters.Count > 3 ? posters[3] : posters[0], w, h, 34 * s, x.Dark(0.55f));
             int defN = background ? 7 : 5;
-            int n = Math.Min(posters.Count, x.O.Posters != null ? Math.Min(x.O.Posters.Value, 11) : defN);
-            float cw = (background ? 230 : 260) * s, ch = cw * PosterRatio;
-            if (n > defN) { cw *= (defN + 1) / (float)(n + 1); ch = cw * PosterRatio; }
-            float cy = (background ? 330 : 440) * (h / (background ? 720f : 1000f));
             float spread = background ? 7 : 9;
-            float mid = (n - 1) / 2f;
-            foreach (int i in Enumerable.Range(0, n).OrderByDescending(i => Math.Abs(i - mid)))
+            float cy = (background ? 330 : 440) * (h / (background ? 720f : 1000f));
+            float titleY = (background ? 590 : 800) * (h / (background ? 720f : 1000f));
+            float fanTilt = x.Tilt(-8, 0);
+            // One fan of cards (the middle one on top) centred on (fx, fy).
+            void FanRow(List<SKBitmap> cards, float fx, float fy, float cw, float ch)
             {
-                float k = i - mid;
-                c.Save();
-                c.Translate(w / 2f + k * cw * 0.55f, cy + (float)Math.Pow(Math.Abs(k), 1.6) * cw * 0.09f);
-                c.RotateDegrees(k * spread);
-                DrawCard(c, posters[i], SKRect.Create(-cw / 2, -ch / 2, cw, ch), 14 * s, 16 * s, 12 * s, 170);
-                c.Restore();
+                int cnt = cards.Count;
+                float mid = (cnt - 1) / 2f;
+                // More cards than the style's own: the same overall bend, so the ends stay in view.
+                float bend = cnt > defN ? (defN - 1) / (float)(cnt - 1) : 1f;
+                foreach (int i in Enumerable.Range(0, cnt).OrderByDescending(i => Math.Abs(i - mid)))
+                {
+                    float k = i - mid, kb = bend == 1f ? k : k * bend;
+                    c.Save();
+                    c.Translate(fx + k * cw * 0.55f, fy + (float)Math.Pow(Math.Abs(kb), 1.6) * (bend == 1f ? cw : cw / bend) * 0.09f);
+                    c.RotateDegrees(kb * spread);
+                    DrawCard(c, cards[i], SKRect.Create(-cw / 2, -ch / 2, cw, ch), 14 * s, 16 * s, 12 * s, 170);
+                    c.Restore();
+                }
+            }
+            if (x.O.Rows == null || x.O.Rows <= 1)
+            {
+                int n = Math.Min(posters.Count, x.O.Posters != null ? Math.Min(x.O.Posters.Value, 20) : defN);
+                float cw = (background ? 230 : 260) * s, ch = cw * PosterRatio;
+                if (n > defN) { cw *= (defN + 1) / (float)(n + 1); ch = cw * PosterRatio; }
+                if (fanTilt != 0) { c.Save(); c.RotateDegrees(fanTilt, w / 2f, cy); }
+                FanRow(posters.Take(n).ToList(), w / 2f, cy, cw, ch);
+                if (fanTilt != 0) c.Restore();
+            }
+            else
+            {
+                // Customise "Rows": that many smaller fans stacked above the title, the cards
+                // spread evenly over them (full rows unless Posters is set).
+                int rows = x.O.Rows.Value;
+                int n = CardsToUse(posters.Count, x.O.Posters ?? FullRowsCount(defN, rows), rows, x.O.Posters != null);
+                var counts = EvenRows(n, rows);
+                float top = 24 * s, bottom = titleY - 16 * s, band = (bottom - top) / counts.Length;
+                int most = counts.Max();
+                float cwByH = band * (background ? 1.1f : 0.82f) / PosterRatio, cwByW = w * 0.9f / (1 + 0.55f * (most - 1));
+                float cw = Math.Min(cwByH, cwByW), ch = cw * PosterRatio;
+                if (fanTilt != 0) { c.Save(); c.RotateDegrees(fanTilt, w / 2f, (top + bottom) / 2); }
+                int at = 0;
+                for (int r = 0; r < counts.Length; r++)
+                {
+                    float bendR = counts[r] > defN ? (defN - 1) / (float)(counts[r] - 1) : 1f;
+                    float arc = (float)Math.Pow((counts[r] - 1) / 2f * bendR, 1.6) * cw / bendR * 0.09f;
+                    FanRow(posters.Skip(at).Take(counts[r]).ToList(), w / 2f, top + band * (r + 0.5f) - arc / 2, cw, ch);
+                    at += counts[r];
+                }
+                if (fanTilt != 0) c.Restore();
             }
             if (string.IsNullOrWhiteSpace(title)) return;
             var face = x.Face(Display.Value);
             var (lines, size) = MockLines(title, face, w - 80 * s, (background ? 96 : 110) * s * x.Scale, x.Upper(true));
-            float y = (background ? 590 : 800) * (h / (background ? 720f : 1000f));
+            float y = titleY;
             foreach (var line in lines)
             {
                 MockText(c, line, w / 2f, y, face, size, x.Colour(SKColors.White), SKTextAlign.Center, 2 * s);
@@ -482,6 +601,20 @@ namespace HomeScreenCompanion
             {
                 ch = h / (float)x.O.Rows.Value - gap;
                 cw = ch / PosterRatio;
+                if (x.O.Posters != null)
+                {
+                    // Both set: the rows keep their height and the cards narrow (cover-cropped, down
+                    // to a little under half a poster's width) so about that many posters fit across.
+                    int perRow = (int)Math.Ceiling(posters.Count / (double)x.O.Rows.Value);
+                    cw = Math.Max(cw * 0.45f, Math.Min(cw, w / (float)Math.Max(1, perRow) - gap));
+                }
+            }
+            else if (x.O.Posters != null)
+            {
+                // Customise "Posters": cards sized so about that many fill the picture (4 = four
+                // big posters), repeating only at the edges the tilt uncovers.
+                cw = (float)Math.Sqrt(w * (double)h / (posters.Count * PosterRatio)) - gap;
+                ch = cw * PosterRatio;
             }
             float bigW = w * 1.8f, bigH = h * 1.8f;
             int cols = (int)Math.Ceiling(bigW / (cw + gap)) + 1, rows = (int)Math.Ceiling(bigH / (ch + gap)) + 1;
@@ -555,14 +688,51 @@ namespace HomeScreenCompanion
             float s = MockScale(false, w), sy = h / 1000f;
             MockBackdrop(c, posters[0], w, h, 22 * s, x.Dark(0.25f));
             Scrim(c, SKRect.Create(0, 0, w, h), Dir.Down, 0.35f, 1f, 245);
-            int n = x.O.Posters != null ? Math.Max(1, Math.Min(x.O.Posters.Value - 1, 10)) : 5; float gap = 12 * s, margin = 30 * s;
-            float cw = (w - 2 * margin - gap * (n - 1)) / n, ch = cw * PosterRatio;
-            float stripTop = h - ch - 34 * sy;
-            var strip = posters.Skip(1).Take(n).ToList();
-            if (strip.Count == 0) strip = posters.Take(1).ToList();
-            float x0 = (w - (strip.Count * cw + (strip.Count - 1) * gap)) / 2;
-            for (int i = 0; i < strip.Count; i++)
-                MockCard(c, strip[i], x0 + i * (cw + gap), stripTop, cw, ch, 10 * s, false, s);
+            float gap = 12 * s, margin = 30 * s, stripTop;
+            float tilt = x.Tilt(-5, 0);
+            if (x.O.Rows == null && (x.O.Posters == null || x.O.Posters.Value - 1 <= 7))
+            {
+                int n = x.O.Posters != null ? Math.Max(1, Math.Min(x.O.Posters.Value - 1, 10)) : 5;
+                float cw = (w - 2 * margin - gap * (n - 1)) / n, ch = cw * PosterRatio;
+                stripTop = h - ch - 34 * sy;
+                var strip = posters.Skip(1).Take(n).ToList();
+                if (strip.Count == 0) strip = posters.Take(1).ToList();
+                float x0 = (w - (strip.Count * cw + (strip.Count - 1) * gap)) / 2;
+                float top = stripTop;
+                Tilted(c, tilt, w / 2f, stripTop + ch / 2, strip.Count * cw + (strip.Count - 1) * gap, ch, w - margin, ch + 68 * sy, () =>
+                {
+                    for (int i = 0; i < strip.Count; i++)
+                        MockCard(c, strip[i], x0 + i * (cw + gap), top, cw, ch, 10 * s, false, s);
+                });
+            }
+            else
+            {
+                // Rows set, or more cards than one strip holds: the strip in rows (spread evenly;
+                // full rows unless Posters is set), taking at most 56% of the height.
+                bool exact = x.O.Posters != null;
+                int want = exact ? x.O.Posters!.Value - 1 : FullRowsCount(5, x.O.Rows!.Value);
+                var pool = posters.Count > 1 ? posters.Skip(1).ToList() : posters.Take(1).ToList();
+                int rows = x.O.Rows ?? AutoStripRows(want, 7);
+                int n = Math.Max(1, CardsToUse(pool.Count, Math.Max(1, want), rows, exact));
+                var counts = EvenRows(n, rows);
+                int most = counts.Max();
+                float cw = (w - 2 * margin - gap * (most - 1)) / most;
+                float maxH = h * 0.56f;
+                if (counts.Length * cw * PosterRatio + (counts.Length - 1) * gap > maxH) cw = (maxH - (counts.Length - 1) * gap) / counts.Length / PosterRatio;
+                float ch = cw * PosterRatio, blockH = counts.Length * ch + (counts.Length - 1) * gap;
+                stripTop = h - blockH - 34 * sy;
+                float top = stripTop;
+                Tilted(c, tilt, w / 2f, stripTop + blockH / 2, most * cw + (most - 1) * gap, blockH, w - margin, blockH + 68 * sy, () =>
+                {
+                    int at = 0;
+                    for (int r = 0; r < counts.Length; r++)
+                    {
+                        float x0 = (w - (counts[r] * cw + (counts[r] - 1) * gap)) / 2;
+                        for (int i = 0; i < counts[r]; i++, at++)
+                            MockCard(c, pool[at], x0 + i * (cw + gap), top + r * (ch + gap), cw, ch, 10 * s, false, s);
+                    }
+                });
+            }
             if (string.IsNullOrWhiteSpace(title)) return;
             var face = x.Face(Display.Value);
             var (lines, size) = MockLines(title, face, w - 80 * s, 132 * s * x.Scale, x.Upper(true), preferTwo: true);
@@ -580,14 +750,48 @@ namespace HomeScreenCompanion
             MockBackdrop(c, posters[0], w, h, 26 * s, x.Dark(0.35f));
             Scrim(c, SKRect.Create(0, 0, w, h), Dir.Left, 0f, 1f, 235);
             float cw = 130 * s, ch = 195 * s, gap = 14 * s, x0 = 70 * s;
-            int take = x.O.Posters != null ? Math.Max(1, Math.Min(x.O.Posters.Value - 1, 14)) : 6;
-            var strip = posters.Count > 1 ? posters.Skip(1).Take(take).ToList() : posters.Take(1).ToList();
-            if (strip.Count > 6) { cw = Math.Min(cw, (w - 2 * x0 - gap * (strip.Count - 1)) / strip.Count); ch = cw * PosterRatio; }
-            for (int i = 0; i < strip.Count; i++)
-                MockCard(c, strip[i], x0 + i * (cw + gap), h - ch - 60 * s, cw, ch, 10 * s, true, s);
-            if (string.IsNullOrWhiteSpace(title)) return;
+            float tilt = x.Tilt(-4, 0);
             var face = x.Face(Display.Value);
-            var (lines, size) = MockLines(title, face, w * 0.55f, 150 * s * x.Scale, x.Upper(true), preferTwo: true);
+            var (lines, size) = MockLines(string.IsNullOrWhiteSpace(title) ? "X" : title, face, w * 0.55f, 150 * s * x.Scale, x.Upper(true), preferTwo: true);
+            if (x.O.Rows == null && (x.O.Posters == null || x.O.Posters.Value - 1 <= 10))
+            {
+                int take = x.O.Posters != null ? Math.Max(1, Math.Min(x.O.Posters.Value - 1, 14)) : 6;
+                var strip = posters.Count > 1 ? posters.Skip(1).Take(take).ToList() : posters.Take(1).ToList();
+                if (strip.Count > 6) { cw = Math.Min(cw, (w - 2 * x0 - gap * (strip.Count - 1)) / strip.Count); ch = cw * PosterRatio; }
+                float stripW = strip.Count * cw + (strip.Count - 1) * gap;
+                Tilted(c, tilt, x0 + stripW / 2, h - ch / 2 - 60 * s, stripW, ch, w - x0, ch + 80 * s, () =>
+                {
+                    for (int i = 0; i < strip.Count; i++)
+                        MockCard(c, strip[i], x0 + i * (cw + gap), h - ch - 60 * s, cw, ch, 10 * s, true, s);
+                });
+            }
+            else
+            {
+                // Rows set, or more cards than one strip holds: the strip in rows under the title
+                // (spread evenly; full rows unless Posters is set).
+                bool exact = x.O.Posters != null;
+                int want = exact ? x.O.Posters!.Value - 1 : FullRowsCount(6, x.O.Rows!.Value);
+                var pool = posters.Count > 1 ? posters.Skip(1).ToList() : posters.Take(1).ToList();
+                int rows = x.O.Rows ?? AutoStripRows(want, 10);
+                int n = Math.Max(1, CardsToUse(pool.Count, Math.Max(1, want), rows, exact));
+                var counts = EvenRows(n, rows);
+                int most = counts.Max();
+                float titleBottom = string.IsNullOrWhiteSpace(title) ? 60 * s : 150 * s + lines.Length * size * Step(face, Display.Value, 0.86f);
+                float maxH = h - 60 * s - titleBottom - 30 * s;
+                cw = Math.Min(cw, (w - 2 * x0 - gap * (most - 1)) / most);
+                if (counts.Length * cw * PosterRatio + (counts.Length - 1) * gap > maxH) cw = (maxH - (counts.Length - 1) * gap) / counts.Length / PosterRatio;
+                ch = cw * PosterRatio;
+                float blockW = most * cw + (most - 1) * gap, blockH = counts.Length * ch + (counts.Length - 1) * gap, top = h - 60 * s - blockH;
+                float cwF = cw, chF = ch;
+                Tilted(c, tilt, x0 + blockW / 2, top + blockH / 2, blockW, blockH, w - x0, blockH + 80 * s, () =>
+                {
+                    int at = 0;
+                    for (int r = 0; r < counts.Length; r++)
+                        for (int i = 0; i < counts[r]; i++, at++)
+                            MockCard(c, pool[at], x0 + i * (cwF + gap), top + r * (chF + gap), cwF, chF, 10 * s, true, s);
+                });
+            }
+            if (string.IsNullOrWhiteSpace(title)) return;
             float y = 150 * s;
             for (int i = 0; i < lines.Length; i++)
             {
@@ -624,19 +828,64 @@ namespace HomeScreenCompanion
             {
                 var face = x.Face(Heavy.Value);
                 var (lines, size) = MockLines(title, face, w * 0.42f, 120 * s * x.Scale, x.Upper(false), preferTwo: true);
+                if (x.O.Rows != null || (x.O.Posters != null && x.O.Posters.Value - 1 > 6))
+                {
+                    // Thumbnails in rows: the title gives up height so each row keeps a usable size.
+                    int want = x.O.Posters != null ? x.O.Posters.Value - 1 : FullRowsCount(4, x.O.Rows!.Value);
+                    int rowsWanted = Math.Min(x.O.Rows ?? AutoStripRows(want, 6), Math.Max(1, want));
+                    float limit = h - 80 * s - (rowsWanted * 120 * s + (rowsWanted - 1) * 14 * s);
+                    if (y + lines.Length * size * 1.25f > limit)
+                        (lines, size) = MockLines(title, face, w * 0.42f, Math.Max(40 * s, (limit - y) / (lines.Length * 1.25f)), x.Upper(false), preferTwo: true);
+                }
                 foreach (var line in lines)
                 {
                     MockText(c, line, left - 4 * s, y, face, size, x.Colour(SKColors.White));
                     y += size * 1.25f;
                 }
             }
-            float cardsY = Math.Max(500 * s, y + 30 * s);
-            int take = x.O.Posters != null ? Math.Max(1, Math.Min(x.O.Posters.Value - 1, 10)) : 4;
-            var strip = posters.Skip(1).Take(take).ToList();
-            float step = 124 * s, cardW = 110 * s, cardH = 165 * s;
-            if (strip.Count > 4) { step = (w * 0.5f - left) / strip.Count; cardW = step * 110 / 124f; cardH = cardW * PosterRatio; }
-            for (int i = 0; i < strip.Count; i++)
-                MockCard(c, strip[i], left + i * step, cardsY, cardW, cardH, 8 * s, false, s);
+            float tilt = x.Tilt(-5, 0);
+            if (x.O.Rows == null && (x.O.Posters == null || x.O.Posters.Value - 1 <= 6))
+            {
+                float cardsY = Math.Max(500 * s, y + 30 * s);
+                int take = x.O.Posters != null ? Math.Max(1, Math.Min(x.O.Posters.Value - 1, 10)) : 4;
+                var strip = posters.Skip(1).Take(take).ToList();
+                float step = 124 * s, cardW = 110 * s, cardH = 165 * s;
+                if (strip.Count > 4) { step = (w * 0.5f - left) / strip.Count; cardW = step * 110 / 124f; cardH = cardW * PosterRatio; }
+                float stripW = (strip.Count - 1) * step + cardW;
+                Tilted(c, tilt, left + stripW / 2, cardsY + cardH / 2, stripW, cardH, w * 0.5f, cardH + 40 * s, () =>
+                {
+                    for (int i = 0; i < strip.Count; i++)
+                        MockCard(c, strip[i], left + i * step, cardsY, cardW, cardH, 8 * s, false, s);
+                });
+            }
+            else
+            {
+                // Rows set, or more thumbnails than one row holds: thumbnails in rows under the
+                // title within the left half (spread evenly; full rows unless Posters is set).
+                bool exact = x.O.Posters != null;
+                int want = exact ? x.O.Posters!.Value - 1 : FullRowsCount(4, x.O.Rows!.Value);
+                var pool = posters.Skip(1).ToList();
+                int rows = x.O.Rows ?? AutoStripRows(want, 6);
+                int n = CardsToUse(pool.Count, Math.Max(1, want), rows, exact);
+                if (n > 0)
+                {
+                    var counts = EvenRows(n, rows);
+                    int most = counts.Max();
+                    float top = y + 30 * s, availH = h - 50 * s - top, availW = w * 0.5f - left, gap = 14 * s;
+                    float cardW = Math.Min(110 * s, (availW - gap * (most - 1)) / most);
+                    if (counts.Length * cardW * PosterRatio + (counts.Length - 1) * gap > availH)
+                        cardW = (availH - (counts.Length - 1) * gap) / counts.Length / PosterRatio;
+                    float cardH = cardW * PosterRatio;
+                    float blockW = most * cardW + (most - 1) * gap, blockH = counts.Length * cardH + (counts.Length - 1) * gap;
+                    Tilted(c, tilt, left + blockW / 2, top + blockH / 2, blockW, blockH, availW + left * 0.5f, availH + 30 * s, () =>
+                    {
+                        int at = 0;
+                        for (int r = 0; r < counts.Length; r++)
+                            for (int i = 0; i < counts[r]; i++, at++)
+                                MockCard(c, pool[at], left + i * (cardW + gap), top + r * (cardH + gap), cardW, cardH, 8 * s, false, s);
+                    });
+                }
+            }
         }
 
         // ── ranked (Top 10) ─────────────────────────────────────────────────────────────
@@ -670,8 +919,11 @@ namespace HomeScreenCompanion
                     float ty = 46 * s;
                     foreach (var line in lines) { MockText(c, line, 60 * s, ty, face, size, cx.Colour(SKColors.White)); ty += size * Step(face, Display.Value, 0.95f); }
                 }
-                for (int i = 0; i < Math.Min(5, posters.Count); i++)
-                    Numbered(i + 1, 30 * s + i * 245 * s, 205 * s, 330 * s, 34 * s, 240 * s);
+                Tilted(c, cx.Tilt(-4, 0), w / 2f, 400 * s, w, 330 * s, w, 560 * s, () =>
+                {
+                    for (int i = 0; i < Math.Min(5, posters.Count); i++)
+                        Numbered(i + 1, 30 * s + i * 245 * s, 205 * s, 330 * s, 34 * s, 240 * s);
+                });
             }
             else
             {
@@ -685,8 +937,11 @@ namespace HomeScreenCompanion
                     foreach (var line in lines) { MockText(c, line, w / 2f, ty, face, sz, cx.Colour(SKColors.White), SKTextAlign.Center); ty += sz * Step(face, Display.Value, 0.95f); }
                 }
                 var pos = new[] { (40f, 290f), (360f, 290f), (40f, 630f), (360f, 630f) };
-                for (int i = 0; i < Math.Min(4, posters.Count); i++)
-                    Numbered(i + 1, pos[i].Item1 * s, (pos[i].Item2 - 10) * sy, 230 * s, 28 * s, (pos[i].Item2 + 20) * sy);
+                Tilted(c, cx.Tilt(-4, 0), w / 2f, 640 * sy, w, 700 * sy, w, 760 * sy, () =>
+                {
+                    for (int i = 0; i < Math.Min(4, posters.Count); i++)
+                        Numbered(i + 1, pos[i].Item1 * s, (pos[i].Item2 - 10) * sy, 230 * s, 28 * s, (pos[i].Item2 + 20) * sy);
+                });
             }
         }
 
@@ -897,8 +1152,9 @@ namespace HomeScreenCompanion
 
         private readonly struct GridLayout
         {
-            public GridLayout(int count, int cols, int rows, int cardW, int cardH, int gap)
-            { Count = count; Cols = cols; Rows = rows; CardW = cardW; CardH = cardH; Gap = gap; }
+            public GridLayout(int count, int cols, int rows, int cardW, int cardH, int gap, int[]? rowCounts = null)
+            { Count = count; Cols = cols; Rows = rows; CardW = cardW; CardH = cardH; Gap = gap; RowCounts = rowCounts; }
+            public int[]? RowCounts { get; }
             public int Count { get; }
             public int Cols { get; }
             public int Rows { get; }
@@ -912,6 +1168,18 @@ namespace HomeScreenCompanion
                 float totalH = Rows * CardH + (Rows - 1) * Gap;
                 float oy = region.Top + (region.Height - totalH) / 2;
                 var cells = new List<SKPoint>();
+                if (RowCounts != null)
+                {
+                    // Rows of their own lengths (evenly spread), each centred.
+                    for (int r = 0; r < RowCounts.Length; r++)
+                    {
+                        float rowW = RowCounts[r] * CardW + (RowCounts[r] - 1) * Gap;
+                        float ox = region.Left + (region.Width - rowW) / 2;
+                        for (int col = 0; col < RowCounts[r]; col++)
+                            cells.Add(new SKPoint((float)Math.Round(ox + col * (CardW + Gap)), (float)Math.Round(oy + r * (CardH + Gap))));
+                    }
+                    return cells;
+                }
                 for (int i = 0; i < Count; i++)
                 {
                     int r = i / Cols, col = i % Cols;
@@ -927,8 +1195,42 @@ namespace HomeScreenCompanion
         // How many posters (<= n, <= cap) and which grid fills w x h best: area coverage x
         // count^0.35, so more posters win unless they get much smaller. A partial last row is
         // only allowed when every poster is used.
-        private static GridLayout BestGrid(int n, int w, int h, int gap, int cap, int? maxRows, int? exactRows = null)
+        private static GridLayout BestGrid(int n, int w, int h, int gap, int cap, int? maxRows, int? exactRows = null, bool exactCount = false)
         {
+            if (exactCount)
+            {
+                // Customise "Posters": exactly that many (or all there are), on the rows that give
+                // the biggest cards (or the chosen rows), spread as evenly as possible (10 on 3 = 4/3/3).
+                int k = Math.Max(1, Math.Min(n, cap));
+                GridLayout? pick = null;
+                int lo = exactRows ?? 1, hi = exactRows ?? Math.Min(k, maxRows ?? k);
+                for (int rows = lo; rows <= hi; rows++)
+                {
+                    var counts = EvenRows(k, rows);
+                    int cols = counts[0];
+                    double cw = Math.Min((w - gap * (cols - 1)) / (double)cols, (h - gap * (counts.Length - 1)) / (double)counts.Length / PosterRatio);
+                    if (cw <= 8) continue;
+                    if (pick == null || cw > pick.Value.CardW + 0.5)
+                        pick = new GridLayout(k, cols, counts.Length, (int)cw, (int)(cw * PosterRatio), gap, counts);
+                }
+                if (pick != null) return pick.Value;
+            }
+            else if (exactRows != null && n >= exactRows)
+            {
+                // Customise "Rows" without a count: full rows only (cols x rows <= the titles there are).
+                GridLayout? full = null;
+                double fullScore = -1;
+                int r = exactRows.Value;
+                for (int cols = 1; cols * r <= Math.Min(n, Math.Max(cap, r)); cols++)
+                {
+                    int k = cols * r;
+                    double cw = Math.Min((w - gap * (cols - 1)) / (double)cols, (h - gap * (r - 1)) / (double)r / PosterRatio);
+                    if (cw <= 8) continue;
+                    double score = (k * cw * cw * PosterRatio) / ((double)w * h) * Math.Pow(k, 0.35);
+                    if (score > fullScore) { fullScore = score; full = new GridLayout(k, cols, r, (int)cw, (int)(cw * PosterRatio), gap); }
+                }
+                if (full != null) return full.Value;
+            }
             if (exactRows != null)
             {
                 // Customise "Rows": that many rows when there are enough titles, else the best fit.

@@ -8768,12 +8768,22 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 else sessionStorage.removeItem(leaveStateKey());
             } catch (e) { }
         }
+        // API keys, client ids, tokens and passwords never go into sessionStorage: they are left
+        // out of the stored draft (and the server stamp), so a restored draft keeps the server's
+        // values for them. (An unsaved edit of a key itself is therefore not restored.)
+        function stripSecrets(v) {
+            if (Array.isArray(v)) return v.map(stripSecrets);
+            if (!v || typeof v !== 'object') return v;
+            var out = {};
+            Object.keys(v).forEach(function (k) { if (!/(apikey|clientid|secret|token|password)$/i.test(k)) out[k] = stripSecrets(v[k]); });
+            return out;
+        }
         // What the server sent, minus the parts the sync tasks rewrite on their own (Save re-reads
         // those from the server anyway), so a background sync does not count as "changed".
         function serverStamp(config) {
-            var c = Object.assign({}, config);
+            var c = stripSecrets(config);
             delete c.TopLists;
-            c.Tags = (config.Tags || []).map(function (t) {
+            c.Tags = (c.Tags || []).map(function (t) {
                 var x = Object.assign({}, t);
                 delete x.HomeSectionTracked; delete x.PlaylistMappings;
                 return x;
@@ -8873,7 +8883,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 current = getUiConfig(view, true);
                 dirty = JSON.stringify(current) !== originalConfigState;
             } catch (e) { }
-            if (dirty) writeLeaveState({ draft: current, serverStamp: view._hscServerStamp || '', ui: ui });
+            if (dirty) writeLeaveState({ draft: stripSecrets(current), serverStamp: view._hscServerStamp || '', ui: ui });
             else writeLeaveState({ ui: ui });
         });
 
