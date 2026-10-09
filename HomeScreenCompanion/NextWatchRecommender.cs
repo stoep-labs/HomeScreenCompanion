@@ -19,7 +19,8 @@ namespace HomeScreenCompanion
     ///   candidates = movies and shows the user can open (Emby's per-user query, so library access
     ///                and parental rating apply), not watched or started, one item per film;
     ///   score      = weighted overlap with the seed on genres, top-billed people, studios and
-    ///                tags (rare features count more), year closeness, community rating and a
+    ///                tags (rare people/studios/tags count more; a genre counts by how much more the
+    ///                user watches it than the library carries it, capped at 3x), year closeness, community rating and a
     ///                "people like you" bonus from users who watched the same seed titles;
     ///                Each candidate is also matched against the one seed title it has most in common
     ///                with: several kinds of shared signal (genres, people, studio, keywords) count
@@ -50,6 +51,7 @@ namespace HomeScreenCompanion
         private readonly Dictionary<string, int> _groupByKey = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         private readonly Vocab _genres = new Vocab(), _people = new Vocab(), _studios = new Vocab(), _tags = new Vocab();
         private readonly List<string> _franchiseNames = new List<string>();
+        private double[] _genreShare = Array.Empty<double>();   // share of library titles carrying each genre
         private double[] _idfGenre = Array.Empty<double>(), _idfPeople = Array.Empty<double>(), _idfStudio = Array.Empty<double>(), _idfTag = Array.Empty<double>();
         private readonly Dictionary<long, History> _history = new Dictionary<long, History>();
         private int[] _viewers90 = Array.Empty<int>();
@@ -193,6 +195,9 @@ namespace HomeScreenCompanion
             _idfPeople = Idf(_people.Count, g => g.People);
             _idfStudio = Idf(_studios.Count, g => g.Studios);
             _idfTag = Idf(_tags.Count, g => g.Tags);
+            _genreShare = new double[_genres.Count];
+            foreach (var g in _groups) foreach (var f in g.Genres) _genreShare[f]++;
+            for (int i = 0; i < _genreShare.Length; i++) _genreShare[i] /= Math.Max(1, _groups.Count);
 
 PrepareSummary = $"{_groups.Count:N0} titles ({_titles.Count:N0} items), {_genres.Count} genres, {_people.Count:N0} people, {_studios.Count:N0} studios, {_tags.Count:N0} tags, "
                 + $"{franchiseCount} franchises, {_groupByKey.Count:N0} watch keys ({episodeKeys:N0} episodes), {users} users / {records:N0} watch records  ·  "
@@ -324,6 +329,7 @@ PrepareSummary = $"{_groups.Count:N0} titles ({_titles.Count:N0} items), {_genre
             var scored = new List<(int Group, BaseItem Item, double Score)>(candidates.Count);
             var weak = new HashSet<int>();   // matched on a single signal only: kept out of the top 10
             _links.Clear();
+            _seedIndex = BuildSeedIndex(seed);
             Dictionary<int, double>? pGenre = null, pPeople = null, pStudio = null, pTag = null;
             var cf = new Dictionary<int, double>();
 
@@ -360,12 +366,18 @@ PrepareSummary = $"{_groups.Count:N0} titles ({_titles.Count:N0} items), {_genre
                         cf[g] = cf.TryGetValue(g, out var v) ? v + other.Value.Similarity : other.Value.Similarity;
                 foreach (var o in _history.Values) o.Similarity = 0;
 
+                // Genres count by lift: how much more of the user's watching carries a genre than the
+                // library as a whole does (capped), so a few stray episodes of a rare genre don't take over.
+                var genreWeight = new double[_genres.Count];
+                foreach (var kv in pGenre)
+                    if (_genreShare[kv.Key] > 0) genreWeight[kv.Key] = Math.Min(MaxGenreLift, kv.Value / _genreShare[kv.Key]);
+
                 var raw = new List<(int G, BaseItem I, double Ge, double Pe, double St, double Ta, double Yr, double Cf)>(candidates.Count);
                 double mGe = 1e-9, mPe = 1e-9, mSt = 1e-9, mTa = 1e-9, mCf = 1e-9;
                 foreach (var c in candidates)
                 {
                     var grp = _groups[c.Group];
-                    double ge = Overlap(pGenre, grp.Genres, _idfGenre) / Math.Sqrt(Math.Max(1, grp.Genres.Length));
+                    double ge = Overlap(pGenre, grp.Genres, genreWeight) / Math.Sqrt(Math.Max(1, grp.Genres.Length));
                     double pe = Overlap(pPeople, grp.People, _idfPeople);
                     double st = Overlap(pStudio, grp.Studios, _idfStudio);
                     double ta = Overlap(pTag, grp.Tags, _idfTag) / Math.Sqrt(Math.Max(1, grp.Tags.Length));
@@ -388,20 +400,14 @@ PrepareSummary = $"{_groups.Count:N0} titles ({_titles.Count:N0} items), {_genre
                 // Match strength against the single seed title it has most in common with: several
                 // kinds of shared signal (genres + people + studio/keywords) beat one shared actor or
                 // one broad genre; the next/previous film of a franchise is always strong. Worked out
-                // for the best candidates only (the rest cannot reach the list anyway).
-                var top = new HashSet<int>(baseScored.OrderByDescending(b => b.S).Take(Math.Max(400, limit * 8)).Select(b => b.G));
+                // for every candidate.
                 foreach (var b in baseScored)
                 {
-                    double s = b.S;
-                    if (top.Contains(b.G))
-                    {
-                        var link = LinkFor(b.G, seed);
-                        double strength = link.Strength + (b.Cf >= 0.5 ? 0.5 : 0); // "people like you" adds a little
-                        s = s * (strength >= StrongLink ? 1.0 : strength >= 1.5 ? 0.9 : 0.75)
-                            + 0.03 * Math.Min(4.0, strength) + (link.Franchise ? 0.10 : 0);
-                        if (strength < StrongLink) weak.Add(b.G);
-                    }
-                    else { s *= 0.75; weak.Add(b.G); }
+                    var link = LinkFor(b.G);
+                    double strength = link.Strength + (b.Cf >= 0.5 ? 0.5 : 0); // "people like you" adds a little
+                    double s = b.S * (strength >= StrongLink ? 1.0 : strength >= 1.5 ? 0.9 : 0.75)
+                        + 0.03 * Math.Min(4.0, strength) + (link.Franchise ? 0.10 : 0);
+                    if (strength < StrongLink) weak.Add(b.G);
                     scored.Add((b.G, b.I, s));
                 }
             }
@@ -512,7 +518,7 @@ PrepareSummary = $"{_groups.Count:N0} titles ({_titles.Count:N0} items), {_genre
         }
 
         // ── Match strength between a candidate and one seed title ───────────────────────────────
-        private const double StrongLink = 2.0, RareShare = 0.05, FavouriteShare = 0.3;
+        private const double StrongLink = 2.0, RareShare = 0.05, FavouriteShare = 0.3, MaxGenreLift = 3.0;
         private const int MaxFavouritesTop10 = 3, FavouriteGap = 3;
 
         private struct Link
@@ -520,40 +526,94 @@ PrepareSummary = $"{_groups.Count:N0} titles ({_titles.Count:N0} items), {_genre
             public int Seed;
             public double Strength;
             public bool Franchise;
-            public int[] People, Genres, Studios;
-            public int Tags;
         }
         private readonly Dictionary<int, Link> _links = new Dictionary<int, Link>();
+        private SeedIndex? _seedIndex;
 
-        private Link LinkFor(int g, Dictionary<int, double> seed)
+        // Per user: which seed titles carry each feature, so a candidate's best seed match is found by
+        // looking up its own features instead of comparing it with every seed title one by one.
+        private sealed class SeedIndex
+        {
+            public int[] Seeds = Array.Empty<int>();
+            public double[] Weights = Array.Empty<double>();
+            // Feature id → positions in Seeds of the seed titles that have it (null = none).
+            public List<int>?[] People = Array.Empty<List<int>?>(), Genres = Array.Empty<List<int>?>(), Studios = Array.Empty<List<int>?>(),
+                Tags = Array.Empty<List<int>?>(), Franchises = Array.Empty<List<int>?>();
+            public int[] PeopleN = Array.Empty<int>(), GenreN = Array.Empty<int>(), StudioN = Array.Empty<int>(), TagN = Array.Empty<int>();
+            public bool[] RareGenre = Array.Empty<bool>(), RareStudio = Array.Empty<bool>(), SameFranchise = Array.Empty<bool>();
+        }
+
+        private SeedIndex BuildSeedIndex(Dictionary<int, double> seed)
+        {
+            var ix = new SeedIndex { Seeds = seed.Keys.ToArray(), Weights = seed.Values.ToArray() };
+            int n = ix.Seeds.Length;
+            ix.PeopleN = new int[n]; ix.GenreN = new int[n]; ix.StudioN = new int[n]; ix.TagN = new int[n];
+            ix.RareGenre = new bool[n]; ix.RareStudio = new bool[n]; ix.SameFranchise = new bool[n];
+            ix.People = new List<int>?[_people.Count]; ix.Genres = new List<int>?[_genres.Count]; ix.Studios = new List<int>?[_studios.Count];
+            ix.Tags = new List<int>?[_tags.Count]; ix.Franchises = new List<int>?[_franchiseNames.Count];
+            for (int i = 0; i < n; i++)
+            {
+                var s = _groups[ix.Seeds[i]];
+                Index(ix.People, s.People, i); Index(ix.Genres, s.Genres, i); Index(ix.Studios, s.Studios, i); Index(ix.Tags, s.Tags, i);
+                if (s.Franchise >= 0) Index(ix.Franchises, new[] { s.Franchise }, i);
+            }
+            return ix;
+
+            static void Index(List<int>?[] d, int[] features, int i)
+            {
+                foreach (var f in features) (d[f] ??= new List<int>()).Add(i);
+            }
+        }
+
+        private Link LinkFor(int g)
         {
             if (_links.TryGetValue(g, out var cached)) return cached;
+            var ix = _seedIndex!;
             var c = _groups[g];
-            var best = new Link { Seed = -1, People = Array.Empty<int>(), Genres = Array.Empty<int>(), Studios = Array.Empty<int>() };
-            double bestKey = 0;
             double rareIdf = Math.Log(1 + 1 / RareShare);
-            foreach (var kv in seed)
+            Count(ix.People, c.People, ix.PeopleN, null, null);
+            Count(ix.Genres, c.Genres, ix.GenreN, ix.RareGenre, _idfGenre);
+            Count(ix.Studios, c.Studios, ix.StudioN, ix.RareStudio, _idfStudio);
+            Count(ix.Tags, c.Tags, ix.TagN, null, null);
+            var fl = c.Franchise >= 0 ? ix.Franchises[c.Franchise] : null;
+            if (fl != null) foreach (var i in fl) ix.SameFranchise[i] = true;
+
+            var best = new Link { Seed = -1 };
+            double bestKey = 0;
+            for (int i = 0; i < ix.Seeds.Length; i++)
             {
-                if (kv.Key == g) continue;
-                var s = _groups[kv.Key];
-                var people = Shared(c.People, s.People);
-                var genres = Shared(c.Genres, s.Genres);
-                var studios = Shared(c.Studios, s.Studios);
-                int tags = Shared(c.Tags, s.Tags).Length;
-                bool franchise = c.Franchise >= 0 && c.Franchise == s.Franchise;
+                if (ix.Seeds[i] == g) continue;
+                int people = ix.PeopleN[i], genres = ix.GenreN[i], studios = ix.StudioN[i], tags = ix.TagN[i];
+                bool franchise = ix.SameFranchise[i];
                 // One kind of signal ≈ 1: one shared actor or one broad genre is half of that.
-                double strength = (people.Length >= 3 ? 1.5 : people.Length == 2 ? 1.0 : people.Length * 0.5)
-                    + (genres.Length >= 2 || genres.Any(x => _idfGenre[x] >= rareIdf) ? 1.0 : genres.Length * 0.5)
-                    + (studios.Any(x => _idfStudio[x] >= rareIdf) ? 1.0 : studios.Length > 0 ? 0.5 : 0)
+                double strength = (people >= 3 ? 1.5 : people == 2 ? 1.0 : people * 0.5)
+                    + (genres >= 2 || ix.RareGenre[i] ? 1.0 : genres * 0.5)
+                    + (ix.RareStudio[i] ? 1.0 : studios > 0 ? 0.5 : 0)
                     + (tags >= 2 ? 1.0 : tags * 0.5)
                     + (franchise ? 2.0 : 0);
-                double key = strength + 0.1 * Math.Min(2.0, kv.Value);
+                double key = strength + 0.1 * Math.Min(2.0, ix.Weights[i]);
                 if (key <= bestKey) continue;
                 bestKey = key;
-                best = new Link { Seed = kv.Key, Strength = strength, Franchise = franchise, People = people, Genres = genres, Studios = studios, Tags = tags };
+                best = new Link { Seed = ix.Seeds[i], Strength = strength, Franchise = franchise };
             }
+
+            // Reset the counters for the next candidate.
+            int len = ix.Seeds.Length;
+            Array.Clear(ix.PeopleN, 0, len); Array.Clear(ix.GenreN, 0, len); Array.Clear(ix.StudioN, 0, len); Array.Clear(ix.TagN, 0, len);
+            Array.Clear(ix.RareGenre, 0, len); Array.Clear(ix.RareStudio, 0, len); Array.Clear(ix.SameFranchise, 0, len);
             _links[g] = best;
             return best;
+
+            void Count(List<int>?[] d, int[] features, int[] n, bool[]? rare, double[]? idf)
+            {
+                foreach (var f in features)
+                {
+                    var l = d[f];
+                    if (l == null) continue;
+                    bool isRare = idf != null && idf[f] >= rareIdf;
+                    foreach (var i in l) { n[i]++; if (isRare) rare![i] = true; }
+                }
+            }
         }
 
         private static int[] Shared(int[] a, int[] b)
@@ -629,14 +689,16 @@ PrepareSummary = $"{_groups.Count:N0} titles ({_titles.Count:N0} items), {_genre
 
         private string Reason(int g, Dictionary<int, double> seed, Dictionary<int, double> cf)
         {
-            var link = LinkFor(g, seed);
+            var link = LinkFor(g);
             if (link.Seed < 0 || link.Strength < 1)
                 return cf.ContainsKey(g) ? "Watched by people with your taste" : "Highly rated";
+            var c = _groups[g];
+            var s = _groups[link.Seed];
             var shared = new List<string>();
-            if (link.Franchise) shared.Add(_franchiseNames[_groups[g].Franchise]);
-            shared.AddRange(link.People.Take(2).Select(_people.Name));
-            shared.AddRange(link.Genres.Take(2).Select(_genres.Name));
-            shared.AddRange(link.Studios.Take(1).Select(_studios.Name));
+            if (link.Franchise) shared.Add(_franchiseNames[c.Franchise]);
+            shared.AddRange(Shared(c.People, s.People).Take(2).Select(_people.Name));
+            shared.AddRange(Shared(c.Genres, s.Genres).Take(2).Select(_genres.Name));
+            shared.AddRange(Shared(c.Studios, s.Studios).Take(1).Select(_studios.Name));
             return "Because you watched " + Label(_groups[link.Seed].Rep) + (shared.Count > 0 ? " · " + string.Join(", ", shared.Take(4)) : "");
         }
 
