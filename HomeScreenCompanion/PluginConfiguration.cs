@@ -132,6 +132,10 @@ namespace HomeScreenCompanion
         public string PlaylistName { get; set; } = "";
         public List<string> PlaylistUserIds { get; set; } = new List<string>();
         public List<PlaylistMapping> PlaylistMappings { get; set; } = new List<PlaylistMapping>();
+        // Your Next Watch: true once the one-time move of the Home Screen tab's users to the
+        // Playlist tab (HomeScreenCompanionTask.NormalizeNextWatch) has been done, so an emptied
+        // Playlist user list stays empty.
+        public bool NextWatchUsersMigrated { get; set; } = false;
         // The look of every playlist this source makes (same for all its users, also Your Next
         // Watch): Overview, and a Primary / Backdrop image, generated in a CollectionArtRenderer
         // style or uploaded (style "" = the uploaded image; none = Emby's own). Title as CollectionArtTitle.

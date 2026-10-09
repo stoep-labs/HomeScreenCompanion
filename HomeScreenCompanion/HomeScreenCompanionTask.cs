@@ -536,7 +536,7 @@ namespace HomeScreenCompanion
                         SourceLabel = DescribeSource(tagConfig),
                         EnablePlaylist = tagConfig.EnablePlaylist,
                         PlaylistName = string.IsNullOrWhiteSpace(tagConfig.PlaylistName) ? tagConfig.Name : tagConfig.PlaylistName,
-                        PlaylistUsersTotal = IsNextWatch(tagConfig) ? NextWatchUserIds(tagConfig).Count : tagConfig.PlaylistUserIds?.Count ?? 0
+                        PlaylistUsersTotal = tagConfig.PlaylistUserIds?.Count ?? 0
                     };
                     // A multi-source group is stored as several flat entries; the playlist is synced once
                     // per group, so only the first entry's stats carry (and display) the playlist result.
@@ -774,6 +774,9 @@ namespace HomeScreenCompanion
                             var _nwPerUser = ComputeNextWatch(tagConfig, matchableItems, config, blacklist, _nwAllow, gs, NextWatchUserIds(tagConfig));
                             if (_nwPerUser.Count > 0 && !dryRun)
                                 nextWatchByGroup[GroupKey(tagConfig)] = (tagConfig, _nwPerUser);
+                            // The source's shared items (a tag or collection, when enabled): the titles picked
+                            // for the most users — the same list the playlist art is drawn from.
+                            matchedLocalItems = PlaylistArtItems(_nwPerUser.Values);
                         }
                         // Apply MediaInfo post-filter for non-MediaInfo source types
                         if (tagConfig.SourceType != "MediaInfo" && matchedLocalItems.Count > 0
@@ -1699,7 +1702,7 @@ namespace HomeScreenCompanion
                 EnableHomeSection = tagConfig.EnableHomeSection,
                 EnablePlaylist = tagConfig.EnablePlaylist,
                 PlaylistName = string.IsNullOrWhiteSpace(tagConfig.PlaylistName) ? tagConfig.Name : tagConfig.PlaylistName,
-                PlaylistUsersTotal = IsNextWatch(tagConfig) ? NextWatchUserIds(tagConfig).Count : tagConfig.PlaylistUserIds?.Count ?? 0,
+                PlaylistUsersTotal = tagConfig.PlaylistUserIds?.Count ?? 0,
                 BoxSetHse = IsBoxSetHomeSectionEntry(tagConfig),
                 TagName = tagConfig.Tag.Trim(),
                 CollectionName = string.IsNullOrWhiteSpace(tagConfig.CollectionName) ? tagConfig.Tag.Trim() : tagConfig.CollectionName.Trim(),
@@ -2088,6 +2091,9 @@ namespace HomeScreenCompanion
                         return (true, "");
                     }
                     _nextWatchPerUser = ComputeNextWatch(tagConfig, matchableItems, config, blacklist, _nwAllow, gs, NextWatchUserIds(tagConfig));
+                    // The source's shared items (a tag or collection, when enabled): the titles picked
+                    // for the most users — the same list the playlist art is drawn from.
+                    matchedLocalItems = PlaylistArtItems(_nextWatchPerUser.Values);
                 }
                 else if (tagConfig.SourceType == "MediaInfo")
                 {
@@ -2744,44 +2750,34 @@ namespace HomeScreenCompanion
         }
 
         // ── "Your Next Watch" (source type NextWatch) ─────────────────────────────────────────
-        // Per-user picks from NextWatchRecommender, written to each selected user's own playlist;
-        // the home row (SectionType "playlist") shows that playlist. Tags and collections are
-        // global, so this source type never writes them.
+        // Per-user picks from NextWatchRecommender, written to each Playlist-tab user's own playlist
+        // (the standard per-user playlist of every source, but with each user's own items). A tag or
+        // collection, when enabled, gets the titles picked for the most users (shared by everyone).
         private NextWatchRecommender? _nextWatch;
         private Dictionary<string, List<BaseItem>>? _nextWatchPerUser;
 
         internal static bool IsNextWatch(TagConfig t) => string.Equals(t?.SourceType, "NextWatch", StringComparison.OrdinalIgnoreCase);
 
-        // One user list for NextWatch: the Home Screen tab's (HomeSectionUserIds). Every user ticked
-        // there gets their own playlist and their row, so the playlist is always on. Configs from
-        // before this kept the playlist users in PlaylistUserIds: those are moved into
-        // HomeSectionUserIds once and PlaylistUserIds is cleared, so a later untick sticks.
-        // Returns true when the config was changed (the caller saves it).
+        // One-time migration: older NextWatch configs kept their users on the Home Screen tab
+        // (HomeSectionUserIds) and left PlaylistUserIds empty. The Playlist tab's users now decide
+        // who gets a list, so an empty PlaylistUserIds (with Create Playlist on) takes the Home
+        // Screen tab's users — once: NextWatchUsersMigrated is then set, so a Playlist user list
+        // the user empties later stays empty. Returns true when the config was changed (the caller saves it).
         internal static bool NormalizeNextWatch(TagConfig t)
         {
-            if (!IsNextWatch(t)) return false;
-            t.EnableTag = false;
-            t.OnlyCollection = false;
-            t.EnableCollection = false;
-            bool changed = !t.EnablePlaylist;
-            t.EnablePlaylist = true;
-            t.HomeSectionUserIds ??= new List<string>();
-            if (t.PlaylistUserIds != null && t.PlaylistUserIds.Count > 0)
-            {
-                foreach (var id in t.PlaylistUserIds)
-                    if (!t.HomeSectionUserIds.Contains(id, StringComparer.OrdinalIgnoreCase)) t.HomeSectionUserIds.Add(id);
-                t.PlaylistUserIds.Clear();
-                changed = true;
-            }
-            return changed;
+            if (!IsNextWatch(t) || t.NextWatchUsersMigrated) return false;
+            if (t.EnablePlaylist && (t.PlaylistUserIds?.Count ?? 0) == 0 && (t.HomeSectionUserIds?.Count ?? 0) > 0)
+                t.PlaylistUserIds = t.HomeSectionUserIds.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            t.NextWatchUsersMigrated = true;
+            return true;
         }
 
-        // The users a NextWatch source makes lists (playlists) for: the ones ticked on its Home Screen tab.
+        // The users a NextWatch source makes lists (playlists) for: the Playlist tab's users.
         private static List<string> NextWatchUserIds(TagConfig t) =>
-            (t.HomeSectionUserIds ?? new List<string>()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            (t.PlaylistUserIds ?? new List<string>()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
 
         // The InternalId (as a section's ParentId wants it) of a user's playlist from this source.
-        private string? NextWatchPlaylistInternalId(TagConfig t, string userId)
+        private string? PlaylistInternalIdFor(TagConfig t, string userId)
         {
             var mapping = t.PlaylistMappings?.FirstOrDefault(m => string.Equals(m.UserId, userId, StringComparison.OrdinalIgnoreCase));
             if (mapping == null || !Guid.TryParse(mapping.PlaylistId, out var g)) return null;
@@ -2861,17 +2857,18 @@ namespace HomeScreenCompanion
             }
         }
 
-        // A NextWatch home row is Emby's "playlist" section type: the playlist's items (no item-type
-        // or library filter). The row keeps the source's own Sort By / Sort Order like any other row:
+        // A "playlist" home row (SectionType "playlist", any source with Create Playlist) shows the
+        // user's own playlist from the source: the playlist's items (no item-type or library filter;
+        // ParentId is set per user). The row keeps the source's own Sort By / Sort Order like any other row:
         // empty (the default) = playlist order, best pick first; Random = Emby shuffles the row on
         // every home-screen load (the web client sends a new RandomSeed). Image type Primary (the default here;
         // only an explicit Thumb is kept) makes Emby's home screen draw a show's first episode with
         // the show's poster (hometab: ImageType "Primary" → preferSeriesImage; imagehelper then uses
         // SeriesPrimaryImageTag, 2:3), so shows look like the movies next to them. The episode's own
         // image is not touched.
-        internal static void NormalizeNextWatchSectionSettings(Dictionary<string, string> settings)
+        internal static void NormalizePlaylistSectionSettings(Dictionary<string, string> settings)
         {
-            settings["SectionType"] = "playlist";
+            if (!settings.TryGetValue("SectionType", out var st) || st != "playlist") return;
             if (!settings.TryGetValue("ImageType", out var imageType) || !string.Equals(imageType, "Thumb", StringComparison.OrdinalIgnoreCase))
                 settings["ImageType"] = "Primary";
             settings["ItemTypes"] = "[]";
@@ -2890,7 +2887,7 @@ namespace HomeScreenCompanion
             gs.ListCount = ids.Count;
             if (ids.Count == 0)
             {
-                gs.Warnings.Add("No users selected — tick users on the Home Screen tab (each gets their own playlist and row)");
+                gs.Warnings.Add("No users selected — tick users on the Playlist tab (each gets their own playlist)");
                 return perUser;
             }
             int limit = tagConfig.Limit > 0 ? tagConfig.Limit : NextWatchRecommender.DefaultLimit;
@@ -3033,7 +3030,7 @@ namespace HomeScreenCompanion
                     }
                     var shared = Desired(collectionOutputItems);
                     var plName0 = string.IsNullOrWhiteSpace(tagConfig.PlaylistName) ? tagConfig.Name : tagConfig.PlaylistName;
-                    var plUserIds = perUser == null ? tagConfig.PlaylistUserIds : NextWatchUserIds(tagConfig).Where(perUser.ContainsKey).ToList();
+                    var plUserIds = perUser == null ? tagConfig.PlaylistUserIds : tagConfig.PlaylistUserIds.Where(perUser.ContainsKey).ToList();
                     if (perUser == null) _log.Debug($"  {shared.List.Count} unique items for {tagConfig.PlaylistUserIds.Count} users");
                     var lookItems = perUser == null ? PlaylistArtItems(new[] { collectionOutputItems }) : PlaylistArtItems(perUser.Values);
                     var createdPlaylists = new List<(string UserName, PlaylistMapping Mapping)>();
@@ -3378,7 +3375,8 @@ namespace HomeScreenCompanion
                 catch { /* ignore malformed settings */ }
 
                 if (!settingsDict.ContainsKey("SectionType"))
-                    settingsDict["SectionType"] = (tc.EnableCollection && !string.IsNullOrEmpty(tc.CollectionName)) ? "boxset" : "items";
+                    settingsDict["SectionType"] = (tc.EnableCollection && !string.IsNullOrEmpty(tc.CollectionName)) ? "boxset"
+                        : !tc.EnableTag && tc.EnablePlaylist ? "playlist" : "items";
 
                 // Back-fill CustomName from group name/tag when not explicitly configured
                 if (!settingsDict.TryGetValue("CustomName", out var _existingCn) || string.IsNullOrWhiteSpace(_existingCn))
@@ -3388,7 +3386,7 @@ namespace HomeScreenCompanion
                         settingsDict["CustomName"] = _defaultCn;
                 }
 
-                if (IsNextWatch(tc)) NormalizeNextWatchSectionSettings(settingsDict);
+                NormalizePlaylistSectionSettings(settingsDict);
 
                 settingsDict.TryGetValue("SectionType", out var sectionType);
 
@@ -3482,15 +3480,15 @@ namespace HomeScreenCompanion
                 foreach (var userId in tc.HomeSectionUserIds)
                 {
                     string _hsAction = "created";
-                    // NextWatch: the row shows this user's own playlist.
+                    // A playlist row shows this user's own playlist from the source.
                     string? userLibraryId = resolvedLibraryId;
-                    if (IsNextWatch(tc))
+                    if (sectionType == "playlist")
                     {
-                        userLibraryId = NextWatchPlaylistInternalId(tc, userId);
+                        userLibraryId = PlaylistInternalIdFor(tc, userId);
                         if (userLibraryId == null)
                         {
                             string _nwName = Guid.TryParse(userId, out var _nwG) ? (_userManager.GetUserById(_nwG)?.Name ?? userId) : userId;
-                            HsWarn(statsList, _hsTagName, _hsDisplayName, $"no home row for {_nwName}: their playlist from this source was not made (no picks for them yet, or it failed — see the playlist lines above)");
+                            HsWarn(statsList, _hsTagName, _hsDisplayName, $"no home row for {_nwName}: they have no playlist from this source (tick them on the Playlist tab; or it was not made yet — see the playlist lines above)");
                             continue;
                         }
                     }
@@ -3710,8 +3708,7 @@ namespace HomeScreenCompanion
                 else
                 {
                     // Delete playlists for users that have been unchecked from PlaylistUserIds
-                    // (NextWatch: from the Home Screen tab's user list)
-                    var activeUserIds = new HashSet<string>(IsNextWatch(tc) ? NextWatchUserIds(tc) : tc.PlaylistUserIds ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
+                    var activeUserIds = new HashSet<string>(tc.PlaylistUserIds ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
                     var orphans = tc.PlaylistMappings.Where(m => !activeUserIds.Contains(m.UserId)).ToList();
                     foreach (var orphan in orphans)
                     {

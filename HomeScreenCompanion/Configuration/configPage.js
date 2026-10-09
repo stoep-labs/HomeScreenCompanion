@@ -822,7 +822,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var body = overlay.querySelector('.mi-preview-body');
         var isNw = st === 'NextWatch';
         // Your Next Watch: picks are per user — preview one user at a time (picker on top).
-        if (isNw && nwUserId == null) nwUserId = row.dataset.nwPreviewUser || (source.HomeSectionUserIds || [])[0] || '';
+        if (isNw && nwUserId == null) nwUserId = row.dataset.nwPreviewUser || (source.PlaylistUserIds || [])[0] || '';
         if (isNw) row.dataset.nwPreviewUser = nwUserId;
         var nwPicker = '';
         overlay.querySelector('.mi-preview-subtitle').textContent = (label || tag || 'This source') + (isNw ? ' — personal picks for one user' : ' — what it would tag right now');
@@ -834,14 +834,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
         (isNw ? getHseUsers() : Promise.resolve([])).then(function (users) {
             if (isNw) {
-                var selected = source.HomeSectionUserIds || [];
+                var selected = source.PlaylistUserIds || [];
                 var ordered = users.filter(function (u) { return selected.indexOf(u.Id) !== -1; })
                     .concat(users.filter(function (u) { return selected.indexOf(u.Id) === -1; }));
                 nwPicker = '<div style="display:flex; align-items:center; gap:10px; margin-bottom:12px;"><label style="white-space:nowrap; opacity:0.85;">Picks for</label>'
                     + '<select class="selNwPreviewUser" style="flex:1; padding:6px 8px; font-size:inherit; color:inherit; background:var(--plugin-input-bg,rgba(255,255,255,0.08)); border:1px solid var(--plugin-input-border,rgba(255,255,255,0.2)); border-radius:3px;">'
                     + (nwUserId ? '' : '<option value="">-- Select user --</option>')
                     + ordered.map(function (u) {
-                        return '<option value="' + escapeHtml(u.Id) + '"' + (u.Id === nwUserId ? ' selected' : '') + '>' + escapeHtml(u.Name) + (selected.indexOf(u.Id) !== -1 ? '  (ticked on Home Screen tab)' : '') + '</option>';
+                        return '<option value="' + escapeHtml(u.Id) + '"' + (u.Id === nwUserId ? ' selected' : '') + '>' + escapeHtml(u.Name) + (selected.indexOf(u.Id) !== -1 ? '  (ticked on Playlist tab)' : '') + '</option>';
                     }).join('') + '</select></div>';
                 body.innerHTML = nwPicker + body.innerHTML;
                 wireNwPicker();
@@ -1201,7 +1201,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             Urls: urls, LocalSources: localSources, Limit: miLimit, ManualItemIds: readManualIds(row),
             MediaInfoFilters: miFilters, MediaInfoConditions: [],
             EnableHomeSection: enableHse, HomeSectionLibraryId: hseLibraryId,
-            HomeSectionUserIds: st === 'NextWatch' ? nextWatchUserIds(hseTab, hseUserIds, _plUserIds) : hseUserIds, HomeSectionSettings: JSON.stringify(hseSettings),
+            HomeSectionUserIds: hseUserIds, HomeSectionSettings: JSON.stringify(hseSettings),
             HomeSectionTracked: [], LastModified: new Date().toISOString(),
             AiProvider: aiProvider, AiPrompt: aiPrompt,
             AiIncludeRecentlyWatched: aiIncludeRecentlyWatched,
@@ -1214,13 +1214,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             CollectionTargetEpisode: !!(row.querySelector('.chkCollTargetEpisode') || {}).checked,
             CollectionTargetSeason:  !!(row.querySelector('.chkCollTargetSeason')  || {}).checked,
             CollectionTargetSeries:  !!(row.querySelector('.chkCollTargetSeries')  || {}).checked,
-            EnablePlaylist:   st === 'NextWatch' || !!(row.querySelector('.chkEnablePlaylist') || {}).checked,
+            EnablePlaylist:   !!(row.querySelector('.chkEnablePlaylist') || {}).checked,
             PlaylistName:     (row.querySelector('.txtPlaylistName') || { value: '' }).value,
             PlaylistDescription: readPlaylistLook(row).PlaylistDescription, PlaylistPosterPath: readPlaylistLook(row).PlaylistPosterPath,
             PlaylistPosterStyle: readPlaylistLook(row).PlaylistPosterStyle, PlaylistBackgroundStyle: readPlaylistLook(row).PlaylistBackgroundStyle,
             PlaylistBackgroundPath: readPlaylistLook(row).PlaylistBackgroundPath, PlaylistArtTitle: readPlaylistLook(row).PlaylistArtTitle,
-            PlaylistUserIds:  st === 'NextWatch' ? [] : _plUserIds,
+            PlaylistUserIds:  _plUserIds,
             PlaylistMappings: (function() { try { return JSON.parse(decodeURIComponent((_plTab && _plTab.dataset.plMappings) || '%5B%5D')); } catch { return []; } })(),
+            NextWatchUsersMigrated: row.dataset.nwMigrated === '1',
             MediaInfoTargetEpisode: false, MediaInfoTargetSeason: false, MediaInfoTargetSeries: false,
             MediaInfoTargetType: '', MediaInfoSeasonMode: false,
         };
@@ -1871,75 +1872,22 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
     // Must match HomeScreenCompanionTask.DefaultNextWatchDescription (used when the description is empty).
     var NEXT_WATCH_DEFAULT_DESCRIPTION = 'Picked just for you from what you\'ve been watching — fresh recommendations every day.';
-    var NEXT_WATCH_HINT = 'Tick users on the Home Screen tab — HSC creates and updates each person\'s playlist automatically. Each one gets their own picks: titles like the ones they watched lately (local scoring, no AI), shown as a row on their home screen. Tags and collections are shared by all users, so this type does not make them.';
+    var NEXT_WATCH_HINT = 'Each user ticked on the Playlist tab gets their own playlist with their own picks: titles like the ones they watched lately (local scoring, no AI). Show it on their home screen with Section Type "This source\'s playlist" on the Home Screen tab.';
+    var NEXT_WATCH_SHARED_WARNING = '⚠ Your Next Watch is personal: each user gets their own list in their own playlist. A collection or tag is shared, so everyone would see the same titles (the ones picked for the most users), not their own picks.';
 
-    // "Your Next Watch" has one user list: the Home Screen tab's. Every user ticked there gets
-    // their own playlist and row (the server makes them). Older configs kept the users on the
-    // Playlist tab: until the Home Screen tab is opened, those count as ticked too (the server
-    // moves them over on the next run).
-    function nextWatchUserIds(hseTab, hseUserIds, plUserIds) {
-        if (hseTab && hseTab.dataset.hseLoaded === '1') return hseUserIds;
-        var out = (hseUserIds || []).slice();
-        (plUserIds || []).forEach(function (id) { if (out.indexOf(id) === -1) out.push(id); });
-        return out;
+    // Your Next Watch with a tag or collection on: warn (next to both toggles) that those are shared.
+    function updateNextWatchWarning(row) {
+        var isNw = (row.querySelector('.selSourceType') || {}).value === 'NextWatch';
+        var on = isNw && (!!(row.querySelector('.chkEnableTag') || {}).checked || !!(row.querySelector('.chkEnableCollection') || {}).checked);
+        row.querySelectorAll('.nw-shared-warning').forEach(function (el) { el.style.display = on ? 'block' : 'none'; });
     }
 
-    // "Your Next Watch" has no tag or collection (they are global; its output is per user):
-    // hide the Tag and Playlist tabs, keep their checkboxes off, and show Max items + Preview.
-    // Its Playlist tab shows only the playlist look (poster, background, description): the
-    // playlists themselves follow the Home Screen tab's users.
-    function applyNextWatchUi(row) {
-        var isNw = row.querySelector('.selSourceType').value === 'NextWatch';
-        var hidTabActive = false;
-        ['tag', 'collection'].forEach(function (t) {
-            var tab = row.querySelector('.tag-tab[data-tab="' + t + '"]');
-            if (!tab) return;
-            if (isNw && tab.style.opacity === '1') hidTabActive = true;
-            tab.style.display = isNw ? 'none' : '';
-        });
-        if (hidTabActive) { var hsTabBtn = row.querySelector('.tag-tab[data-tab="homescreen"]'); if (hsTabBtn) hsTabBtn.click(); }
-        if (isNw) {
-            var plChk = row.querySelector('.chkEnablePlaylist');
-            if (plChk) plChk.checked = true;
-            ['.chkEnableTag', '.chkEnableCollection'].forEach(function (sel) {
-                var c = row.querySelector(sel);
-                if (c && c.checked) { c.checked = false; c.dispatchEvent(new Event('change', { bubbles: true })); }
-            });
-        }
-        var hseCbx = row.querySelector('.chkEnableHomeSection');
-        var hint = row.querySelector('.hse-disabled-hint');
-        if (isNw && hseCbx) { hseCbx.disabled = false; if (hint) hint.style.display = 'none'; }
-        var nwHint = row.querySelector('.hse-nextwatch-hint');
-        if (nwHint) nwHint.style.display = isNw ? 'block' : 'none';
-        var plHint = row.querySelector('.pl-nextwatch-hint');
-        if (plHint) plHint.style.display = isNw ? 'block' : 'none';
-        if (!isNw) { try { updateHseSectionAvailability(row); } catch (e) { } }
-        applyPlaylistLookUi(row, isNw);
-    }
-
-
-    // Your Next Watch: its playlists follow the Home Screen tab's users and are always on, so its
-    // Playlist tab shows only the playlist look (no Create Playlist box, name or user list). An
-    // empty description there means NEXT_WATCH_DEFAULT_DESCRIPTION.
-    function applyPlaylistLookUi(row, isNw) {
-        var tab = row.querySelector('.playlist-tab');
-        if (!tab) return;
-        var show = function (el, on) { if (el) el.style.display = on ? '' : 'none'; };
-        var chk = tab.querySelector('.chkEnablePlaylist');
-        show(chk && chk.closest('label'), !isNw);
-        show(tab.querySelector('.pl-enable-desc'), !isNw);
-        show(tab.querySelector('.pl-name-box'), !isNw);
-        show(tab.querySelector('.pl-users-box'), !isNw);
-        var settings = tab.querySelector('.playlist-settings');
-        if (settings) {
-            settings.style.display = isNw || (chk && chk.checked) ? 'block' : 'none';
-            settings.style.marginLeft = isNw ? '0' : '20px';
-            settings.style.paddingLeft = isNw ? '0' : '15px';
-            settings.style.borderLeft = isNw ? 'none' : '2px solid var(--line-color)';
-        }
-        var desc = tab.querySelector('.txtPlaylistDescription');
+    // The playlist description placeholder shows the text used when it is left empty.
+    function updatePlaylistDescPlaceholder(row) {
+        var isNw = (row.querySelector('.selSourceType') || {}).value === 'NextWatch';
+        var desc = row.querySelector('.playlist-tab .txtPlaylistDescription');
         if (desc) desc.setAttribute('placeholder', isNw ? NEXT_WATCH_DEFAULT_DESCRIPTION : "Optional description shown on the playlist's page...");
-        var note = tab.querySelector('.pl-desc-note');
+        var note = row.querySelector('.playlist-tab .pl-desc-note');
         if (note) note.textContent = isNw ? 'Leave empty to use the text shown in the box.' : 'Leave empty for no description.';
     }
 
@@ -2006,12 +1954,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var _collTargetSer = tagConfig.CollectionTargetSeries  || tagConfig.MediaInfoTargetSeries  || _legacyTarget === 'Series' || !_collAnySet;
 
         var enableHomeSection = tagConfig.EnableHomeSection ? 'checked' : '';
-        var disableHomeSection = (tagConfig.EnableTag === false && !tagConfig.EnableCollection && tagConfig.SourceType !== 'NextWatch') ? 'disabled' : '';
+        var disableHomeSection = (tagConfig.EnableTag === false && !tagConfig.EnableCollection && !tagConfig.EnablePlaylist) ? 'disabled' : '';
         var homeSectionLibraryId = encodeURIComponent(tagConfig.HomeSectionLibraryId || 'auto');
         var homeSectionUserIdsEnc = encodeURIComponent(JSON.stringify(tagConfig.HomeSectionUserIds || []));
         var homeSectionSettingsEnc = encodeURIComponent(tagConfig.HomeSectionSettings || '{}');
         var homeSectionTrackedEnc = encodeURIComponent(JSON.stringify(tagConfig.HomeSectionTracked || []));
-        var hsDefaultSectionType = tagConfig.EnableCollection ? 'boxset' : (tagConfig.EnableTag ? 'items' : 'boxset');
+        var hsDefaultSectionType = tagConfig.EnableCollection ? 'boxset' : (tagConfig.EnableTag !== false ? 'items' : (tagConfig.EnablePlaylist ? 'playlist' : 'boxset'));
 
         var mediaFilters = (tagConfig.MediaInfoFilters && tagConfig.MediaInfoFilters.length > 0)
             ? tagConfig.MediaInfoFilters
@@ -2054,7 +2002,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var newClass = isNew ? "just-added" : "";
 
         var html = `
-        <div class="tag-row ${inactiveClass} ${newClass}" data-index="${idx}" data-tag="${tagName.toLowerCase()}" data-last-modified="${lastMod}" data-dirty="false">
+        <div class="tag-row ${inactiveClass} ${newClass}" data-index="${idx}" data-tag="${tagName.toLowerCase()}" data-last-modified="${lastMod}" data-nw-migrated="${tagConfig.NextWatchUsersMigrated ? '1' : '0'}" data-dirty="false">
             <div class="tag-header" style="display:flex; align-items:center; justify-content:space-between; padding:10px; cursor:pointer;">
                 <div style="display:flex; align-items:center;">
                     <div class="header-actions" style="margin-right:15px; display:flex; align-items:center;" onclick="event.stopPropagation()">
@@ -2276,6 +2224,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                 <span>Apply Tag</span>
                             </label>
                             <div class="fieldDescription">Automatically tag matched items in Emby.</div>
+                            <div class="nw-shared-warning fieldDescription" style="display:none; color:#e0a040; margin-top:6px;">${NEXT_WATCH_SHARED_WARNING}</div>
                         </div>
                         <div class="tag-settings" style="margin-left: 20px; padding-left: 15px; border-left: 2px solid var(--line-color); margin-top: 10px; display: ${tagConfig.EnableTag !== false ? 'block' : 'none'};">
                             <div class="mi-tag-target-section" style="margin-top:4px;">
@@ -2365,6 +2314,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             <span>Create Collection</span>
                         </label>
                         <div class="fieldDescription">Automatically create and maintain an Emby Collection from these items.</div>
+                        <div class="nw-shared-warning fieldDescription" style="display:none; color:#e0a040; margin-top:6px;">${NEXT_WATCH_SHARED_WARNING}</div>
                     </div>
                     
                     <div class="collection-settings" style="margin-left: 20px; padding-left: 15px; border-left: 2px solid var(--line-color); margin-top: 10px; display: ${tagConfig.EnableCollection ? 'block' : 'none'};">
@@ -2485,7 +2435,6 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             <span>Create Playlist</span>
                         </label>
                         <div class="fieldDescription pl-enable-desc">Automatically create and maintain an individual Emby Playlist for each selected user.</div>
-                        <div class="pl-nextwatch-hint fieldDescription" style="display:none; margin-top:6px;">Your Next Watch: each selected user gets their <strong>own</strong> picks (not the same list for everyone). Required — the home screen row shows this playlist. A show is added as its first episode (Emby playlists hold episodes, not shows); the home screen row still shows the show's poster.</div>
                     </div>
                     <div class="playlist-settings" style="margin-left: 20px; padding-left: 15px; border-left: 2px solid var(--line-color); margin-top: 10px; display: ${tagConfig.EnablePlaylist ? 'block' : 'none'};">
                         <div class="inputContainer pl-name-box">
@@ -2521,8 +2470,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             <span>Add as home screen section</span>
                         </label>
                         <div class="fieldDescription">A home screen section will be managed for selected users each time sync runs.</div>
-                        <div class="hse-disabled-hint" style="font-size:0.9em; color:#e07070; margin-top:4px; display:${(tagConfig.EnableTag === false && !tagConfig.EnableCollection && sourceType !== 'NextWatch') ? 'block' : 'none'};">Requires <strong>Apply Tag</strong> or <strong>Create Collection</strong> to be enabled.</div>
-                        <div class="hse-nextwatch-hint fieldDescription" style="display:none; margin-top:4px;">Your Next Watch: every user ticked below gets <strong>their own</strong> playlist (HSC creates, updates and removes it) and a row showing it, in pick order (<em>Sort By: Random</em> shuffles it on every load). Untick a user to remove both on the next run. A show goes into the playlist as its first episode (Emby playlists hold episodes); the row still shows the show's poster. The playlist is named after the Display Name.</div>
+                        <div class="hse-disabled-hint" style="font-size:0.9em; color:#e07070; margin-top:4px; display:${(tagConfig.EnableTag === false && !tagConfig.EnableCollection && !tagConfig.EnablePlaylist) ? 'block' : 'none'};">Requires <strong>Apply Tag</strong>, <strong>Create Collection</strong> or <strong>Create Playlist</strong> to be enabled.</div>
                     </div>
                     <div class="hse-details" style="display:${enableHomeSection ? 'block' : 'none'}; margin-top:15px;">
                         <div style="margin-bottom:15px;">
@@ -2550,7 +2498,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var newRow = afterRef ? afterRef.nextElementSibling : (prepend ? container.firstElementChild : container.lastElementChild);
         setupRowEvents(newRow);
         initManualEditor(newRow);
-        applyNextWatchUi(newRow);
+        updateNextWatchWarning(newRow);
+        updatePlaylistDescPlaceholder(newRow);
         // Auto-size any pre-filled growing textareas
         newRow.querySelectorAll('textarea.txtMiValue, textarea.txtTagBlacklist').forEach(function (ta) {
             ta.style.height = 'auto';
@@ -2642,7 +2591,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 row.querySelector('.homescreen-tab').style.display = target === 'homescreen' ? 'block' : 'none';
                 row.querySelector('.playlist-tab').style.display = target === 'playlist' ? 'block' : 'none';
                 if (target === 'homescreen') initHomeSectionTab(row);
-                if (target === 'playlist' && row.querySelector('.selSourceType').value !== 'NextWatch') initPlaylistTab(row);   // Next Watch: look only
+                if (target === 'playlist') initPlaylistTab(row);
                 var activeTabEl = row.querySelector('.' + target + '-tab');
                 if (activeTabEl) activeTabEl.querySelectorAll('textarea.txtMiValue, textarea.txtTagBlacklist').forEach(function(ta) {
                     ta.style.height = 'auto';
@@ -2685,7 +2634,22 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 if (miLimitRow) miLimitRow.style.display = isMi || type === 'NextWatch' ? 'flex' : 'none';
                 var miLimitInput = row.querySelector('.txtMediaInfoLimit');
                 if (type === 'NextWatch' && miLimitInput && !(parseInt(miLimitInput.value, 10) > 0)) miLimitInput.value = '50';
-                applyNextWatchUi(row);
+                if (type === 'NextWatch') {
+                    // Default for a Your Next Watch source (can be changed): its picks go to each
+                    // user's own playlist, so Create Playlist starts on.
+                    var _plChk = row.querySelector('.chkEnablePlaylist');
+                    if (_plChk && !_plChk.checked) { _plChk.checked = true; _plChk.dispatchEvent(new Event('change', { bubbles: true })); }
+                    // A tag or collection is shared by everyone (not each user's own picks), so
+                    // Apply Tag and Create Collection start off. They can be turned back on.
+                    ['.chkEnableTag', '.chkEnableCollection'].forEach(function (sel) {
+                        var _c = row.querySelector(sel);
+                        if (_c && _c.checked) { _c.checked = false; _c.dispatchEvent(new Event('change', { bubbles: true })); }
+                    });
+                    // A source made Your Next Watch here needs no move of older users.
+                    row.dataset.nwMigrated = '1';
+                }
+                updateNextWatchWarning(row);
+                updatePlaylistDescPlaceholder(row);
                 if (miHelpBtnRow) miHelpBtnRow.style.display = isMi ? 'none' : 'flex';
                 if (isMi) {
                     if (miToggleRow)  miToggleRow.style.display  = 'none';
@@ -2781,17 +2745,20 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             row.querySelector('.tag-settings').style.display = this.checked ? 'block' : 'none';
             updateBadges(row);
             updateHseSectionAvailability(row);
+            updateNextWatchWarning(row);
         });
 
         row.querySelector('.chkEnableCollection').addEventListener('change', function () {
             row.querySelector('.collection-settings').style.display = this.checked ? 'block' : 'none';
             updateBadges(row);
             updateHseSectionAvailability(row);
+            updateNextWatchWarning(row);
         });
 
         row.querySelector('.chkEnablePlaylist').addEventListener('change', function () {
             row.querySelector('.playlist-settings').style.display = this.checked ? 'block' : 'none';
             updateBadges(row);
+            updateHseSectionAvailability(row);
         });
 
         row.querySelector('.chkOverrideWhenActive').addEventListener('change', function () {
@@ -3734,7 +3701,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }).join('');
     }
 
-    function buildHomeSectionFormHtml(savedSettings, defaultSectionType, defaultName, tagEnabled, collEnabled, libraryOptions, savedLibraryId, allLibraries, nextWatch) {
+    var PLAYLIST_SECTION_LABEL = "This source's playlist (each user's own)";
+
+    function buildHomeSectionFormHtml(savedSettings, defaultSectionType, defaultName, tagEnabled, collEnabled, libraryOptions, savedLibraryId, allLibraries, plEnabled) {
         var s = savedSettings || {};
         var html = '';
 
@@ -3742,9 +3711,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         html += '<div style="margin-bottom:12px;"><label class="selectLabel">Section Type</label>';
         html += '<select is="emby-select" class="selHseSectionType hse-field-str" data-field="SectionType" style="width:100%;">';
         var sectionTypeOptions = [];
-        if (nextWatch) { sectionTypeOptions.push(['playlist', "The user's own Your Next Watch playlist"]); st = 'playlist'; }
-        if (collEnabled && !nextWatch) sectionTypeOptions.push(['boxset', 'Single Collection']);
-        if (tagEnabled && !nextWatch)  sectionTypeOptions.push(['items',  'Dynamic Media (tag)']);
+        if (collEnabled) sectionTypeOptions.push(['boxset', 'Single Collection']);
+        if (tagEnabled)  sectionTypeOptions.push(['items',  'Dynamic Media (tag)']);
+        if (plEnabled)   sectionTypeOptions.push(['playlist', PLAYLIST_SECTION_LABEL]);
         sectionTypeOptions.forEach(function(o) {
             html += '<option value="' + o[0] + '"' + (st === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
         });
@@ -3785,7 +3754,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         itemTypeOptions.forEach(function(o) {
             html += '<option value="' + o[0] + '"' + (savedItemTypesStr === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
         });
-        html += '</select></div>';
+        html += '</select>';
+        html += '<div class="fieldDescription hse-playlist-only">Playlist rows show the whole playlist: <em>Media Type</em> and <em>Playstate</em> are not used (filter the source itself instead).</div>';
+        html += '</div>';
 
         var customName = (s.CustomName || '').replace(/"/g, '&quot;');
         var customNamePlaceholder = (defaultName || '').replace(/"/g, '&quot;');
@@ -3801,13 +3772,13 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         html += '</select></div>';
 
         // Your Next Watch: Primary = show cards use the show's poster (Auto would show the episode image).
-        var imgTypeVal = s.ImageType || (nextWatch ? 'Primary' : '');
+        var imgTypeVal = s.ImageType || (st === 'playlist' ? 'Primary' : '');
         var imgTypeDisabled = viewTypeVal === 'spotlight';
         html += '<div style="margin-bottom:12px;"><label class="selectLabel">Image Type</label>';
         html += '<select is="emby-select" class="selHseImageType hse-field-str" data-field="ImageType" style="width:100%;"' + (imgTypeDisabled ? ' disabled' : '') + '><option value=""' + (imgTypeVal === '' ? ' selected' : '') + '>Auto</option>';
         ['Primary','Thumb'].forEach(function(o) { html += '<option value="' + o + '"' + (imgTypeVal === o ? ' selected' : '') + '>' + o + '</option>'; });
         html += '</select>';
-        if (nextWatch) html += '<div class="fieldDescription">Your Next Watch: <em>Auto</em> and <em>Primary</em> show a show\'s poster on its card (the playlist holds its first episode); <em>Thumb</em> shows the show\'s landscape image.</div>';
+        html += '<div class="fieldDescription hse-playlist-only">Playlist rows: <em>Auto</em> and <em>Primary</em> show a show\'s poster on its card (the playlist holds its first episode); <em>Thumb</em> shows the show\'s landscape image.</div>';
         html += '</div>';
 
         html += '<div style="margin-bottom:12px;"><label class="selectLabel">Card Size</label>';
@@ -3829,7 +3800,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             html += '<option value="' + o[0] + '"' + (sortByVal === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
         });
         html += '</select>';
-        if (nextWatch) html += '<div class="fieldDescription">Your Next Watch: <em>(Default)</em> keeps the playlist order, best match first. <em>Random</em> shuffles the row every time the home screen loads, so it shows a different few of the list each time.</div>';
+        html += '<div class="fieldDescription hse-playlist-only">Playlist rows: <em>(Default)</em> keeps the playlist order (Your Next Watch: best match first). <em>Random</em> shuffles the row every time the home screen loads, so it shows a different few of the list each time.</div>';
         html += '</div>';
 
         var sortOrderVal = s.SortOrder || '';
@@ -3891,9 +3862,13 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
     function updateHseItemsOnlyVisibility(tab) {
         var stSel = tab.querySelector('.selHseSectionType');
-        var isItems = !stSel || (stSel.value !== 'boxset' && stSel.value !== 'playlist');
+        var isItems = !stSel || stSel.value !== 'boxset';
         tab.querySelectorAll('.hse-items-only').forEach(function(el) {
             el.style.display = isItems ? '' : 'none';
+        });
+        var isPlaylist = !!stSel && stSel.value === 'playlist';
+        tab.querySelectorAll('.hse-playlist-only').forEach(function(el) {
+            el.style.display = isPlaylist ? '' : 'none';
         });
     }
 
@@ -4029,12 +4004,6 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var savedUserIds = [];
         var savedSettings = {};
         try { savedUserIds = JSON.parse(decodeURIComponent(tab.dataset.hseUserids || '%5B%5D')); } catch {}
-        if ((row.querySelector('.selSourceType') || {}).value === 'NextWatch') {
-            // Older "Your Next Watch" configs kept their users on the Playlist tab — show them ticked here.
-            var _nwPl = [];
-            try { _nwPl = JSON.parse(decodeURIComponent((row.querySelector('.playlist-tab') || { dataset: {} }).dataset.plUserids || '%5B%5D')); } catch {}
-            savedUserIds = nextWatchUserIds(null, savedUserIds, _nwPl);
-        }
         try { savedSettings = JSON.parse(decodeURIComponent(tab.dataset.hseSettings || '%7B%7D')); } catch {}
         var defaultSectionType = tab.dataset.hseDefaultType || 'items';
         var savedLibraryId = decodeURIComponent(tab.dataset.hseLibraryid || 'auto');
@@ -4080,8 +4049,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var _wasAlreadyDirty = _hseView && originalConfigState &&
                     JSON.stringify(getUiConfig(_hseView, true)) !== originalConfigState;
 
-                var nextWatch = (row.querySelector('.selSourceType') || {}).value === 'NextWatch';
-                tab.querySelector('.hse-fields-inner').innerHTML = buildHomeSectionFormHtml(savedSettings, defaultSectionType, defaultTagName, tagEnabled, collEnabled, libraryOptions, savedLibraryId, allLibraries, nextWatch);
+                var plEnabled = !!(row.querySelector('.chkEnablePlaylist') || {}).checked;
+                tab.querySelector('.hse-fields-inner').innerHTML = buildHomeSectionFormHtml(savedSettings, defaultSectionType, defaultTagName, tagEnabled, collEnabled, libraryOptions, savedLibraryId, allLibraries, plEnabled);
                 wireHomeSectionTypeChange(tab);
 
                 // Mark as fully loaded only after form is in DOM so getUiConfig reads form values
@@ -4106,18 +4075,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var collEnabled = !!(row.querySelector('.chkEnableCollection') || {}).checked;
         var hseCbx = row.querySelector('.chkEnableHomeSection');
         if (!hseCbx) return;
-        if ((row.querySelector('.selSourceType') || {}).value === 'NextWatch') {
-            // The row shows each user's own playlist — no tag or collection needed.
-            hseCbx.disabled = false;
-            var nwHint0 = row.querySelector('.hse-disabled-hint');
-            if (nwHint0) nwHint0.style.display = 'none';
-            var nwTab = row.querySelector('.homescreen-tab');
-            if (nwTab && nwTab.dataset.hseLoaded === '1') refreshHseSectionTypeOptions(nwTab, false, false, true);
-            return;
-        }
+        var plEnabled = !!(row.querySelector('.chkEnablePlaylist') || {}).checked;
 
         var hint = row.querySelector('.hse-disabled-hint');
-        if (!tagEnabled && !collEnabled) {
+        if (!tagEnabled && !collEnabled && !plEnabled) {
             hseCbx.disabled = true;
             hseCbx.checked = false;
             if (hint) hint.style.display = 'block';
@@ -4131,18 +4092,18 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
         var tab = row.querySelector('.homescreen-tab');
         if (tab && tab.dataset.hseLoaded === '1') {
-            refreshHseSectionTypeOptions(tab, tagEnabled, collEnabled);
+            refreshHseSectionTypeOptions(tab, tagEnabled, collEnabled, plEnabled);
         }
     }
 
-    function refreshHseSectionTypeOptions(tab, tagEnabled, collEnabled, nextWatch) {
+    function refreshHseSectionTypeOptions(tab, tagEnabled, collEnabled, plEnabled) {
         var stSel = tab.querySelector('.selHseSectionType');
         if (!stSel) return;
         var currentVal = stSel.value;
         stSel.innerHTML = '';
-        if (nextWatch) { var o0 = document.createElement('option'); o0.value = 'playlist'; o0.textContent = "The user's own Your Next Watch playlist"; stSel.appendChild(o0); updateHseItemsOnlyVisibility(tab); return; }
         if (collEnabled) { var o1 = document.createElement('option'); o1.value = 'boxset'; o1.textContent = 'Single Collection'; stSel.appendChild(o1); }
         if (tagEnabled)  { var o2 = document.createElement('option'); o2.value = 'items';  o2.textContent = 'Dynamic Media (tag)'; stSel.appendChild(o2); }
+        if (plEnabled)   { var o3 = document.createElement('option'); o3.value = 'playlist'; o3.textContent = PLAYLIST_SECTION_LABEL; stSel.appendChild(o3); }
         var stillValid = Array.from(stSel.options).some(function(o) { return o.value === currentVal; });
         if (stillValid) stSel.value = currentVal;
         updateHseItemsOnlyVisibility(tab);
@@ -4265,16 +4226,17 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 MediaInfoTargetEpisode: false, MediaInfoTargetSeason: false, MediaInfoTargetSeries: false,
                 MediaInfoTargetType: '', MediaInfoSeasonMode: false,
                 EnableHomeSection: enableHse, HomeSectionLibraryId: hseLibraryId,
-                HomeSectionUserIds: st === 'NextWatch' ? nextWatchUserIds(hseTab, hseUserIds, plUserIds2) : hseUserIds,
+                HomeSectionUserIds: hseUserIds,
                 HomeSectionSettings: JSON.stringify(hseSettings),
                 HomeSectionTracked: hseTracked,
-                EnablePlaylist:   st === 'NextWatch' || !!(row.querySelector('.chkEnablePlaylist') || {}).checked,
+                EnablePlaylist:   !!(row.querySelector('.chkEnablePlaylist') || {}).checked,
                 PlaylistName:     (row.querySelector('.txtPlaylistName') || { value: '' }).value,
                 PlaylistDescription: readPlaylistLook(row).PlaylistDescription, PlaylistPosterPath: readPlaylistLook(row).PlaylistPosterPath,
                 PlaylistPosterStyle: readPlaylistLook(row).PlaylistPosterStyle, PlaylistBackgroundStyle: readPlaylistLook(row).PlaylistBackgroundStyle,
                 PlaylistBackgroundPath: readPlaylistLook(row).PlaylistBackgroundPath, PlaylistArtTitle: readPlaylistLook(row).PlaylistArtTitle,
-                PlaylistUserIds:  st === 'NextWatch' ? [] : plUserIds2,
-                PlaylistMappings: (function() { try { return JSON.parse(decodeURIComponent((plTab2 && plTab2.dataset.plMappings) || '%5B%5D')); } catch { return []; } })()
+                PlaylistUserIds:  plUserIds2,
+                PlaylistMappings: (function() { try { return JSON.parse(decodeURIComponent((plTab2 && plTab2.dataset.plMappings) || '%5B%5D')); } catch { return []; } })(),
+                NextWatchUsersMigrated: row.dataset.nwMigrated === '1'
             };
 
             if (st === 'External') {
@@ -4315,7 +4277,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 }));
             } else if (st === 'NextWatch') {
                 var nwLimitVal = parseInt((row.querySelector('.txtMediaInfoLimit') || {}).value, 10) || 50;
-                flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: nwLimitVal, LocalSourceId: "", EnableTag: false, EnableCollection: false }));
+                flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: nwLimitVal, LocalSourceId: "" }));
             } else {
                 var miLimitVal = parseInt((row.querySelector('.txtMediaInfoLimit') || {}).value, 10) || 0;
                 flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: miLimitVal, LocalSourceId: "" }));
@@ -4578,13 +4540,25 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     PlaylistBackgroundPath: t.PlaylistBackgroundPath || '', PlaylistArtTitle: t.PlaylistArtTitle || '',
                     PlaylistUserIds:  t.PlaylistUserIds  || [],
                     PlaylistMappings: t.PlaylistMappings || [],
+                    NextWatchUsersMigrated: !!t.NextWatchUsersMigrated,
                 };
             }
             if (t.SourceType === 'External' && t.Url) grouped[key].Urls.push({ url: t.Url, limit: t.Limit });
             if ((t.SourceType === 'LocalCollection' || t.SourceType === 'LocalPlaylist') && t.LocalSourceId) grouped[key].LocalSources.push({ id: t.LocalSourceId, limit: t.Limit });
             if (t.SourceType === 'MediaInfo') grouped[key].Limit = t.Limit;
             if (t.SourceType === 'AI') grouped[key].Limit = t.Limit;
-            if (t.SourceType === 'NextWatch') grouped[key].Limit = t.Limit;
+            if (t.SourceType === 'NextWatch') {
+                grouped[key].Limit = t.Limit;
+                // Older Your Next Watch configs kept their users on the Home Screen tab: the Playlist
+                // tab's users now decide who gets a list, so an empty list takes those users — once
+                // (NextWatchUsersMigrated; the server does the same on its next run), so a list the
+                // user empties later stays empty.
+                if (!grouped[key].NextWatchUsersMigrated) {
+                    if (grouped[key].EnablePlaylist && !grouped[key].PlaylistUserIds.length && (grouped[key].HomeSectionUserIds || []).length)
+                        grouped[key].PlaylistUserIds = grouped[key].HomeSectionUserIds.slice();
+                    grouped[key].NextWatchUsersMigrated = true;
+                }
+            }
             if (t.SourceType === 'Manual') grouped[key].ManualItemIds = t.ManualItemIds || [];
         });
         return grouped;

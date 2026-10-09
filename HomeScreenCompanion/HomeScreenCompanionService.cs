@@ -1297,9 +1297,10 @@ public class HomeScreenCompanionService : IService
                 catch { }
 
                 if (!settingsDict.ContainsKey("SectionType"))
-                    settingsDict["SectionType"] = (tc.EnableCollection && !string.IsNullOrEmpty(tc.CollectionName)) ? "boxset" : "items";
-                // NextWatch rows keep their per-user playlist (ParentId is left as it is).
-                if (HomeScreenCompanionTask.IsNextWatch(tc)) HomeScreenCompanionTask.NormalizeNextWatchSectionSettings(settingsDict);
+                    settingsDict["SectionType"] = (tc.EnableCollection && !string.IsNullOrEmpty(tc.CollectionName)) ? "boxset"
+                        : !tc.EnableTag && tc.EnablePlaylist ? "playlist" : "items";
+                // Playlist rows keep each user's own playlist (ParentId is left as it is).
+                HomeScreenCompanionTask.NormalizePlaylistSectionSettings(settingsDict);
 
                 settingsDict.TryGetValue("SectionType", out var sectionType);
 
@@ -2926,8 +2927,8 @@ public class HomeScreenCompanionService : IService
                         catch { }
 
                         tcSettings.TryGetValue("SectionType", out var tcSt);
-                        // Only items rows get the top-list exclusion; a NextWatch row shows a playlist.
-                        if (tcSt == "boxset" || tcSt == "playlist" || HomeScreenCompanionTask.IsNextWatch(tc)) continue;
+                        // Only items rows get the top-list exclusion (boxset and playlist rows show one item list).
+                        if (tcSt == "boxset" || tcSt == "playlist") continue;
 
                         var existingExcluded = (tcSettings.TryGetValue("_queryExcludeViewIds", out var ev) ? ev : "")
                             .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
