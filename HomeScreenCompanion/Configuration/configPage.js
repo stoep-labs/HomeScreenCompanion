@@ -1185,6 +1185,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var state = Object.assign({}, def);
             ART_FIELDS.forEach(function (k) { if (stored[k] !== undefined && stored[k] !== null) state[k] = stored[k]; });
             if (typeof state.colour === 'string') state.colour = state.colour.toLowerCase();
+            // A saved font the server no longer has draws as the style's own font: show that one.
+            if (!info.Fonts.some(function (f) { return f.Id === state.font; })) state.font = def.font;
             render();
 
             function seg(field, opts) {
@@ -1244,7 +1246,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             }
             function render() {
                 var titleOff = state.title ? '' : 'The title is off.';
-                var fonts = fontTilesHtml(info.Fonts, state.font);
+                var fonts = fontTilesHtml(info.Fonts, state.font, def.font);
                 var dots = '<div class="artc-pos">' + ['tl', 'tc', 'tr', 'ml', 'mc', 'mr', 'bl', 'bc', 'br'].map(function (p) {
                     return '<button type="button" class="artc-dot' + (state.pos === p ? ' artc-on' : '') + '" data-value="' + p + '" title="' + p + '"><span></span></button>';
                 }).join('') + '</div>';
@@ -6354,9 +6356,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     }
     // Font tiles for both Customise popups, grouped (General / Horror / …); each tile is the
     // server's sample of the font (its name drawn in the font). The list sits in the popup's
-    // normal flow — no inner scroll box.
-    function fontTilesHtml(fonts, selected) {
+    // normal flow — no inner scroll box. defId is the font drawn when none is chosen: its tile is
+    // marked "(default)" (and added if the list lacks it), so the default is always visible.
+    function fontTilesHtml(fonts, selected, defId) {
         var groups = {}, order = [];
+        if (defId && !fonts.some(function (f) { return f.Id === defId; }))
+            fonts = [{ Id: defId, Name: defId.charAt(0).toUpperCase() + defId.slice(1), Group: 'General' }].concat(fonts);
         fonts.forEach(function (f) {
             var g = f.Group || 'General';
             if (!groups[g]) { groups[g] = []; order.push(g); }
@@ -6364,8 +6369,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         });
         return '<div class="artc-fonts">' + order.map(function (g) {
             return '<div class="artc-fontgroup">' + escapeHtml(g) + '</div>' + groups[g].map(function (f) {
-                return '<button type="button" class="artc-font' + (selected === f.Id ? ' artc-on' : '') + '" data-value="' + f.Id + '" title="' + escapeHtml(f.Name) + '" aria-label="' + escapeHtml(f.Name) + '">'
-                    + (f.Sample ? '<img src="' + f.Sample + '" alt="' + escapeHtml(f.Name) + '" />' : '<span class="artc-fontname">' + escapeHtml(f.Name) + '</span>') + '</button>';
+                var isDef = f.Id === defId, nm = f.Name + (isDef ? ' (default)' : '');
+                return '<button type="button" class="artc-font' + (selected === f.Id ? ' artc-on' : '') + '" data-value="' + f.Id + '" title="' + escapeHtml(nm) + '" aria-label="' + escapeHtml(nm) + '"' + (isDef ? ' style="flex-direction:column;"' : '') + '>'
+                    + (f.Sample ? '<img src="' + f.Sample + '" alt="' + escapeHtml(f.Name) + '" />' : '<span class="artc-fontname">' + escapeHtml(f.Name) + '</span>')
+                    + (isDef ? '<span class="artc-fontdef" style="font-size:0.72em; line-height:1.2; margin-top:2px;">(default)</span>' : '') + '</button>';
             }).join('');
         }).join('') + '</div>';
     }
@@ -6408,6 +6415,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var BIG_KEYS = ['font', 'num', 'numcolour', 'outcolour'];
             var BIG_LOOK = { font: 'anton', num: 'outline', numcolour: '#000000', outcolour: '#ffffff' };
             if (!tile && state.shape === 'bigoutline') BIG_KEYS.forEach(function (k) { if (stored[k] == null) state[k] = BIG_LOOK[k]; });
+            // The font drawn when none is chosen (Big numeral has its own); a saved font the server no longer has draws as that.
+            function defFont() { return !tile && state.shape === 'bigoutline' ? BIG_LOOK.font : def.font; }
+            if (!info.Fonts.some(function (f) { return f.Id === state.font; })) state.font = defFont();
             // Two previews, one per image the row can use; the list's Image Type picks the one in use.
             var imgSel = container && container.querySelector && container.querySelector('.tlm-image-type, .mtlImageType');
             var imageType = imgSel ? imgSel.value : '';
@@ -6482,7 +6492,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     '<div class="artc-hint"' + (note ? '' : ' style="display:none;"') + '>' + escapeHtml(note || '') + '</div></div>';
             }
             function render() {
-                var fonts = fontTilesHtml(info.Fonts, state.font);
+                var fonts = fontTilesHtml(info.Fonts, state.font, defFont());
                 var SHAPES = [['circle', 'Circle'], ['roundsq', 'Rounded square'], ['pill', 'Pill #1'], ['ribbon', 'Ribbon'], ['banner', 'Flag'], ['diag', 'Diagonal'], ['netflix', 'TOP 10 square'], ['numonly', 'Number only'], ['bigoutline', 'Big numeral'], ['hidden', 'None (extras only)']];
                 var shapes = '<div class="artc-shapes" data-field="shape">' + SHAPES.map(function (o) {
                     var img = info.ShapeSamples && info.ShapeSamples[o[0]];
@@ -6521,7 +6531,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             field('Size', seg('size', [['s', 'S'], ['m', 'M'], ['l', 'L'], ['xl', 'XL']]), 'size')) +
                         section('Shape', field('Shape', shapes, 'shape', shapeNote)) +
                         section('Colours',
-                            field('Badge colour', colours('colour', state.shape === 'netflix' ? [] : badgeCols), 'colour', state.shape === 'netflix' ? 'The TOP 10 square is red unless you type a hex colour.' : '') +
+                            field('Badge colour', colours('colour', state.shape === 'netflix' ? [[state.colour && state.colour[0] !== '#' ? state.colour : (presetInput.value || 'neutral'), 'TOP 10 red (default)', '#e50914']] : badgeCols), 'colour', state.shape === 'netflix' ? 'The TOP 10 square is red unless you type a hex colour.' : '') +
                             field('Medal colours for 1–3', seg('medal', [['', 'Off'], ['flat', 'Flat'], ['metal', 'Metallic']]), 'medal') +
                             field('Shadow', seg('shadow', [[false, 'Off'], [true, 'On']]), 'shadow')) +
                         section('Position',
