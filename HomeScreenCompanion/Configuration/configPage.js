@@ -1094,8 +1094,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     function isKeepArtStyle(v) { return v === 'keep'; }
     // A generated style (drawn by the server): not Custom / Emby's own ('') and not Keep current.
     function isGenArtStyle(v) { return !!v && v !== 'keep'; }
-    // Keep current image is offered on an imported collection only (imported = TagConfig.CollectionImported);
-    // a source that already has 'keep' saved still shows it (selected), so nothing breaks.
+    // Keep current image is offered on an imported collection until a run has replaced that image
+    // with HSC's own (TagConfig.CollectionPosterReplaced / CollectionBackgroundReplaced, set by the sync);
+    // while 'keep' is selected it always shows, so nothing breaks.
     function buildCollStylePickerHtml(kind, selected, scope, options, imported) {
         var sel = selected || '';
         var showKeep = (scope === 'collection' && !!imported) || isKeepArtStyle(sel);
@@ -1568,6 +1569,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             CollectionBackgroundStyle: readCollectionArt(row).CollectionBackgroundStyle,
             CollectionBackgroundPath: readCollectionArt(row).CollectionBackgroundPath,
             CollectionSortToTop: readCollectionArt(row).CollectionSortToTop, CollectionImported: row.dataset.collImported === '1',
+            CollectionPosterReplaced: row.dataset.posterReplaced === '1', CollectionBackgroundReplaced: row.dataset.bgReplaced === '1',
             CollectionArtTitle: readCollectionArt(row).CollectionArtTitle,
             CollectionPosterOptions: readCollectionArt(row).CollectionPosterOptions,
             CollectionBackgroundOptions: readCollectionArt(row).CollectionBackgroundOptions,
@@ -2384,7 +2386,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var newClass = isNew ? "just-added" : "";
 
         var html = `
-        <div class="tag-row ${inactiveClass} ${newClass}" data-index="${idx}" data-tag="${tagName.toLowerCase()}" data-last-modified="${lastMod}" data-nw-migrated="${tagConfig.NextWatchUsersMigrated ? '1' : '0'}" data-coll-imported="${tagConfig.CollectionImported ? '1' : '0'}" data-dirty="false">
+        <div class="tag-row ${inactiveClass} ${newClass}" data-index="${idx}" data-tag="${tagName.toLowerCase()}" data-last-modified="${lastMod}" data-nw-migrated="${tagConfig.NextWatchUsersMigrated ? '1' : '0'}" data-coll-imported="${tagConfig.CollectionImported ? '1' : '0'}" data-imported-st="${tagConfig.CollectionImported ? (tagConfig.SourceType || '') : ''}" data-poster-replaced="${tagConfig.CollectionPosterReplaced ? '1' : '0'}" data-bg-replaced="${tagConfig.CollectionBackgroundReplaced ? '1' : '0'}" data-dirty="false">
             <div class="tag-header" style="display:flex; align-items:center; justify-content:space-between; padding:10px; cursor:pointer;">
                 <div style="display:flex; align-items:center;">
                     <div class="header-actions" style="margin-right:15px; display:flex; align-items:center;" onclick="event.stopPropagation()">
@@ -2738,7 +2740,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                         <div style="margin-top:15px;">
                             <p class="coll-poster-heading" style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Collection Poster</p>
-                            ${buildCollStylePickerHtml('poster', tagConfig.CollectionPosterStyle, 'collection', tagConfig.CollectionPosterOptions, tagConfig.CollectionImported)}
+                            ${buildCollStylePickerHtml('poster', tagConfig.CollectionPosterStyle, 'collection', tagConfig.CollectionPosterOptions, tagConfig.CollectionImported && !tagConfig.CollectionPosterReplaced)}
                             <div class="coll-poster-upload" style="display:${tagConfig.CollectionPosterStyle ? 'none' : 'block'};">
                             <div class="poster-preview-container" style="margin-bottom:8px; display:${collPosterPath ? 'block' : 'none'};">
                                 <span class="poster-filename" style="font-size:0.85em; opacity:0.7;">${collPosterPath ? collPosterPath.split(/[\\\\/]/).pop() : ''}</span>
@@ -2765,7 +2767,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                         <div style="margin-top:15px;">
                             <p class="coll-bg-heading" style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Collection Background</p>
-                            ${buildCollStylePickerHtml('background', tagConfig.CollectionBackgroundStyle, 'collection', tagConfig.CollectionBackgroundOptions, tagConfig.CollectionImported)}
+                            ${buildCollStylePickerHtml('background', tagConfig.CollectionBackgroundStyle, 'collection', tagConfig.CollectionBackgroundOptions, tagConfig.CollectionImported && !tagConfig.CollectionBackgroundReplaced)}
                             <div class="coll-bg-upload" style="display:${tagConfig.CollectionBackgroundStyle ? 'none' : 'block'};">
                             <div class="bg-preview-container" style="margin-bottom:8px; display:${tagConfig.CollectionBackgroundPath ? 'block' : 'none'};">
                                 <span class="bg-filename" style="font-size:0.85em; opacity:0.7;">${tagConfig.CollectionBackgroundPath ? tagConfig.CollectionBackgroundPath.split(/[\\\\/]/).pop() : ''}</span>
@@ -2993,6 +2995,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         row.addEventListener('change', e => {
             if (e.target.classList.contains('selSourceType')) {
                 var type = e.target.value;
+                // Another kind of source is no longer the imported collection (saved with Save);
+                // switching back before saving makes it imported again.
+                if (row.dataset.importedSt) {
+                    row.dataset.collImported = type === row.dataset.importedSt ? '1' : '0';
+                    updateBadges(row);
+                }
                 row.querySelector('.source-external-container').style.display = type === 'External' ? 'block' : 'none';
                 row.querySelector('.source-local-container').style.display = (type === 'LocalCollection' || type === 'LocalPlaylist') ? 'block' : 'none';
                 row.querySelector('.source-mediainfo-container').style.display = (type && type !== '') ? 'block' : 'none';
@@ -4734,6 +4742,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 CollectionBackgroundStyle: readCollectionArt(row).CollectionBackgroundStyle,
                 CollectionBackgroundPath: readCollectionArt(row).CollectionBackgroundPath,
                 CollectionSortToTop: readCollectionArt(row).CollectionSortToTop, CollectionImported: row.dataset.collImported === '1',
+            CollectionPosterReplaced: row.dataset.posterReplaced === '1', CollectionBackgroundReplaced: row.dataset.bgReplaced === '1',
                 CollectionArtTitle: readCollectionArt(row).CollectionArtTitle,
                 CollectionPosterOptions: readCollectionArt(row).CollectionPosterOptions,
                 CollectionBackgroundOptions: readCollectionArt(row).CollectionBackgroundOptions,
@@ -4847,6 +4856,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             PreserveTagsOnEmptyResult: view.querySelector('#chkPreserveTagsOnEmptyResult').checked,
             TopListMirrorCollections: view.querySelector('#chkTopListMirrorCollections').checked,
             HideTopListLibraries: view.querySelector('#chkHideTopListLibraries').checked,
+            ShowCopyPasteButtons: view.querySelector('#chkShowCopyPasteButtons').checked,
+            ShowImportCollectionButton: view.querySelector('#chkShowImportCollectionButton').checked,
             Tags: flatTags,
             SavedFilters: savedFilters,
             HomeSyncEnabled: hscEnabled ? hscEnabled.checked : (lastHscConfig.HomeSyncEnabled || false),
@@ -4901,6 +4912,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     function updateDryRunWarning() {
         var view = activeView();
         if (!view || !originalConfigState) return;
+        // Settings > Features: the buttons follow the saved settings, like this warning.
+        try {
+            var saved = JSON.parse(originalConfigState);
+            view.classList.toggle('hsc-no-copypaste', !saved.ShowCopyPasteButtons);
+            view.classList.toggle('hsc-no-import', !saved.ShowImportCollectionButton);
+        } catch (e) { }
         var warn = view.querySelector('.dry-run-warning');
         if (warn) {
             try {
@@ -5042,6 +5059,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     EnableTag: t.EnableTag !== false, EnableCollection: t.EnableCollection, CollectionName: t.CollectionName, CollectionDescription: t.CollectionDescription || '', CollectionPosterPath: t.CollectionPosterPath || '',
                     CollectionPosterStyle: t.CollectionPosterStyle || '', CollectionBackgroundStyle: t.CollectionBackgroundStyle || '',
                     CollectionBackgroundPath: t.CollectionBackgroundPath || '', CollectionSortToTop: !!t.CollectionSortToTop, CollectionImported: !!t.CollectionImported,
+                    CollectionPosterReplaced: !!t.CollectionPosterReplaced, CollectionBackgroundReplaced: !!t.CollectionBackgroundReplaced,
                     CollectionArtTitle: t.CollectionArtTitle || '',
                     CollectionPosterOptions: t.CollectionPosterOptions || '', CollectionBackgroundOptions: t.CollectionBackgroundOptions || '',
                     TagPosterStyle: t.TagPosterStyle || '', TagBackgroundStyle: t.TagBackgroundStyle || '',
@@ -8212,6 +8230,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         if (config.PlaylistName) config.PlaylistName = config.PlaylistName + ' (copy)';
         config.PlaylistMappings = [];
         config.CollectionImported = false;   // a copy makes its own collection
+        config.CollectionPosterReplaced = false; config.CollectionBackgroundReplaced = false;
         return config;
     }
 
@@ -9018,8 +9037,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             container.innerHTML =
                 '<div style="max-width:900px;">' +
                 '<div class="sectionTitleContainer flex align-items-center" style="margin-bottom:1em;margin-top:2em;">' +
-                '<h2 class="sectionTitle" style="margin-bottom:0;">Top Lists</h2>' +
-                '<button type="button" id="btnPasteTopList" is="emby-button" class="raised btn-neutral mb025" style="margin-left:auto;margin-right:8px;" title="Add a top-list copied with Copy on a top-list (this or another server)">' +
+                '<h2 class="sectionTitle" style="margin-bottom:0;margin-right:auto;">Top Lists</h2>' +
+                '<button type="button" id="btnPasteTopList" is="emby-button" class="raised btn-neutral mb025" style="margin-right:8px;" title="Add a top-list copied with Copy on a top-list (this or another server)">' +
                 '<i class="md-icon" style="margin-right:5px;">content_paste</i><span>Paste top-list</span>' +
                 '</button>' +
                 '<button type="button" id="btnCreateNewTopList" is="emby-button" class="raised button-submit mb025">' +
@@ -9874,6 +9893,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             c.Tags = (c.Tags || []).map(function (t) {
                 var x = Object.assign({}, t);
                 delete x.HomeSectionTracked; delete x.PlaylistMappings;
+                delete x.CollectionPosterReplaced; delete x.CollectionBackgroundReplaced;
                 return x;
             });
             return JSON.stringify(c);
@@ -10053,6 +10073,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     if (existing && existing.HomeSectionTracked && existing.HomeSectionTracked.length > 0
                         && (!t.HomeSectionTracked || t.HomeSectionTracked.length === 0)) {
                         t.HomeSectionTracked = existing.HomeSectionTracked;
+                    }
+                    // Set by a run since the page loaded: keep it (only the sync sets these).
+                    if (existing && existing.CollectionImported && t.CollectionImported) {
+                        t.CollectionPosterReplaced = !!(t.CollectionPosterReplaced || existing.CollectionPosterReplaced);
+                        t.CollectionBackgroundReplaced = !!(t.CollectionBackgroundReplaced || existing.CollectionBackgroundReplaced);
                     }
                     if (existing && existing.PlaylistMappings && existing.PlaylistMappings.length > 0
                         && (!t.PlaylistMappings || t.PlaylistMappings.length === 0)) {
@@ -10285,6 +10310,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 view.querySelector('#chkPreserveTagsOnEmptyResult').checked = config.PreserveTagsOnEmptyResult || false;
                 view.querySelector('#chkTopListMirrorCollections').checked = config.TopListMirrorCollections || false;
                 view.querySelector('#chkHideTopListLibraries').checked = config.HideTopListLibraries !== false;
+                view.querySelector('#chkShowCopyPasteButtons').checked = config.ShowCopyPasteButtons || false;
+                view.querySelector('#chkShowImportCollectionButton').checked = config.ShowImportCollectionButton || false;
                 if (view.querySelector('#txtSearchTags')) {
                     view.querySelector('#txtSearchTags').value = '';
                     view.querySelector('#btnClearSearch').style.display = 'none';

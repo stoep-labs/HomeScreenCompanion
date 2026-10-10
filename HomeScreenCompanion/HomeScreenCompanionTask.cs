@@ -247,15 +247,7 @@ namespace HomeScreenCompanion
                 var previouslyManagedCollections = LoadFileHistory("homescreencompanion_collections.txt");
                 // Imported collections (TagConfig.CollectionImported): remembered for good, so they
                 // are kept even after their source is gone from the config.
-                var importedCollections = new HashSet<string>(LoadFileHistory("homescreencompanion_collections_imported.txt"), StringComparer.OrdinalIgnoreCase);
-                int importedBefore = importedCollections.Count;
-                foreach (var tc in config.Tags.Where(t => t.EnableCollection && t.CollectionImported))
-                {
-                    string cn = string.IsNullOrWhiteSpace(tc.CollectionName) ? (tc.Tag ?? "").Trim() : tc.CollectionName.Trim();
-                    if (cn.Length > 0) importedCollections.Add(cn);
-                }
-                if (!dryRun && importedCollections.Count != importedBefore)
-                    SaveFileHistory("homescreencompanion_collections_imported.txt", importedCollections.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList());
+                var importedCollections = RecordImportedCollections(config);
                 // Also track collection names from inactive groups so they get cleaned up
                 // even if their collection was never recorded in the history file
                 foreach (var tc in config.Tags)
@@ -2098,6 +2090,7 @@ namespace HomeScreenCompanion
                 }
             }
 
+            RecordImportedCollections(Plugin.Instance?.Configuration);
             string tagName = tagConfig.Tag.Trim();
             string cName = string.IsNullOrWhiteSpace(tagConfig.CollectionName) ? tagName : tagConfig.CollectionName.Trim();
             int effectiveLimit = tagConfig.Limit <= 0 ? 10000 : tagConfig.Limit;
@@ -5529,6 +5522,33 @@ namespace HomeScreenCompanion
                 .ToList();
         }
 
+        // Imported collections (TagConfig.CollectionImported) are never deleted by HSC. Their names
+        // are added to this file on every config save and at the start of every run (full sync and
+        // Run Group), and never removed, so the protection stays after the source is changed,
+        // switched off or deleted. Returns everything protected so far.
+        private const string ImportedCollectionsFile = "homescreencompanion_collections_imported.txt";
+        private static readonly object _importedFileLock = new object();
+        internal static HashSet<string> RecordImportedCollections(PluginConfiguration? cfg)
+        {
+            var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var dir = Plugin.Instance?.DataFolderPath;
+            if (string.IsNullOrEmpty(dir)) return set;
+            var path = Path.Combine(dir, ImportedCollectionsFile);
+            lock (_importedFileLock)
+            {
+                try { if (File.Exists(path)) foreach (var l in File.ReadAllLines(path)) if (l.Trim().Length > 0) set.Add(l.Trim()); } catch { }
+                int before = set.Count;
+                foreach (var tc in (cfg?.Tags ?? new List<TagConfig>()).Where(t => t.CollectionImported))
+                {
+                    string cn = string.IsNullOrWhiteSpace(tc.CollectionName) ? (tc.Tag ?? "").Trim() : tc.CollectionName.Trim();
+                    if (cn.Length > 0) set.Add(cn);
+                }
+                if (set.Count != before)
+                    try { Directory.CreateDirectory(dir); File.WriteAllLines(path, set.OrderBy(n => n, StringComparer.OrdinalIgnoreCase)); } catch { }
+            }
+            return set;
+        }
+
         private List<string> LoadFileHistory(string filename)
         {
             try { var path = Path.Combine(Plugin.Instance.DataFolderPath, filename); if (File.Exists(path)) return File.ReadAllLines(path).Select(l => l.Trim()).Where(l => !string.IsNullOrEmpty(l)).ToList(); } catch { }
@@ -5579,10 +5599,32 @@ namespace HomeScreenCompanion
                     _log.Debug($"  {cName}  →  collection art applied");
                 }
                 ApplySortToTop(coll, tc.CollectionSortToTop);
+                if (tc.CollectionImported) MarkReplacedArt(coll, cName);
             }
             catch (Exception ex)
             {
                 _log.Warn($"Collection art for \"{cName}\" failed: {ex.Message}");
+            }
+        }
+
+        // An imported collection whose poster / background is now HSC's own (generated or uploaded,
+        // both kept in the plugin's data folder) no longer has its original image: remember that, so
+        // the card stops offering "Keep current image" for it. Saved with the config after the run.
+        private static void MarkReplacedArt(BaseItem coll, string cName)
+        {
+            var dataDir = Plugin.Instance?.DataFolderPath;
+            if (string.IsNullOrEmpty(dataDir)) return;
+            bool Ours(ImageType type)
+            {
+                var path = (coll.ImageInfos ?? Array.Empty<ItemImageInfo>()).FirstOrDefault(i => i.Type == type)?.Path;
+                return !string.IsNullOrEmpty(path) && path!.StartsWith(dataDir!, StringComparison.OrdinalIgnoreCase);
+            }
+            foreach (var t in Plugin.Instance!.Configuration.Tags.Where(t => t.CollectionImported && t.EnableCollection))
+            {
+                var name = string.IsNullOrWhiteSpace(t.CollectionName) ? (t.Tag ?? "").Trim() : t.CollectionName.Trim();
+                if (!string.Equals(name, cName, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!CollectionArtRenderer.IsKeep(t.CollectionPosterStyle) && Ours(ImageType.Primary)) t.CollectionPosterReplaced = true;
+                if (!CollectionArtRenderer.IsKeep(t.CollectionBackgroundStyle) && Ours(ImageType.Backdrop)) t.CollectionBackgroundReplaced = true;
             }
         }
 

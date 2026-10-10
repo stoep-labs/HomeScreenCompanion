@@ -35,6 +35,9 @@ namespace HomeScreenCompanion
         public bool PreserveTagsOnEmptyResult { get; set; } = true;
         // Give top-list copies the same collection memberships as their original movie.
         public bool TopListMirrorCollections { get; set; } = false;
+        // Settings > Features: show the Copy / Paste buttons and the Import collection button.
+        public bool ShowCopyPasteButtons { get; set; } = false;
+        public bool ShowImportCollectionButton { get; set; } = false;
         public List<TagConfig> Tags { get; set; } = new List<TagConfig>();
         public List<TopListHomeSection> TopLists { get; set; } = new List<TopListHomeSection>();
         public List<SavedMediaInfoFilter> SavedFilters { get; set; } = new List<SavedMediaInfoFilter>();
@@ -112,6 +115,10 @@ namespace HomeScreenCompanion
         // The collection existed before HSC (Import collection) and was taken over. It is never
         // deleted when the source is removed, disabled or out of schedule: HSC just stops managing it.
         public bool CollectionImported { get; set; } = false;
+        // Imported collection: set by the sync once HSC's own poster / background has replaced the
+        // collection's original image; from then on "Keep current image" is no longer offered for it.
+        public bool CollectionPosterReplaced { get; set; } = false;
+        public bool CollectionBackgroundReplaced { get; set; } = false;
         public bool OnlyCollection { get; set; } = false;
 
         // Legacy fields — kept for backwards compat, never written by new code

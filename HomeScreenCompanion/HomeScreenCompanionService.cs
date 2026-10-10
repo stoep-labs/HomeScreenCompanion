@@ -599,6 +599,8 @@ namespace HomeScreenCompanion
         public bool DryRunMode { get; set; }
         public bool PreserveTagsOnEmptyResult { get; set; } = true;
         public bool TopListMirrorCollections { get; set; }
+        public bool ShowCopyPasteButtons { get; set; }
+        public bool ShowImportCollectionButton { get; set; }
     }
 
     public class BackupApiKeys
@@ -1187,6 +1189,51 @@ public class HomeScreenCompanionService : IService
             return result;
         }
 
+        // A show's episode or season is drawn as the show; only movies and shows are drawn, once each.
+        private static List<BaseItem> ArtTopLevel(IEnumerable<BaseItem> items)
+        {
+            var result = new List<BaseItem>();
+            var seen = new HashSet<long>();
+            foreach (var i in items)
+            {
+                BaseItem? top = i is MediaBrowser.Controller.Entities.TV.Episode ep ? ep.Series
+                    : i is MediaBrowser.Controller.Entities.TV.Season se ? se.Series : i;
+                if (top == null || !(top is MediaBrowser.Controller.Entities.Movies.Movie || top is MediaBrowser.Controller.Entities.TV.Series)) continue;
+                if (seen.Add(top.InternalId)) result.Add(top);
+            }
+            return result;
+        }
+
+        // A Manual List's titles, in list order.
+        private List<BaseItem> ArtTitlesFromManualList(TagConfig source)
+        {
+            if (source.SourceType != "Manual") return new List<BaseItem>();
+            var found = new List<BaseItem>();
+            foreach (var id in source.ManualItemIds ?? new List<string>())
+            {
+                BaseItem? item = null;
+                if (long.TryParse(id, out var internalId)) item = _libraryManager.GetItemById(internalId);
+                else if (Guid.TryParse(id, out var guid)) item = _libraryManager.GetItemById(guid);
+                if (item != null) found.Add(item);
+            }
+            return ArtTopLevel(found);
+        }
+
+        // The members of the collection this source makes, found by name like the sync does
+        // (Collection Name, else the tag; the display name when both are empty).
+        private List<BaseItem> ArtTitlesFromCollection(TagConfig source)
+        {
+            var cName = !string.IsNullOrWhiteSpace(source.CollectionName) ? source.CollectionName.Trim()
+                : !string.IsNullOrWhiteSpace(source.Tag) ? source.Tag.Trim() : (source.Name ?? "").Trim();
+            if (cName.Length == 0) return new List<BaseItem>();
+            var coll = _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "BoxSet" }, Name = cName, Recursive = true })
+                .FirstOrDefault(c => string.Equals((c.Name ?? "").Trim(), cName, StringComparison.OrdinalIgnoreCase));
+            if (coll == null) return new List<BaseItem>();
+            var members = _libraryManager.GetItemList(new InternalItemsQuery { CollectionIds = new[] { coll.InternalId }, Recursive = true, IsVirtualItem = false })
+                .Where(i => !TopListCollectionMirror.IsTopListItem(i));
+            return ArtTopLevel(members);
+        }
+
         private async Task<PreviewCollectionArtResponse> PreviewCollectionArt(TagConfig source)
         {
             bool poster = CollectionArtRenderer.IsStyle(source.CollectionPosterStyle);
@@ -1197,7 +1244,7 @@ public class HomeScreenCompanionService : IService
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var timing = new List<string>();
             // The titles: a Smart Playlist is matched now (like its Preview), Your Next Watch from the
-            // first selected user's picks; other sources use the titles that carry the tag since the last run.
+            // first selected user's picks; other sources: see below.
             List<BaseItem> items;
             if (source.SourceType == "MediaInfo" || source.SourceType == "NextWatch")
             {
@@ -1214,8 +1261,12 @@ public class HomeScreenCompanionService : IService
             }
             else
             {
+                // Other sources: the hand-picked titles (Manual List), else the members of the
+                // source's collection in Emby, else the titles with the tag. No tag needed.
+                items = ArtTitlesFromManualList(source);
+                if (items.Count == 0) items = ArtTitlesFromCollection(source);
                 var tag = (source.Tag ?? "").Trim();
-                items = tag.Length == 0 ? new List<BaseItem>() : _libraryManager.GetItemList(new InternalItemsQuery
+                if (items.Count == 0 && tag.Length > 0) items = _libraryManager.GetItemList(new InternalItemsQuery
                 {
                     Recursive = true, IsVirtualItem = false, Tags = new[] { tag },
                     IncludeItemTypes = new[] { "Movie", "Series" }
@@ -1224,7 +1275,7 @@ public class HomeScreenCompanionService : IService
             if (items.Count == 0)
                 return new PreviewCollectionArtResponse { Message = source.SourceType == "MediaInfo" || source.SourceType == "NextWatch"
                     ? "No titles match this source, so there is nothing to draw."
-                    : "No titles carry this tag yet. Run the source once, then preview again." };
+                    : "This source has no titles yet, so there is nothing to draw." };
 
             var name = !string.IsNullOrWhiteSpace(source.CollectionName) ? source.CollectionName.Trim()
                 : !string.IsNullOrWhiteSpace(source.Name) ? source.Name.Trim() : (source.Tag ?? "").Trim();
@@ -1265,6 +1316,8 @@ public class HomeScreenCompanionService : IService
                     Poster = poster ? Draw(source.CollectionPosterStyle, false) : "",
                     Background = background ? Draw(source.CollectionBackgroundStyle, true) : ""
                 };
+                if (res.Poster.Length == 0 && res.Background.Length == 0)
+                    return new PreviewCollectionArtResponse { Message = "None of this source's titles has a poster image on this server, so there is nothing to draw." };
                 res.Note = string.Join(" ", new[] { repeatNote, rowsNote }.Where(n => n.Length > 0));
                 res.Timing = string.Join(", ", timing);
                 return res;
@@ -3434,7 +3487,9 @@ public class HomeScreenCompanionService : IService
                     LogMissingItems           = config.LogMissingItems,
                     DryRunMode                = config.DryRunMode,
                     PreserveTagsOnEmptyResult = config.PreserveTagsOnEmptyResult,
-                    TopListMirrorCollections  = config.TopListMirrorCollections
+                    TopListMirrorCollections  = config.TopListMirrorCollections,
+                    ShowCopyPasteButtons      = config.ShowCopyPasteButtons,
+                    ShowImportCollectionButton = config.ShowImportCollectionButton
                 };
                 file.Sections.Add("Settings");
             }
@@ -3547,6 +3602,8 @@ public class HomeScreenCompanionService : IService
                     config.PreserveTagsOnEmptyResult = s.PreserveTagsOnEmptyResult;
                     mirrorChanged = config.TopListMirrorCollections != s.TopListMirrorCollections;
                     config.TopListMirrorCollections  = s.TopListMirrorCollections;
+                    config.ShowCopyPasteButtons      = s.ShowCopyPasteButtons;
+                    config.ShowImportCollectionButton = s.ShowImportCollectionButton;
                     response.Applied.Add("Settings");
                 }
 
@@ -3814,7 +3871,9 @@ public class HomeScreenCompanionService : IService
                 LogMissingItems           = legacy.LogMissingItems,
                 DryRunMode                = legacy.DryRunMode,
                 PreserveTagsOnEmptyResult = legacy.PreserveTagsOnEmptyResult,
-                TopListMirrorCollections  = legacy.TopListMirrorCollections
+                TopListMirrorCollections  = legacy.TopListMirrorCollections,
+                ShowCopyPasteButtons      = legacy.ShowCopyPasteButtons,
+                ShowImportCollectionButton = legacy.ShowImportCollectionButton
             };
             result.Sections.Add("Settings");
             result.ApiKeys = new BackupApiKeys
@@ -3997,7 +4056,7 @@ public class HomeScreenCompanionService : IService
             t.AiLastRunDate      = DateTime.MinValue;
             t.LastModified       = DateTime.MinValue;
             // On another server the collection is HSC's own, not one it took over.
-            t.CollectionImported = false;
+            t.CollectionImported = false; t.CollectionPosterReplaced = false; t.CollectionBackgroundReplaced = false;
         }
 
         // The user id inside a smart-filter rule (IsPlayed/LastPlayed/PlayCount:<userId>:<op>:<value>,

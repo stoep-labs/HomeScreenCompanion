@@ -1,4 +1,4 @@
-<div id="HomeScreenCompanionConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"
+<div id="HomeScreenCompanionConfigPage" data-role="page" class="page type-interior pluginConfigurationPage hsc-no-copypaste hsc-no-import"
      data-require="emby-input,emby-button,emby-checkbox,emby-textarea"
      data-controller="__plugin/HomeScreenCompanionJS">
 
@@ -1037,6 +1037,10 @@
             padding-bottom: 60px;
         }
 
+        /* Settings > Features: buttons that are off are hidden (the class is set from the saved settings). */
+        .hsc-no-copypaste .btnCopySourceRow, .hsc-no-copypaste #btnPasteSource,
+        .hsc-no-copypaste .btnCopyTopList, .hsc-no-copypaste #btnPasteTopList,
+        .hsc-no-import #btnImportCollection { display: none !important; }
     </style>
 
     <div class="content-primary">
@@ -1359,6 +1363,24 @@
                             </label>
                             <div class="fieldDescription">Keeps the libraries of movie top-lists out of every user's sidebar, "My Media" tiles and "Latest" rows; only the top-list row shows them. Show top-lists have no library.</div>
                         </div>
+
+                        <div style="font-size: 0.75em; font-weight: 700; text-transform: uppercase; letter-spacing: 1.4px; opacity: 0.45; margin-top: 24px; margin-bottom: 8px;">Features</div>
+
+                        <div class="checkboxContainer checkboxContainer-withDescription">
+                            <label>
+                                <input is="emby-checkbox" type="checkbox" id="chkShowCopyPasteButtons" />
+                                <span>Copy &amp; paste sources</span>
+                            </label>
+                            <div class="fieldDescription">Shows Copy on source and top-list cards and the Paste source and Paste top-list buttons, to move them to another server.</div>
+                        </div>
+
+                        <div class="checkboxContainer checkboxContainer-withDescription" style="margin-top: 15px;">
+                            <label>
+                                <input is="emby-checkbox" type="checkbox" id="chkShowImportCollectionButton" />
+                                <span>Import collection</span>
+                            </label>
+                            <div class="fieldDescription">Shows the Import collection button, to let HSC take over collections that already exist in Emby.</div>
+                        </div>
                     </div>
                 </div>
 
@@ -1382,8 +1404,8 @@
                 <form class="HomeScreenCompanionForm" id="homeScreenCompanionForm" style="max-width:900px;">
 
                 <div class="sectionTitleContainer flex align-items-center" style="margin-bottom: 1em; margin-top: 2em;">
-                    <h2 class="sectionTitle" style="margin-bottom:0;">Sources</h2>
-                    <button is="emby-button" type="button" id="btnImportCollection" class="raised btn-neutral mb025" style="margin-left: auto; margin-right: 8px;" title="Let HSC take over collections that already exist in Emby (made by another plugin or by hand)">
+                    <h2 class="sectionTitle" style="margin-bottom:0; margin-right:auto;">Sources</h2>
+                    <button is="emby-button" type="button" id="btnImportCollection" class="raised btn-neutral mb025" style="margin-right: 8px;" title="Let HSC take over collections that already exist in Emby (made by another plugin or by hand)">
                         <i class="md-icon" style="margin-right:5px;">library_add</i><span>Import collection</span>
                     </button>
                     <button is="emby-button" type="button" id="btnPasteSource" class="raised btn-neutral mb025" style="margin-right: 8px;" title="Add a source copied with Copy on a source card (this or another server)">
@@ -1699,7 +1721,7 @@
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">library_add</i>
-                    <div><strong>Import collection</strong> — Next to <strong>Paste source</strong>. Lets HSC take over collections that already exist in Emby (made by another plugin or by hand). The popup lists every collection with a tick box (and a search box when the list is long); tick one or several and click <em>Import</em>. With a long list you can also sort by name or item count and show only collections of a certain size; ticks stay when a collection is hidden. Each becomes a <strong>Manual List</strong> source, added as a new card at the top, not saved yet — check it and click <strong>Save</strong>. It keeps the <strong>same collection</strong>, not a copy, so links, home rows and favourites keep working: the name, sort title and description stay as they are, the collection's current titles fill the Manual List, and the poster and background are set to <em>Keep current image</em>. Nothing changes until the next sync, and nothing is deleted. Collections a source already makes, and collections whose name another collection also has (HSC finds its collection by name — rename one in Emby first), cannot be ticked. As on every HSC collection a film appears once: extra versions of a film leave the collection on the next sync, and so do items a Manual List cannot hold (episodes, seasons); the popup lists them after the import. If another plugin or tool also updates the collection, switch that off there first, otherwise the two keep changing it. An imported collection is never deleted by HSC: if you delete the source or switch it off, the collection stays in Emby and HSC simply stops changing it. An imported source shows an <strong>Imported</strong> chip in its card header; a copy of it does not (the copy makes its own collection).</div>
+                    <div><strong>Import collection</strong> — Next to <strong>Paste source</strong>. Lets HSC take over collections that already exist in Emby (made by another plugin or by hand). The popup lists every collection with a tick box (and a search box when the list is long); tick one or several and click <em>Import</em>. With a long list you can also sort by name or item count and show only collections of a certain size; ticks stay when a collection is hidden. Each becomes a <strong>Manual List</strong> source, added as a new card at the top, not saved yet — check it and click <strong>Save</strong>. It keeps the <strong>same collection</strong>, not a copy, so links, home rows and favourites keep working: the name, sort title and description stay as they are, the collection's current titles fill the Manual List, and the poster and background are set to <em>Keep current image</em>. Nothing changes until the next sync, and nothing is deleted. Collections a source already makes, and collections whose name another collection also has (HSC finds its collection by name — rename one in Emby first), cannot be ticked. As on every HSC collection a film appears once: extra versions of a film leave the collection on the next sync, and so do items a Manual List cannot hold (episodes, seasons); the popup lists them after the import. If another plugin or tool also updates the collection, switch that off there first, otherwise the two keep changing it. An imported collection is never deleted by HSC: if you delete the source or switch it off, the collection stays in Emby and HSC simply stops changing it. An imported source shows an <strong>Imported</strong> chip in its card header; a copy of it does not (the copy makes its own collection). Changing its <em>Source Type</em> makes it an ordinary source: the chip goes (saved with Save); editing its titles does not.</div>
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">content_paste</i>
@@ -1762,7 +1784,7 @@
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">image</i>
-                    <div><strong>Collection Poster</strong> — Pick a style. <em>Custom</em> lets you upload a local image or paste an image URL; it is stored on the server and re-applied on every sync so it is never overwritten by Emby. The other styles — <em>Collage</em>, <em>Grid</em>, <em>Fan</em>, <em>Wall</em>, <em>Hero strip</em>, <em>Spotlight split</em> and <em>Ranked (Top 10)</em> — draw the poster from the posters of the first titles in the collection, each film used once. It is redrawn when the titles change. <em>Keep current image</em> is offered on an imported collection only (see <strong>Import collection</strong>), where it is the default: it leaves the poster the collection has now exactly as it is — nothing is drawn, uploaded or removed. Its tile shows that poster.</div>
+                    <div><strong>Collection Poster</strong> — Pick a style. <em>Custom</em> lets you upload a local image or paste an image URL; it is stored on the server and re-applied on every sync so it is never overwritten by Emby. The other styles — <em>Collage</em>, <em>Grid</em>, <em>Fan</em>, <em>Wall</em>, <em>Hero strip</em>, <em>Spotlight split</em> and <em>Ranked (Top 10)</em> — draw the poster from the posters of the first titles in the collection, each film used once. It is redrawn when the titles change. <em>Keep current image</em> is offered on an imported collection only (see <strong>Import collection</strong>), where it is the default: it leaves the poster the collection has now exactly as it is — nothing is drawn, uploaded or removed. Its tile shows that poster. Once you pick another style, Save and the source has run (so the original image is replaced), <em>Keep current image</em> is no longer offered for that image.</div>
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">wallpaper</i>
@@ -1774,7 +1796,7 @@
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">title</i>
-                    <div><strong>Title on the art</strong> — The text drawn on the poster and background. Leave it empty to use the collection name. <code>{name}</code> is the collection name and <code>{week}</code> this week's number (ISO week), e.g. <em>{name} {week}</em> → "Top Movies for the Week 41". Click <em>Preview art</em> to see the poster and background with your current settings; nothing is saved.</div>
+                    <div><strong>Title on the art</strong> — The text drawn on the poster and background. Leave it empty to use the collection name. <code>{name}</code> is the collection name and <code>{week}</code> this week's number (ISO week), e.g. <em>{name} {week}</em> → "Top Movies for the Week 41". Click <em>Preview art</em> to see the poster and background with your current settings; nothing is saved. It draws from the source's titles (a Manual List's own titles, else the titles in its collection, else the titles with its tag), so it works with <em>Apply Tag</em> off.</div>
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">settings</i>
@@ -2009,6 +2031,14 @@
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">auto_delete</i>
                     <div><strong>Cleanup tab</strong> — Lists every tag and collection in Emby with its item count; the ones the plugin manages carry a <em>Managed by HSC Plugin</em> badge. Use <em>Remove</em> to clear out ones you no longer need; nothing changes until you confirm the summary with <em>Confirm &amp; Save</em>. Removing a <em>tag</em> takes that tag off every item that has it (films, shows, episodes, collections and so on) — the items themselves stay. Removing a <em>collection</em> deletes the collection itself from Emby, with its poster and background; the films and shows that were in it stay in your library. If an active group still makes that tag or collection, the next sync puts it back — the summary offers to deactivate that group. Tick <em>Only managed by HSC</em> to show just the plugin's own; this choice is remembered in your browser.</div>
+                </div>
+                <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">share</i>
+                    <div><strong>Copy &amp; paste sources</strong> — Off by default; switch it on under <em>Advanced Settings</em> in the Settings tab (and click Save) to show <strong>Copy</strong> on source and top-list cards and the <strong>Paste source</strong> and <strong>Paste top-list</strong> buttons.</div>
+                </div>
+                <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">library_add</i>
+                    <div><strong>Import collection</strong> — Off by default; switch it on under <em>Advanced Settings</em> in the Settings tab (and click Save) to show the <strong>Import collection</strong> button; switching it off again changes nothing on sources you already imported.</div>
                 </div>
                 <div class="help-feature-row" style="margin-bottom:0;">
                     <i class="md-icon help-feat-icon">save</i>
