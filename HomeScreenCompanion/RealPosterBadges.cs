@@ -134,7 +134,7 @@ namespace HomeScreenCompanion
                     if (movies == null)
                     {
                         movies = lm.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "Movie" }, Recursive = true, IsVirtualItem = false })
-                            .Where(i => !string.IsNullOrEmpty(i.Path) && !i.Path.StartsWith(topListsFolder, StringComparison.OrdinalIgnoreCase)).ToList();
+                            .Where(i => !string.IsNullOrEmpty(i.Path) && !i.Path.StartsWith(topListsFolder, StringComparison.OrdinalIgnoreCase) && !RankedCollections.IsRankedPath(i.Path)).ToList();
                         byPath = new Dictionary<string, BaseItem>(StringComparer.OrdinalIgnoreCase);
                         byKey = new Dictionary<string, List<BaseItem>>(StringComparer.OrdinalIgnoreCase);
                         foreach (var m in movies)

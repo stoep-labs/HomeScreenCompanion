@@ -32,6 +32,7 @@ namespace HomeScreenCompanion
                 .Where(t => !ShowTopList.IsShowList(t)
                          && !string.IsNullOrEmpty(t.HomeSectionLibraryId) && t.HomeSectionLibraryId != "auto")
                 .Select(t => t.HomeSectionLibraryId.Trim())
+                .Concat(RankedCollections.LibraryIds(libraryManager)) // ranked-collection libraries are hidden the same way
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
             if (libIds.Count == 0) return 0;
@@ -86,6 +87,50 @@ namespace HomeScreenCompanion
                 }
             }
             return changedUsers;
+        }
+
+        // A removed ranked library: its id and GUID leave every user's exclusions, saved home rows
+        // and (users limited to some libraries) library access.
+        public static void Forget(string libId, string libGuid, IUserManager userManager, Action<string>? log = null)
+        {
+            var ids = new List<string> { libId, libGuid }.Where(x => !string.IsNullOrEmpty(x)).ToList();
+            if (ids.Count == 0) return;
+            dynamic mgr = userManager;
+            foreach (var user in userManager.GetUserList(new UserQuery()))
+            {
+                try
+                {
+                    var cfg = userManager.GetUserConfiguration(user);
+                    var myMedia = Merge(cfg.MyMediaExcludes, ids, false);
+                    var latest = Merge(cfg.LatestItemsExcludes, ids, false);
+                    if (myMedia != null || latest != null)
+                    {
+                        if (myMedia != null) cfg.MyMediaExcludes = myMedia;
+                        if (latest != null) cfg.LatestItemsExcludes = latest;
+                        userManager.UpdateConfiguration(user, cfg);
+                    }
+                    foreach (var section in userManager.GetHomeSections(user.InternalId, CancellationToken.None)?.Sections ?? Array.Empty<ContentSection>())
+                    {
+                        if (section.SectionType != "latestmediablock" && section.SectionType != "userviews") continue;
+                        var excluded = Merge(section.ExcludedFolders, ids, false);
+                        if (excluded == null) continue;
+                        section.ExcludedFolders = excluded;
+                        userManager.UpdateHomeSection(user.InternalId, section, CancellationToken.None);
+                    }
+                    dynamic policy = TopListSyncTask.GetPolicy(mgr, user, user.InternalId);
+                    if (policy != null && !(bool)policy.EnableAllFolders)
+                    {
+                        var folders = (string[])policy.EnabledFolders ?? Array.Empty<string>();
+                        var kept = folders.Where(f => !ids.Contains(f.Replace("-", ""), StringComparer.OrdinalIgnoreCase)).ToArray();
+                        if (kept.Length != folders.Length)
+                        {
+                            policy.EnabledFolders = kept;
+                            TopListSyncTask.UpdatePolicy(mgr, user, user.InternalId, policy);
+                        }
+                    }
+                }
+                catch (Exception ex) { log?.Invoke($"Removing library '{libId}' from '{user.Name}' failed — {ex.Message}"); }
+            }
         }
 
         // The new list, or null when nothing changes.

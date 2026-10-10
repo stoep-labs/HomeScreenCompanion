@@ -29,8 +29,10 @@ namespace HomeScreenCompanion
     ///   list       = best first, with caps per franchise (TMDb collection) and main genre and a
     ///                movie/show mix that follows the seed; no single-signal match in the top 10;
     ///                unwatched favourites at most 3 in the top 10 and ~30% overall, spread out.
-    /// Few or no plays: the server's popular titles (viewers in the last 90 days) the user has not
-    /// seen. Everything shared by all users (features, everyone's watch data) is built once per run;
+    /// Few or no plays: the server's most watched titles of all time (viewers = users who finished
+    /// it, any date) the user has not seen, a different mix per user and day drawn from the top 3x
+    /// the list size. Everything
+    /// shared by all users (features, everyone's watch data) is built once per run;
     /// each user then costs one id query (cached per access policy) and an in-memory scoring pass.
     /// </summary>
     internal sealed class NextWatchRecommender
@@ -55,6 +57,7 @@ namespace HomeScreenCompanion
         private double[] _idfGenre = Array.Empty<double>(), _idfPeople = Array.Empty<double>(), _idfStudio = Array.Empty<double>(), _idfTag = Array.Empty<double>();
         private readonly Dictionary<long, History> _history = new Dictionary<long, History>();
         private int[] _viewers90 = Array.Empty<int>();
+        private int[] _viewersAll = Array.Empty<int>();   // users who finished it, any date (cold start)
         private readonly Dictionary<string, HashSet<long>> _accessByPolicy = new Dictionary<string, HashSet<long>>();
 
         public NextWatchRecommender(ILibraryManager libraryManager, IUserManager userManager, PopularityCounter popularity,
@@ -164,6 +167,7 @@ namespace HomeScreenCompanion
             // Everyone's watch data (one read per user, shared with the Popular rule).
             var cutoff90 = DateTimeOffset.UtcNow.AddDays(-SeedDays);
             _viewers90 = new int[_groups.Count];
+            _viewersAll = new int[_groups.Count];
             int users = 0, records = 0;
             foreach (var user in _userManager.GetUserList(new UserQuery { IsDisabled = false }))
             {
@@ -185,7 +189,7 @@ namespace HomeScreenCompanion
                 }
                 foreach (var kv in h.ByGroup)
                 {
-                    if (kv.Value.Plays > 0) h.Watched.Add(kv.Key);
+                    if (kv.Value.Plays > 0) { h.Watched.Add(kv.Key); _viewersAll[kv.Key]++; }
                     if (kv.Value.Recent) _viewers90[kv.Key]++;
                 }
                 _history[user.InternalId] = h;
@@ -337,7 +341,7 @@ PrepareSummary = $"{_groups.Count:N0} titles ({_titles.Count:N0} items), {_genre
             if (cold)
             {
                 foreach (var c in candidates)
-                    scored.Add((c.Group, c.Item, _viewers90[c.Group] + _groups[c.Group].Rating));
+                    scored.Add((c.Group, c.Item, _viewersAll[c.Group] + _groups[c.Group].Rating));
             }
             else
             {
@@ -415,6 +419,11 @@ PrepareSummary = $"{_groups.Count:N0} titles ({_titles.Count:N0} items), {_genre
 
             // Best first, with caps for variety.
             var ordered = scored.OrderByDescending(s => s.Score).ThenBy(s => s.Item.SortName, StringComparer.OrdinalIgnoreCase).ToList();
+            // Cold start: a different mix of the popular titles per user (and per day), so users with
+            // little history don't all get the same list.
+            if (cold)
+                ordered = ColdShuffle(ordered, s => _viewersAll[s.Group], limit,
+                    StableSeed(user.Id.ToString("N") + DateTime.Now.ToString("yyyyMMdd")));
             bool hasMovies = candidates.Any(c => !_groups[c.Group].IsSeries), hasShows = candidates.Any(c => _groups[c.Group].IsSeries);
             double showShare = 0.3;
             if (!cold && seed.Count > 0)
@@ -473,13 +482,39 @@ PrepareSummary = $"{_groups.Count:N0} titles ({_titles.Count:N0} items), {_genre
             var topPeople = pPeople == null ? new List<string>() : pPeople.OrderByDescending(kv => kv.Value * _idfPeople[kv.Key]).Take(4).Select(kv => _people.Name(kv.Key)).ToList();
             var latest = dated.Take(3).Select(kv => Label(_groups[kv.Key].Rep)).ToList();
             result.SeedSummary = cold
-                ? $"Not enough watch history ({hist.Watched.Count} watched) — showing the server's most watched titles (last {SeedDays} days) this user has not seen."
+                ? $"Not enough watch history ({hist.Watched.Count} watched) — showing a mix of the server's most watched titles (all time) this user has not seen."
                 : $"Based on {seed.Count} titles ({recent.Count} watched in the last {SeedDays} days{(recent.Count >= SeedMin ? "" : "; topped up with older history")}{(favourites > 0 ? $", {favourites} older favourites/rated" : "")})."
                   + (latest.Count > 0 ? " Latest: " + string.Join(", ", latest) + "." : "")
                   + (topGenres.Count > 0 ? " Top genres: " + string.Join(", ", topGenres) + "." : "")
                   + (topPeople.Count > 0 ? " People: " + string.Join(", ", topPeople) + "." : "");
             result.ElapsedMs = sw.ElapsedMilliseconds;
             return result;
+        }
+
+        // Cold-start order: the top ColdPoolFactor x limit popular titles (all-time viewers) are drawn in a per-user, per-day random order weighted by viewers (weighted sampling
+        // without replacement), so the most watched titles are still usually near the top; titles
+        // outside that pool follow in their normal order.
+        internal static List<T> ColdShuffle<T>(List<T> ordered, Func<T, int> viewers, int limit, int seed)
+        {
+            var pool = ordered.Where(o => viewers(o) > 0).Take(Math.Max(1, limit) * ColdPoolFactor).ToList();
+            if (pool.Count < 2) return ordered;
+            var rng = new Random(seed);
+            var drawn = pool.Select(o => (Item: o, Key: -Math.Log(1.0 - rng.NextDouble()) / viewers(o)))
+                .OrderBy(x => x.Key).Select(x => x.Item).ToList();
+            var inPool = new HashSet<T>(pool);
+            drawn.AddRange(ordered.Where(o => !inPool.Contains(o)));
+            return drawn;
+        }
+
+        // String hash that is the same in every run (string.GetHashCode is not).
+        private static int StableSeed(string s)
+        {
+            unchecked
+            {
+                uint h = 2166136261;
+                foreach (char c in s) { h ^= c; h *= 16777619; }
+                return (int)h;
+            }
         }
 
         // Final order: best first, but favourites spread out (at most one in any three places and at
@@ -520,7 +555,7 @@ PrepareSummary = $"{_groups.Count:N0} titles ({_titles.Count:N0} items), {_genre
 
         // ── Match strength between a candidate and one seed title ───────────────────────────────
         private const double StrongLink = 2.0, RareShare = 0.05, FavouriteShare = 0.3, MaxGenreLift = 3.0;
-        private const int MaxFavouritesTop10 = 3, FavouriteGap = 3;
+        private const int MaxFavouritesTop10 = 3, FavouriteGap = 3, ColdPoolFactor = 3;
 
         private struct Link
         {
@@ -703,8 +738,8 @@ PrepareSummary = $"{_groups.Count:N0} titles ({_titles.Count:N0} items), {_genre
             return "Because you watched " + Label(_groups[link.Seed].Rep) + (shared.Count > 0 ? " · " + string.Join(", ", shared.Take(4)) : "");
         }
 
-        private string ColdReason(int g) => _viewers90[g] > 0
-            ? $"Popular on this server ({_viewers90[g]} viewer{(_viewers90[g] == 1 ? "" : "s")} in the last {SeedDays} days)"
+        private string ColdReason(int g) => _viewersAll[g] > 0
+            ? $"Popular on this server ({_viewersAll[g]} viewer{(_viewersAll[g] == 1 ? "" : "s")} of all time)"
             : "Highly rated";
 
         private static string Label(BaseItem i) => (i.Name ?? "") + (i.ProductionYear.HasValue ? $" ({i.ProductionYear})" : "");

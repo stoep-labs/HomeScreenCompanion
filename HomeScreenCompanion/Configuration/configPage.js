@@ -10,18 +10,83 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     function stopStatusPolling() {
         if (statusInterval) { clearInterval(statusInterval); statusInterval = null; }
     }
-    function startStatusPolling(view) {
+    // Every 5 s when idle; every second while a run is busy, so short steps show too
+    // (refreshStatus switches the rate).
+    var statusPollMs = 5000;
+    function startStatusPolling(view, ms) {
         stopStatusPolling();
+        statusPollMs = ms || 5000;
         statusInterval = setInterval(function () {
             if (!document.body.contains(view)) { stopStatusPolling(); return; }
             refreshStatus(view);
-        }, 5000);
+        }, statusPollMs);
+    }
+    function setStatusPollRate(view, running) {
+        var ms = running ? 1000 : 5000;
+        if (statusInterval && ms !== statusPollMs && document.body.contains(view)) startStatusPolling(view, ms);
     }
     // Live log modal: latest status per task and the tab the user picked (null = automatic)
     var _lastStatus = { sync: null, hsc: null, tl: null };
     var _logTab = null;
     var originalConfigState = null;
     var statusRequestId = 0;
+
+    // ---- Save conflict check ----
+    // A fingerprint of the server's settings without what runs write on their own (home-section
+    // ids, playlist mappings, art-replaced flags, the AI's last-run date, the Next Watch migration
+    // flag, top-list exclusions in a home section's settings, the top-lists Save re-reads anyway)
+    // and without secrets. Taken when the page loads; Save compares it with the server's current
+    // one, so a change made elsewhere (another tab, another admin, an import) is never overwritten,
+    // while a run that finished meanwhile does not count.
+    function hscServerStamp(config) {
+        function strip(v) {
+            if (Array.isArray(v)) return v.map(strip);
+            if (!v || typeof v !== 'object') return v;
+            var out = {};
+            Object.keys(v).forEach(function (k) { if (!/(apikey|clientid|secret|token|password)$/i.test(k)) out[k] = strip(v[k]); });
+            return out;
+        }
+        var c = strip(config || {});
+        delete c.TopLists;
+        c.Tags = (c.Tags || []).map(function (t) {
+            var x = Object.assign({}, t);
+            delete x.HomeSectionTracked; delete x.PlaylistMappings;
+            delete x.CollectionPosterReplaced; delete x.CollectionBackgroundReplaced;
+            delete x.AiLastRunDate; delete x.NextWatchUsersMigrated;
+            try {
+                var s = JSON.parse(x.HomeSectionSettings || '{}') || {};
+                delete s._queryExcludeViewIds; delete s.ExcludedFolders;
+                var sorted = {};
+                Object.keys(s).sort().forEach(function (k) { sorted[k] = s[k]; });
+                x.HomeSectionSettings = JSON.stringify(sorted);
+            } catch (e) { }
+            return x;
+        });
+        return JSON.stringify(c);
+    }
+    // After this page saved part of the settings itself (saved filters, Clean up): the server's new
+    // state is the page's own, so move the fingerprint along — only if nothing else had changed.
+    function advanceServerStamp(beforeStamp) {
+        var v = activeView();
+        if (!v || !v._hscServerStamp || v._hscServerStamp !== beforeStamp) return Promise.resolve();
+        return window.ApiClient.getPluginConfiguration(pluginId).then(function (c) {
+            if (v._hscServerStamp === beforeStamp) v._hscServerStamp = hscServerStamp(c);
+        }).catch(function () { });
+    }
+    function showSaveConflictDialog(onReload) {
+        var modal = buildBackupModalShell();
+        modal.renderBox(
+            '<h3 style="' + _backupTitleStyle + '">Not saved — settings changed elsewhere</h3>' +
+            '<p style="' + _backupHintStyle + '">Settings were changed elsewhere since you opened this page (another tab, another admin, or a run). Saving now would overwrite those changes, so nothing was saved.</p>' +
+            '<p style="' + _backupHintStyle + '"><strong>Reload page</strong> shows the current settings and discards your unsaved changes here. <strong>Cancel</strong> keeps editing (note your changes, reload, then make them again).</p>' +
+            '<div style="display:flex;gap:10px;justify-content:flex-end;align-items:center;flex-wrap:wrap;">' +
+            '<button type="button" class="btnConflictCancel" style="' + _backupBtnSecondary + '">Cancel</button>' +
+            '<button type="button" class="btnConflictReload" style="' + _backupBtnPrimary + '"><i class="md-icon" style="font-size:1em;vertical-align:middle;margin-right:6px;">refresh</i>Reload page</button>' +
+            '</div>'
+        );
+        modal.querySelector('.btnConflictCancel').addEventListener('click', modal.close);
+        modal.querySelector('.btnConflictReload').addEventListener('click', function () { modal.close(); onReload(); });
+    }
 
     var DEFAULT_AI_SYSTEM_PROMPT = 'You are a movie and TV show recommendation assistant. Respond ONLY with a valid JSON array. No explanation, no markdown, no code fences. Each item must have these fields: "title" (string, required), "year" (integer or null), "imdb_id" (string starting with "tt" if known, otherwise null), "type" ("movie" or "show"). Return exactly the items requested. Do not add any commentary. Example: [{"title":"Inception","year":2010,"imdb_id":"tt1375666","type":"movie"}]';
 
@@ -681,6 +746,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         sDay = Math.min(sDay, sMaxDay);
         eDay = Math.min(eDay, eMaxDay);
         var dayOfWeek = interval.DayOfWeek || '';
+        // "MovingDate" (Yearly weekday, e.g. last Monday of May) and "Easter": an anchor date plus a
+        // window of days around it. A MovingDate saved with Occurrence "easter" shows as Easter.
+        var movOcc = String(interval.Occurrence || '1').toLowerCase();
+        if (type === 'MovingDate' && movOcc === 'easter') type = 'Easter';
+        if (movOcc === 'easter') movOcc = '1';
+        var movWeekday = type === 'MovingDate' && dayOfWeek ? dayOfWeek.split(',')[0].trim() : 'Monday';
+        var movMonth = +interval.Month >= 1 && +interval.Month <= 12 ? +interval.Month : 1;
+        var movBefore = Math.max(0, Math.min(60, +interval.DaysBefore || 0));
+        var movAfter = Math.max(0, Math.min(60, +interval.DaysAfter || 0));
 
         return `
             <div class="date-row date-row-container" style="display: flex; flex-wrap: wrap; align-items: flex-start; gap: 15px;">
@@ -690,6 +764,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     <select is="emby-select" class="selDateType" style="width:100%;">
                         <option value="SpecificDate" ${type === 'SpecificDate' ? 'selected' : ''}>Specific Date</option>
                         <option value="EveryYear" ${type === 'EveryYear' ? 'selected' : ''}>Recurring</option>
+                        <option value="MovingDate" ${type === 'MovingDate' ? 'selected' : ''}>Yearly weekday</option>
+                        <option value="Easter" ${type === 'Easter' ? 'selected' : ''}>Easter</option>
                         <option value="Weekly" ${type === 'Weekly' ? 'selected' : ''}>Week Days</option>
                         <option value="TimeOfDay" ${type === 'TimeOfDay' ? 'selected' : ''}>Time of Day</option>
                     </select>
@@ -728,6 +804,34 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         <div style="width:70px;">
                             <label class="selectLabel">Day</label>
                             <select is="emby-select" class="selEndDay" style="width:100%;">${getDayOptions(eDay, eMaxDay)}</select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="inputs-moving" style="display: ${type === 'MovingDate' || type === 'Easter' ? 'flex' : 'none'}; gap: 8px; flex-grow: 1; align-items: flex-start; flex-wrap: wrap;">
+                    <div class="mov-wd-month" style="display:${type === 'Easter' ? 'none' : 'flex'}; gap:5px; align-items:flex-start;">
+                        <div style="width:80px;">
+                            <label class="selectLabel">Which</label>
+                            <select is="emby-select" class="selMovOccurrence" style="width:100%;">${[['1', '1st'], ['2', '2nd'], ['3', '3rd'], ['4', '4th'], ['last', 'Last']].map(function (o) { return `<option value="${o[0]}" ${movOcc === o[0] ? 'selected' : ''}>${o[1]}</option>`; }).join('')}</select>
+                        </div>
+                        <div style="width:120px;">
+                            <label class="selectLabel">Day</label>
+                            <select is="emby-select" class="selMovWeekday" style="width:100%;">${['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].map(function (d) { return `<option value="${d}" ${movWeekday === d ? 'selected' : ''}>${d}</option>`; }).join('')}</select>
+                        </div>
+                        <span style="opacity:0.5; padding-top:32px;">of</span>
+                        <div style="width:120px;">
+                            <label class="selectLabel">Month</label>
+                            <select is="emby-select" class="selMovMonth" style="width:100%;">${['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'].map(function (m, i) { return `<option value="${i + 1}" ${movMonth === i + 1 ? 'selected' : ''}>${m}</option>`; }).join('')}</select>
+                        </div>
+                    </div>
+                    <div style="display:flex; gap:5px; align-items:flex-start;">
+                        <div style="width:90px;">
+                            <label class="selectLabel">Days before</label>
+                            <input type="number" class="txtMovBefore emby-input" min="0" max="60" step="1" style="box-sizing:border-box; width:100%; height:31px; padding:0 8px;" value="${movBefore}" title="Active from this many days before (0–60)" />
+                        </div>
+                        <div style="width:90px;">
+                            <label class="selectLabel">Days after</label>
+                            <input type="number" class="txtMovAfter emby-input" min="0" max="60" step="1" style="box-sizing:border-box; width:100%; height:31px; padding:0 8px;" value="${movAfter}" title="Active until this many days after (0–60)" />
                         </div>
                     </div>
                 </div>
@@ -962,6 +1066,21 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         } catch (e) { }
     }
 
+    // The collection's name as the sync uses it: Collection Name, else the tag (Display Name).
+    function effectiveCollName(row) {
+        return (((row.querySelector('.txtCollectionName') || {}).value || '').trim()
+            || ((row.querySelector('.txtTagName') || {}).value || '').trim()
+            || ((row.querySelector('.txtEntryLabel') || {}).value || '').trim());
+    }
+
+    // "Sort title" (Settings > Features): saved as typed; the prefilled default ("!!! " + name) is saved as "".
+    function readCollSortTitle(row) {
+        var box = row.querySelector('.txtCollSortTitle');
+        if (!box) return row.dataset.collSortTitle || '';
+        var v = (box.value || '').trim();
+        return v === '!!! ' + effectiveCollName(row) ? '' : v;
+    }
+
     // Collection art settings of a source card (generated poster / background, top of Collections).
     function readCollectionArt(row) {
         var poster = row.querySelector('.collection-tab .coll-style-picker[data-kind="poster"] input:checked');
@@ -971,6 +1090,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             CollectionBackgroundStyle: bg ? bg.value : '',
             CollectionBackgroundPath: (row.querySelector('.collection-tab .hiddenBgPath') || {}).value || '',
             CollectionSortToTop: !!(row.querySelector('.chkCollSortToTop') || {}).checked,
+            CollectionKeepOrder: !!(row.querySelector('.chkCollKeepOrder') || {}).checked,
+            CollectionSortTitle: readCollSortTitle(row),
             CollectionArtTitle: ((row.querySelector('.txtCollArtTitle') || {}).value || '').trim(),
             CollectionPosterOptions: artOptsOf(row.querySelector('.collection-tab .coll-style-picker[data-kind="poster"]')),
             CollectionBackgroundOptions: artOptsOf(row.querySelector('.collection-tab .coll-style-picker[data-kind="background"]'))
@@ -1568,7 +1689,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             CollectionPosterStyle: readCollectionArt(row).CollectionPosterStyle,
             CollectionBackgroundStyle: readCollectionArt(row).CollectionBackgroundStyle,
             CollectionBackgroundPath: readCollectionArt(row).CollectionBackgroundPath,
-            CollectionSortToTop: readCollectionArt(row).CollectionSortToTop, CollectionImported: row.dataset.collImported === '1',
+            CollectionSortToTop: readCollectionArt(row).CollectionSortToTop, CollectionKeepOrder: readCollectionArt(row).CollectionKeepOrder, CollectionSortTitle: readCollectionArt(row).CollectionSortTitle, CollectionImported: row.dataset.collImported === '1',
             CollectionPosterReplaced: row.dataset.posterReplaced === '1', CollectionBackgroundReplaced: row.dataset.bgReplaced === '1',
             CollectionArtTitle: readCollectionArt(row).CollectionArtTitle,
             CollectionPosterOptions: readCollectionArt(row).CollectionPosterOptions,
@@ -2068,8 +2189,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     function saveSavedFiltersNow() {
         window.ApiClient.getPluginConfiguration(pluginId)
             .then(function (currentConfig) {
+                var before = hscServerStamp(currentConfig);
                 currentConfig.SavedFilters = savedFilters;
-                return window.ApiClient.updatePluginConfiguration(pluginId, currentConfig);
+                return window.ApiClient.updatePluginConfiguration(pluginId, currentConfig)
+                    .then(function (r) { return advanceServerStamp(before).then(function () { return r; }); });
             })
             .then(function () {
                 if (originalConfigState) {
@@ -2082,6 +2205,46 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var view = activeView();
                 if (view) checkFormState();
             });
+    }
+
+    // Same as the server's MovingDateAnchor/MovingDateMatches: the anchor date (Nth/last weekday of
+    // a month, or Western Easter Sunday) of last, this and next year, widened by DaysBefore/DaysAfter.
+    function westernEaster(y) {
+        var a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4;
+        var f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3), h = (19 * a + b - d - g + 15) % 30;
+        var i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
+        var n = h + l - 7 * m + 114;
+        return new Date(y, Math.floor(n / 31) - 1, n % 31 + 1);
+    }
+
+    function movingDateAnchor(iv, y) {
+        var occ = String(iv.Occurrence || '1').trim().toLowerCase();
+        if (iv.Type === 'Easter' || occ === 'easter') return westernEaster(y);
+        var month = +iv.Month;
+        if (!(month >= 1 && month <= 12)) return null;
+        var wd = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].indexOf((iv.DayOfWeek || '').split(',')[0].trim());
+        if (wd < 0) return null;
+        if (occ === 'last') {
+            var last = new Date(y, month, 0);
+            return new Date(y, month - 1, last.getDate() - (last.getDay() - wd + 7) % 7);
+        }
+        var nth = parseInt(occ, 10);
+        if (!(nth >= 1 && nth <= 4)) return null;
+        var first = new Date(y, month - 1, 1);
+        return new Date(y, month - 1, 1 + (wd - first.getDay() + 7) % 7 + 7 * (nth - 1));
+    }
+
+    function movingDateActive(iv, now) {
+        var before = Math.max(0, Math.min(60, +iv.DaysBefore || 0)), after = Math.max(0, Math.min(60, +iv.DaysAfter || 0));
+        var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        for (var y = now.getFullYear() - 1; y <= now.getFullYear() + 1; y++) {
+            var a = movingDateAnchor(iv, y);
+            if (!a) return false;
+            var s = new Date(a.getFullYear(), a.getMonth(), a.getDate() - before);
+            var e = new Date(a.getFullYear(), a.getMonth(), a.getDate() + after);
+            if (today >= s && today <= e) return true;
+        }
+        return false;
     }
 
     function isScheduleCurrentlyActive(intervals) {
@@ -2103,14 +2266,21 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var days = (iv.DayOfWeek || '').split(',').map(function(d) { return d.trim(); });
                 return days.indexOf(todayName) >= 0;
             }
+            if (iv.Type === 'MovingDate' || iv.Type === 'Easter') return movingDateActive(iv, now);
             if (!iv.Start || !iv.End) return false;
             var s = new Date(iv.Start);
             var e = new Date(iv.End);
             if (iv.Type === 'EveryYear') {
-                var nowMD = now.getMonth() * 100 + now.getDate();
-                var sMD  = s.getMonth() * 100 + s.getDate();
-                var eMD  = e.getMonth() * 100 + e.getDate();
-                return sMD <= nowMD && nowMD <= eMD;
+                // Same as the server: month/day as stored (day clamped to this year's month length,
+                // e.g. Feb 29 → 28); a window that wraps the new year (Dec 27 → Jan 3) is active from
+                // its start through Dec 31 and again from Jan 1 through its end.
+                var sp = parseDateYMD(iv.Start), ep = parseDateYMD(iv.End);
+                if (!sp || !ep) return false;
+                var dim = function (m) { return new Date(now.getFullYear(), m, 0).getDate(); };
+                var nowMD = (now.getMonth() + 1) * 100 + now.getDate();
+                var sMD = sp.month * 100 + Math.min(sp.day, dim(sp.month));
+                var eMD = ep.month * 100 + Math.min(ep.day, dim(ep.month));
+                return eMD >= sMD ? (sMD <= nowMD && nowMD <= eMD) : (nowMD >= sMD || nowMD <= eMD);
             }
             // SpecificDate
             e.setHours(23, 59, 59, 999);
@@ -2136,8 +2306,17 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             } else if (type === 'Weekly' || type === 'TimeOfDay') {
                 var daysBox = dr.querySelector(type === 'Weekly' ? '.inputs-weekly' : '.inputs-time');
                 days = Array.from(daysBox.querySelectorAll('.day-toggle.active')).map(function(b) { return b.dataset.day; }).join(',');
+            } else if (type === 'MovingDate') {
+                days = (dr.querySelector('.selMovWeekday') || {}).value || 'Monday';
             }
             var iv = { Type: type, Start: s, End: e, DayOfWeek: days };
+            if (type === 'MovingDate' || type === 'Easter') {
+                var clampDays = function (sel) { var n = parseInt((dr.querySelector(sel) || {}).value, 10); return isNaN(n) ? 0 : Math.max(0, Math.min(60, n)); };
+                iv.Occurrence = type === 'Easter' ? 'easter' : ((dr.querySelector('.selMovOccurrence') || {}).value || '1');
+                iv.Month = type === 'Easter' ? 1 : (parseInt((dr.querySelector('.selMovMonth') || {}).value, 10) || 1);
+                iv.DaysBefore = clampDays('.txtMovBefore');
+                iv.DaysAfter = clampDays('.txtMovAfter');
+            }
             if (type === 'TimeOfDay') {
                 iv.FromTime = (dr.querySelector('.txtFromTime') || {}).value || '';
                 iv.ToTime = (dr.querySelector('.txtToTime') || {}).value || '';
@@ -2808,6 +2987,21 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             </label>
                             <div class="fieldDescription">Sorts this collection before the others in Emby's Collections view.</div>
                         </div>
+
+                        <div class="inputContainer sorttitle-only coll-sort-title-row" style="margin-top:10px; display:${tagConfig.CollectionSortToTop ? 'block' : 'none'};">
+                            <input is="emby-input" type="text" class="txtCollSortTitle" label="Sort title" value="${(tagConfig.CollectionSortTitle || ('!!! ' + ((tagConfig.CollectionName || '').trim() || (tagConfig.Tag || '').trim() || labelName))).replace(/&/g, '&amp;').replace(/"/g, '&quot;')}" />
+                        </div>
+
+                        <div class="checkboxContainer ranked-only" style="margin-top:15px;">
+                            <label>
+                                <input is="emby-checkbox" type="checkbox" class="chkCollKeepOrder" ${tagConfig.CollectionKeepOrder ? 'checked' : ''} />
+                                <span>Keep the list order — movies only (experimental)</span>
+                            </label>
+                        </div>
+                        <div class="ranked-only" style="display:flex; align-items:flex-start; gap:8px; background:rgba(232,168,56,0.1); border:1px solid rgba(232,168,56,0.35); border-radius:4px; padding:10px 12px; font-size:0.85em; line-height:1.5; margin-top:6px; margin-bottom:6px;">
+                            <i class="md-icon" style="font-size:1.1em; color:#e8a838; flex-shrink:0; margin-top:1px;">warning</i>
+                            <span><strong>Experimental:</strong> adds a hidden library "&lt;collection&gt; (ranked)" with .strm copies of the movies, merged with the real films as extra versions. Unticking removes them.</span>
+                        </div>
                     </div>
                     </div>
                 </div>
@@ -3093,6 +3287,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 dateRow.querySelector('.inputs-annual').style.display = type === 'EveryYear' ? 'flex' : 'none';
                 dateRow.querySelector('.inputs-weekly').style.display = type === 'Weekly' ? 'flex' : 'none';
                 dateRow.querySelector('.inputs-time').style.display = type === 'TimeOfDay' ? 'flex' : 'none';
+                dateRow.querySelector('.inputs-moving').style.display = type === 'MovingDate' || type === 'Easter' ? 'flex' : 'none';
+                // Easter is its own date: only the days before/after apply.
+                dateRow.querySelector('.mov-wd-month').style.display = type === 'Easter' ? 'none' : 'flex';
             }
             if (e.target.classList.contains('selStartMonth') || e.target.classList.contains('selEndMonth')) {
                 var isStart = e.target.classList.contains('selStartMonth');
@@ -3150,6 +3347,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             updateBadges(row);
             updateHseSectionAvailability(row);
             updateNextWatchWarning(row);
+        });
+
+        var chkSortTop = row.querySelector('.chkCollSortToTop');
+        if (chkSortTop) chkSortTop.addEventListener('change', function () {
+            var stRow = row.querySelector('.coll-sort-title-row');
+            if (!stRow) return;
+            stRow.style.display = this.checked ? 'block' : 'none';
+            var box = stRow.querySelector('.txtCollSortTitle');
+            if (this.checked && box && !box.value.trim()) box.value = '!!! ' + effectiveCollName(row);
         });
 
         row.querySelector('.chkEnablePlaylist').addEventListener('change', function () {
@@ -3371,7 +3577,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             }
 
             if (e.target.closest('.btnRemoveGroup')) {
-                if (confirm("Delete this tag group?")) {
+                var delName = ((row.querySelector('.txtEntryLabel') || {}).value || (row.querySelector('.txtTagName') || {}).value
+                    || (row.querySelector('.tag-title') || {}).textContent || '').trim();
+                if (confirm(delName ? 'Delete "' + delName + '"?' : 'Delete this tag group?')) {
                     row.remove();
                 }
             }
@@ -3392,6 +3600,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     if (btnSaveEl) { btnSaveEl.disabled = true; btnSaveEl.style.opacity = '0.5'; btnSaveEl.querySelector('span').textContent = 'Sync in progress...'; }
                     if (dotEl) { dotEl.className = 'status-dot running'; }
                     if (labelEl) labelEl.textContent = 'Running...';
+                    if (view) setTimeout(function () { refreshStatus(view); }, 500); // live step (and 1 s polling) right away
                     fetch(window.ApiClient.getUrl('HomeScreenCompanion/RunEntry'), {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
@@ -3401,7 +3610,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         lbl.textContent = 'Run Group';
                         btn.disabled = false;
                         if (view) { invalidateTagTabs(view); refreshStatus(view); }
-                        window.Dashboard.alert(result.Success ? ('Done: ' + result.Message) : ('Failed: ' + result.Message));
+                        window.Dashboard.alert(result.Queued ? result.Message : result.Success ? ('Done: ' + result.Message) : ('Failed: ' + result.Message));
                     }).catch(function () {
                         lbl.textContent = 'Run Group';
                         btn.disabled = false;
@@ -3920,6 +4129,24 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         })();
     }
 
+    // "Running · <step> · <elapsed>" for the Last run chip; the step comes from the Status endpoints.
+    function runningStepText(st, isHomeScreen) {
+        var step = st.Step || '';
+        if (isHomeScreen && step.indexOf('Home Screen Sync') !== 0) step = 'Home Screen Sync · ' + step;
+        if (step.length > 70) step = step.substring(0, 69) + '…';
+        var text = 'Running · ' + step;
+        var started = st.StartedUtc ? Date.parse(st.StartedUtc) : NaN;
+        if (!isNaN(started)) {
+            var s = Math.max(0, Math.floor((Date.now() - started) / 1000));
+            text += ' · ' + (s >= 3600 ? Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm'
+                : s >= 60 ? Math.floor(s / 60) + 'm ' + (s % 60) + 's' : s + 's');
+        }
+        // Runs waiting for this one go last: the label is cut to the width with an ellipsis
+        // (the full text is in its tooltip).
+        if (st.Waiting) text += ' · ' + st.Waiting;
+        return text;
+    }
+
     function refreshStatus(view) {
         var myId = ++statusRequestId;
         Promise.all([
@@ -3939,6 +4166,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             }
 
             var eitherRunning = result.IsRunning || (hscResult && hscResult.IsRunning);
+            setStatusPollRate(view, eitherRunning || !!(tlResult && tlResult.IsRunning));
             if (eitherRunning) {
                 if (btnSave) { btnSave.disabled = true; btnSave.style.opacity = "0.5"; btnSave.querySelector('span').textContent = "Sync in progress..."; }
                 if (btnRun) btnRun.disabled = true;
@@ -3950,10 +4178,17 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 }
             }
 
-            if (label) label.textContent = result.LastRunStatus || "Never";
+            // While a run is busy: what it is doing now and for how long (sync / Run Group,
+            // Home Screen Sync, top-list sync), e.g. "Running · Playlists — Top 10: 34/88 users · 1m 12s".
+            var live = null;
+            if (result.IsRunning && result.Step) live = result;
+            else if (hscResult && hscResult.IsRunning && hscResult.Step) live = hscResult;
+            else if (tlResult && tlResult.Step) live = tlResult;
+            var liveText = live ? runningStepText(live, live === hscResult) : '';
+            if (label) { label.textContent = liveText || result.LastRunStatus || "Never"; label.title = liveText || result.LastRunStatus || ""; }
             if (dot) {
                 dot.className = "status-dot";
-                var st = result.LastRunStatus || '';
+                var st = liveText || result.LastRunStatus || '';
                 if (st.includes("Running")) dot.classList.add("running");
                 else if (/failed|error/i.test(st)) dot.classList.add("failed");
                 else if (/warning/i.test(st)) dot.classList.add("warn");
@@ -4741,7 +4976,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 CollectionPosterStyle: readCollectionArt(row).CollectionPosterStyle,
                 CollectionBackgroundStyle: readCollectionArt(row).CollectionBackgroundStyle,
                 CollectionBackgroundPath: readCollectionArt(row).CollectionBackgroundPath,
-                CollectionSortToTop: readCollectionArt(row).CollectionSortToTop, CollectionImported: row.dataset.collImported === '1',
+                CollectionSortToTop: readCollectionArt(row).CollectionSortToTop, CollectionKeepOrder: readCollectionArt(row).CollectionKeepOrder, CollectionSortTitle: readCollectionArt(row).CollectionSortTitle, CollectionImported: row.dataset.collImported === '1',
             CollectionPosterReplaced: row.dataset.posterReplaced === '1', CollectionBackgroundReplaced: row.dataset.bgReplaced === '1',
                 CollectionArtTitle: readCollectionArt(row).CollectionArtTitle,
                 CollectionPosterOptions: readCollectionArt(row).CollectionPosterOptions,
@@ -4780,8 +5015,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     var limitVal = parseInt(uRow.querySelector('.txtUrlLimit').value, 10) || 0;
                     if (urlVal) { flatTags.push(Object.assign({}, baseTag, { Url: urlVal, Limit: limitVal, LocalSourceId: "" })); pushedExternal = true; }
                 });
-                if (forComparison && !pushedExternal) {
-                    flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: 0, LocalSourceId: "" }));
+                // No URL yet: the source is still saved (the sync skips it and changes nothing).
+                if (!pushedExternal) {
+                    var firstUrlLimit = parseInt((row.querySelector('.url-row .txtUrlLimit') || {}).value, 10) || 0;
+                    flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: firstUrlLimit, LocalSourceId: "" }));
                 }
             } else if (st === 'LocalCollection' || st === 'LocalPlaylist') {
                 var pushedLocal = false;
@@ -4790,8 +5027,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     var limitVal = parseInt(lRow.querySelector('.txtLocalLimit').value, 10) || 0;
                     if (localVal) { flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: limitVal, LocalSourceId: localVal })); pushedLocal = true; }
                 });
-                if (forComparison && !pushedLocal) {
-                    flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: 0, LocalSourceId: "" }));
+                // Nothing picked yet: the source is still saved (the sync skips it and changes nothing).
+                if (!pushedLocal) {
+                    var firstLocalLimit = parseInt((row.querySelector('.local-row .txtLocalLimit') || {}).value, 10) || 0;
+                    flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: firstLocalLimit, LocalSourceId: "" }));
                 }
             } else if (st === 'Manual') {
                 flatTags.push(Object.assign({}, baseTag, { Url: "", Limit: 0, LocalSourceId: "", ManualItemIds: readManualIds(row) }));
@@ -4858,6 +5097,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             HideTopListLibraries: view.querySelector('#chkHideTopListLibraries').checked,
             ShowCopyPasteButtons: view.querySelector('#chkShowCopyPasteButtons').checked,
             ShowImportCollectionButton: view.querySelector('#chkShowImportCollectionButton').checked,
+            CollectionSortTitleEnabled: view.querySelector('#chkCollectionSortTitleEnabled').checked,
+            RankedCollectionsEnabled: view.querySelector('#chkRankedCollectionsEnabled').checked,
             Tags: flatTags,
             SavedFilters: savedFilters,
             HomeSyncEnabled: hscEnabled ? hscEnabled.checked : (lastHscConfig.HomeSyncEnabled || false),
@@ -4917,6 +5158,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var saved = JSON.parse(originalConfigState);
             view.classList.toggle('hsc-no-copypaste', !saved.ShowCopyPasteButtons);
             view.classList.toggle('hsc-no-import', !saved.ShowImportCollectionButton);
+            view.classList.toggle('hsc-no-ranked', !saved.RankedCollectionsEnabled);
+            view.classList.toggle('hsc-no-sorttitle', !saved.CollectionSortTitleEnabled);
         } catch (e) { }
         var warn = view.querySelector('.dry-run-warning');
         if (warn) {
@@ -5058,7 +5301,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     Tag: t.Tag, Name: t.Name || '', Urls: [], LocalSources: [], Active: t.Active !== false, Blacklist: t.Blacklist, ActiveIntervals: t.ActiveIntervals,
                     EnableTag: t.EnableTag !== false, EnableCollection: t.EnableCollection, CollectionName: t.CollectionName, CollectionDescription: t.CollectionDescription || '', CollectionPosterPath: t.CollectionPosterPath || '',
                     CollectionPosterStyle: t.CollectionPosterStyle || '', CollectionBackgroundStyle: t.CollectionBackgroundStyle || '',
-                    CollectionBackgroundPath: t.CollectionBackgroundPath || '', CollectionSortToTop: !!t.CollectionSortToTop, CollectionImported: !!t.CollectionImported,
+                    CollectionBackgroundPath: t.CollectionBackgroundPath || '', CollectionSortToTop: !!t.CollectionSortToTop, CollectionKeepOrder: !!t.CollectionKeepOrder, CollectionSortTitle: t.CollectionSortTitle || '', CollectionImported: !!t.CollectionImported,
                     CollectionPosterReplaced: !!t.CollectionPosterReplaced, CollectionBackgroundReplaced: !!t.CollectionBackgroundReplaced,
                     CollectionArtTitle: t.CollectionArtTitle || '',
                     CollectionPosterOptions: t.CollectionPosterOptions || '', CollectionBackgroundOptions: t.CollectionBackgroundOptions || '',
@@ -5094,8 +5337,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     NextWatchUsersMigrated: !!t.NextWatchUsersMigrated,
                 };
             }
-            if (t.SourceType === 'External' && t.Url) grouped[key].Urls.push({ url: t.Url, limit: t.Limit });
-            if ((t.SourceType === 'LocalCollection' || t.SourceType === 'LocalPlaylist') && t.LocalSourceId) grouped[key].LocalSources.push({ id: t.LocalSourceId, limit: t.Limit });
+            // A source saved without a URL / local source yet comes back as one empty row (with its limit).
+            if (t.SourceType === 'External') grouped[key].Urls.push({ url: t.Url || '', limit: t.Limit });
+            if (t.SourceType === 'LocalCollection' || t.SourceType === 'LocalPlaylist') grouped[key].LocalSources.push({ id: t.LocalSourceId || '', limit: t.Limit });
             if (t.SourceType === 'MediaInfo') grouped[key].Limit = t.Limit;
             if (t.SourceType === 'AI') grouped[key].Limit = t.Limit;
             if (t.SourceType === 'NextWatch') {
@@ -5851,7 +6095,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     if (tagList.length === 0 && collList.length === 0) { modal.remove(); updateSaveButton(); return; }
                     modal.innerHTML =
                         '<div style="background:var(--plugin-popup-bg,#2a2a2a);color:var(--plugin-popup-color,#e8e8e8);border:1px solid var(--plugin-popup-border,rgba(255,255,255,0.12));border-radius:8px;padding:28px;max-width:600px;width:90%;max-height:80vh;overflow-y:auto;">' +
-                        '<h3 style="margin:0 0 20px;font-size:1.1em;color:#52B54B;">Summary — Pending changes</h3>' +
+                        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">' +
+                        '<h3 style="margin:0;font-size:1.1em;color:#52B54B;">Summary — Pending changes</h3>' +
+                        '<button type="button" id="tcModalClose" aria-label="Close" title="Close" style="background:transparent;border:none;color:inherit;cursor:pointer;padding:2px;opacity:0.6;line-height:1;"><i class="md-icon">close</i></button>' +
+                        '</div>' +
                         '<div id="tcModalBody">' + buildContent() + '</div>' +
                         '<div style="display:flex;justify-content:flex-end;gap:12px;margin-top:20px;border-top:1px solid var(--line-color);padding-top:16px;">' +
                         '<button type="button" id="tcModalCancel" style="cursor:pointer;border:1px solid var(--line-color);background:transparent;color:var(--theme-text-primary);border-radius:3px;padding:8px 18px;font-size:0.9em;">Cancel</button>' +
@@ -5859,6 +6106,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         '</div></div>';
 
                     modal.querySelector('#tcModalCancel').addEventListener('click', function () { modal.remove(); });
+                    modal.querySelector('#tcModalClose').addEventListener('click', function () { modal.querySelector('#tcModalCancel').click(); });
 
                     modal.addEventListener('click', function (e) {
                         var undoBtn = e.target.closest('.btnModalUndo');
@@ -5929,6 +6177,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         }).then(function () {
                             if (groupsToInactivate.size === 0) return Promise.resolve();
                             return window.ApiClient.getPluginConfiguration(pluginId).then(function (cfg) {
+                                var stampBefore = hscServerStamp(cfg);
                                 // Collect the Tag values for the seed indices, then inactivate ALL rows sharing that Tag
                                 var tagsToInactivate = new Set();
                                 groupsToInactivate.forEach(function (idx) {
@@ -5939,7 +6188,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                     if (t.Tag && tagsToInactivate.has(t.Tag.trim().toLowerCase()))
                                         t.Active = false;
                                 });
-                                return window.ApiClient.updatePluginConfiguration(pluginId, cfg);
+                                return window.ApiClient.updatePluginConfiguration(pluginId, cfg)
+                                    .then(function (r) { return advanceServerStamp(stampBefore).then(function () { return r; }); });
                             });
                         }).then(function () {
                             modal.remove();
@@ -7016,7 +7266,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             (on ? 'background:#52B54B;color:#fff;' : 'background:transparent;color:inherit;opacity:0.75;') + '">' + k + '</button>';
                     }).join('') + '</div>') +
                 '</div>' +
-                '<button type="button" class="btnTlmClose" style="background:transparent;border:none;color:inherit;cursor:pointer;padding:2px;opacity:0.6;line-height:1;"><i class="md-icon">close</i></button>' +
+                '<button type="button" class="btnTlmClose" aria-label="Close" title="Close" style="background:transparent;border:none;color:inherit;cursor:pointer;padding:2px;opacity:0.6;line-height:1;"><i class="md-icon">close</i></button>' +
                 '</div>' +
                 (prefill ? sourceNoticesHtml(prefill.notices) : '') +
 
@@ -7271,7 +7521,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             (on ? 'background:#52B54B;color:#fff;' : 'background:transparent;color:inherit;opacity:0.75;') + '">' + k + '</button>';
                     }).join('') + '</div>') +
                 '</div>' +
-                '<button type="button" class="btnMtlClose" style="background:transparent;border:none;color:inherit;cursor:pointer;padding:2px;opacity:0.6;line-height:1;"><i class="md-icon">close</i></button>' +
+                '<button type="button" class="btnMtlClose" aria-label="Close" title="Close" style="background:transparent;border:none;color:inherit;cursor:pointer;padding:2px;opacity:0.6;line-height:1;"><i class="md-icon">close</i></button>' +
                 '</div>' +
                 (options && options.prefill ? sourceNoticesHtml(options.prefill.notices) : '') +
 
@@ -8059,7 +8309,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '<div style="' + innerStyle + '">' +
                 '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">' +
                 '<h3 style="margin:0;font-size:1.1em;color:#52B54B;">Create Top-List</h3>' +
-                '<button type="button" class="btnChooserClose" style="background:transparent;border:none;color:inherit;cursor:pointer;padding:2px;opacity:0.6;line-height:1;"><i class="md-icon">close</i></button>' +
+                '<button type="button" class="btnChooserClose" aria-label="Close" title="Close" style="background:transparent;border:none;color:inherit;cursor:pointer;padding:2px;opacity:0.6;line-height:1;"><i class="md-icon">close</i></button>' +
                 '</div>' +
                 '<p style="margin:0 0 20px;font-size:0.9em;color:var(--theme-text-secondary);">How do you want to create this top-list?</p>' +
                 '<div style="display:flex;gap:16px;">' +
@@ -8128,7 +8378,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '<button type="button" class="btnChooserBack" style="background:transparent;border:none;color:var(--theme-text-secondary);cursor:pointer;padding:2px;line-height:1;opacity:0.7;"><i class="md-icon">arrow_back</i></button>' +
                 '<h3 style="margin:0;font-size:1.1em;color:#52B54B;">Select Tag</h3>' +
                 '</div>' +
-                '<button type="button" class="btnChooserClose" style="background:transparent;border:none;color:inherit;cursor:pointer;padding:2px;opacity:0.6;line-height:1;"><i class="md-icon">close</i></button>' +
+                '<button type="button" class="btnChooserClose" aria-label="Close" title="Close" style="background:transparent;border:none;color:inherit;cursor:pointer;padding:2px;opacity:0.6;line-height:1;"><i class="md-icon">close</i></button>' +
                 '</div>' +
                 '<div style="margin-bottom:14px;">' +
                 '<input type="text" id="tlChooserSearch" placeholder="Search tags…" style="' + inputStyle + '" />' +
@@ -8184,8 +8434,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             modal.innerHTML =
                 '<div style="background:var(--plugin-popup-bg,#2a2a2a);color:var(--plugin-popup-color,#e8e8e8);' +
                 'border:1px solid var(--plugin-popup-border,rgba(255,255,255,0.12));border-radius:8px;' +
-                'padding:28px;max-width:560px;width:90%;max-height:85vh;overflow-y:auto;">' +
+                'padding:28px;max-width:560px;width:90%;max-height:85vh;overflow-y:auto;position:relative;">' +
+                '<button type="button" class="btnShellClose" aria-label="Close" title="Close" style="position:absolute;top:22px;right:18px;background:transparent;border:none;color:inherit;cursor:pointer;padding:2px;opacity:0.6;line-height:1;"><i class="md-icon">close</i></button>' +
                 content + '</div>';
+            // Header X: same as the popup's Cancel/Close (modal.close).
+            modal.querySelector('.btnShellClose').addEventListener('click', function () { modal.close(); });
         };
         function onEsc(e) { if (e.key === 'Escape') modal.close(); }
         modal.close = function () { modal.remove(); document.removeEventListener('keydown', onEsc); };
@@ -9169,6 +9422,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         if (btnSaveEl) { btnSaveEl.disabled = true; btnSaveEl.style.opacity = '0.5'; btnSaveEl.querySelector('span').textContent = 'Sync in progress...'; }
                         if (dotEl) { dotEl.className = 'status-dot running'; }
                         if (labelEl) labelEl.textContent = 'Running...';
+                        setTimeout(function () { refreshStatus(view); }, 500); // live step (and 1 s polling) right away
                         fetch(window.ApiClient.getUrl('HomeScreenCompanion/TopList/RunOne'), {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
@@ -9178,7 +9432,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             lbl.textContent = 'Run Group';
                             runBtn.disabled = false;
                             invalidateTagTabs(view); refreshStatus(view);
-                            window.Dashboard.alert(result.Success ? ('Done: ' + result.Message) : ('Failed: ' + result.Message));
+                            window.Dashboard.alert(result.Queued ? result.Message : result.Success ? ('Done: ' + result.Message) : ('Failed: ' + result.Message));
                         }).catch(function () {
                             lbl.textContent = 'Run Group';
                             runBtn.disabled = false;
@@ -9673,6 +9927,16 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 view.querySelector('#btnCloseTagTargetHelp').addEventListener('click', () => tagTargetHelpOverlay.classList.remove('modal-visible'));
                 tagTargetHelpOverlay.addEventListener('click', e => { if (e.target === tagTargetHelpOverlay) tagTargetHelpOverlay.classList.remove('modal-visible'); });
 
+                // Header X: clicks the popup's own Close/Cancel button (by id, or by class for Customise),
+                // so it does exactly what that button does.
+                view.querySelectorAll('.modal-header-close').forEach(function (x) {
+                    x.addEventListener('click', function () {
+                        var t = x.getAttribute('data-close');
+                        var b = view.querySelector('#' + t) || x.closest('.modal-content').querySelector('.' + t);
+                        if (b) b.click();
+                    });
+                });
+
                 var headerAction = view.querySelector('.sectionTitleContainer');
                 if (headerAction && !view.querySelector('#cbSortTags')) {
                     var savedSort = localStorage.getItem('HomeScreenCompanion_SortBy') || 'Manual';
@@ -9887,16 +10151,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }
         // What the server sent, minus the parts the sync tasks rewrite on their own (Save re-reads
         // those from the server anyway), so a background sync does not count as "changed".
-        function serverStamp(config) {
-            var c = stripSecrets(config);
-            delete c.TopLists;
-            c.Tags = (c.Tags || []).map(function (t) {
-                var x = Object.assign({}, t);
-                delete x.HomeSectionTracked; delete x.PlaylistMappings;
-                delete x.CollectionPosterReplaced; delete x.CollectionBackgroundReplaced;
-                return x;
-            });
-            return JSON.stringify(c);
+        function serverStamp(config) { return hscServerStamp(config); }
+        // Save: is the server still as this page loaded it? If not, nothing is saved and the user
+        // chooses between reloading (losing their edits here) and going on editing.
+        function serverUnchangedSinceLoad() {
+            return window.ApiClient.getPluginConfiguration(pluginId).then(function (c) {
+                if (!view._hscServerStamp || serverStamp(c) === view._hscServerStamp) return true;
+                showSaveConflictDialog(function () { writeLeaveState(null); hideDraftBar(); loadConfig(); });
+                return false;
+            }, function () { return true; });
         }
         function rowKey(row) {
             var lbl = row.querySelector('.txtEntryLabel'), tn = row.querySelector('.txtTagName');
@@ -9970,7 +10233,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             bar.style.background = serverChanged ? 'rgba(230,126,34,0.18)' : 'rgba(82,181,75,0.15)';
             bar.style.borderColor = serverChanged ? '#E67E22' : '#52B54B';
             bar.querySelector('.hsc-draft-text').textContent = serverChanged
-                ? 'Unsaved changes restored. Settings changed on the server while you were away — saving will overwrite them.'
+                ? 'Unsaved changes restored. Settings changed on the server while you were away — Save will not overwrite them; it offers to reload the current settings instead.'
                 : 'Unsaved changes restored.';
             bar.style.display = 'flex';
         }
@@ -10006,6 +10269,19 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
         view.querySelector('.HomeScreenCompanionForm').addEventListener('submit', e => {
             e.preventDefault();
+
+            // First: were the settings changed elsewhere since this page loaded? Then the save
+            // below is replayed (synchronously, flagged) once the server says it is unchanged.
+            if (!view._hscStampChecked) {
+                var formEl = e.currentTarget || view.querySelector('.HomeScreenCompanionForm');
+                serverUnchangedSinceLoad().then(function (ok) {
+                    if (!ok) return;
+                    view._hscStampChecked = true;
+                    try { formEl.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); }
+                    finally { view._hscStampChecked = false; }
+                });
+                return;
+            }
 
             // Flush dirty inline top-list forms before the global config save.
             // Must happen first because the global save re-fetches TopLists from the server.
@@ -10046,21 +10322,21 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
             var configObj = getUiConfig(view, false);
             
+            // LastModified moves only on the sources the user changed: each card as it is now is
+            // compared with the card as loaded — both grouped and read the same way (comparing a
+            // flat save entry with a grouped card always differed, so one Save touched every source).
             var originalConf = JSON.parse(originalConfigState);
             var originalTags = groupConfigTags(originalConf.Tags);
+            var currentTags = groupConfigTags(getUiConfig(view, true).Tags);
+            var sameCard = function (a, b) {
+                return !!a && !!b && JSON.stringify(Object.assign({}, a, { LastModified: '' })) === JSON.stringify(Object.assign({}, b, { LastModified: '' }));
+            };
 
             configObj.Tags.forEach(tag => {
                 var key = tag.Name ? tag.Name + '\x1F' + tag.Tag : tag.Tag;
                 var originalTag = originalTags[key];
-                
-                var currentTagForCompare = Object.assign({}, tag, { LastModified: "CONSTANT_FOR_COMPARISON" });
-                var originalTagForCompare = originalTag ? Object.assign({}, originalTag, { LastModified: "CONSTANT_FOR_COMPARISON" }) : null;
-
-                if (!originalTag || JSON.stringify(currentTagForCompare) !== JSON.stringify(originalTagForCompare)) {
-                    tag.LastModified = new Date().toISOString();
-                } else {
-                    tag.LastModified = originalTag.LastModified;
-                }
+                if (originalTag && sameCard(currentTags[key], originalTag)) tag.LastModified = originalTag.LastModified;
+                else tag.LastModified = new Date().toISOString();
             });
 
             // Pre-fetch current config to preserve HomeSectionTracked set by the sync task
@@ -10312,6 +10588,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 view.querySelector('#chkHideTopListLibraries').checked = config.HideTopListLibraries !== false;
                 view.querySelector('#chkShowCopyPasteButtons').checked = config.ShowCopyPasteButtons || false;
                 view.querySelector('#chkShowImportCollectionButton').checked = config.ShowImportCollectionButton || false;
+                view.querySelector('#chkRankedCollectionsEnabled').checked = config.RankedCollectionsEnabled || false;
+                view.querySelector('#chkCollectionSortTitleEnabled').checked = config.CollectionSortTitleEnabled || false;
                 if (view.querySelector('#txtSearchTags')) {
                     view.querySelector('#txtSearchTags').value = '';
                     view.querySelector('#btnClearSearch').style.display = 'none';

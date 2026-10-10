@@ -26,6 +26,8 @@ namespace HomeScreenCompanion
         public static int LastSectionsCopied { get; private set; } = 0;
         public static List<string> ExecutionLog { get; } = new List<string>();
         public static DateTime? LastStartedUtc { get; private set; }
+        /// <summary>The step a running sync is on, shown next to "Running" on the page.</summary>
+        internal static RunProgress Progress { get; } = new RunProgress();
         private RunLog _log;
 
         private static void PersistLog() => LogStore.Save(LogStore.HomeScreen, ExecutionLog, LastSyncResult, LastStartedUtc,
@@ -71,7 +73,19 @@ namespace HomeScreenCompanion
             return Array.Empty<TaskTriggerInfo>();
         }
 
-        public Task Execute(CancellationToken cancellationToken, IProgress<double> progress)
+        public async Task Execute(CancellationToken cancellationToken, IProgress<double> progress)
+        {
+            // One run at a time (see RunGate): a running sync / Run Group finishes first. Shown as
+            // running ("Waiting for … to finish") meanwhile.
+            IsRunning = true;
+            if (RunGate.Busy) Progress.Set($"Waiting for {RunGate.Holder} to finish");
+            IDisposable gate;
+            try { gate = await RunGate.EnterAsync(Name, _logger, cancellationToken).ConfigureAwait(false); }
+            catch { IsRunning = false; Progress.Clear(); throw; }
+            using (gate) await ExecuteCore(cancellationToken, progress).ConfigureAwait(false);
+        }
+
+        private Task ExecuteCore(CancellationToken cancellationToken, IProgress<double> progress)
         {
             IsRunning = true;
             lock (ExecutionLog) { ExecutionLog.Clear(); }
@@ -82,7 +96,7 @@ namespace HomeScreenCompanion
                 if (config == null) return Task.CompletedTask;
 
                 bool debug = config.ExtendedConsoleOutput;
-                _log = new RunLog(ExecutionLog, _logger, "[Home Screen]", debug);
+                _log = new RunLog(ExecutionLog, _logger, "[Home Screen]", debug, Progress);
                 var startTime = DateTime.Now;
                 _log.Rule();
                 _log.Info($"Home Screen Sync  ·  {startTime:yyyy-MM-dd HH:mm}");
@@ -140,6 +154,7 @@ namespace HomeScreenCompanion
                 for (int i = 0; i < targetCount; i++)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
+                    _log.Count("Home Screen Sync —", i + 1, targetCount, "users");
 
                     var targetIdStr = config.HomeSyncTargetUserIds[i];
                     string targetName = Guid.TryParse(targetIdStr, out var tgtGuid)
@@ -287,6 +302,7 @@ namespace HomeScreenCompanion
             finally
             {
                 IsRunning = false;
+                Progress.Clear();
                 PersistLog();
             }
 

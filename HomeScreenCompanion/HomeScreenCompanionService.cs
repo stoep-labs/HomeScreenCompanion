@@ -81,6 +81,8 @@ namespace HomeScreenCompanion
         public List<string> Logs { get; set; } = new List<string>();
         public bool IsRunning { get; set; }
         public string StartedUtc { get; set; } = string.Empty;
+        public string Step { get; set; } = string.Empty;   // what a running sync is doing now
+        public string Waiting { get; set; } = string.Empty; // runs waiting for this one to finish (see RunGate)
     }
 
     [Route("/HomeScreenCompanion/RunEntry", "POST")]
@@ -94,6 +96,8 @@ namespace HomeScreenCompanion
     {
         public bool Success { get; set; }
         public string Message { get; set; } = "";
+        /// <summary>Another run was busy: this one waits for it in the background (see RunGate).</summary>
+        public bool Queued { get; set; }
     }
 
     // Run Group on a top-list card: rebuilds just that list (folder, tiles, home sections, collection mirror).
@@ -337,6 +341,8 @@ namespace HomeScreenCompanion
         public string LastRunStatus { get; set; } = "";
         public List<string> Logs { get; set; } = new List<string>();
         public string StartedUtc { get; set; } = "";
+        public string Step { get; set; } = "";   // what a running sync is doing now
+        public string Waiting { get; set; } = ""; // runs waiting for this one to finish (see RunGate)
     }
 
     [Route("/HomeScreenCompanion/TopList/PrepareFolder", "POST")]
@@ -601,6 +607,8 @@ namespace HomeScreenCompanion
         public bool TopListMirrorCollections { get; set; }
         public bool ShowCopyPasteButtons { get; set; }
         public bool ShowImportCollectionButton { get; set; }
+        public bool RankedCollectionsEnabled { get; set; }
+        public bool CollectionSortTitleEnabled { get; set; }
     }
 
     public class BackupApiKeys
@@ -867,7 +875,9 @@ public class HomeScreenCompanionService : IService
                 LastRunStatus = HomeScreenCompanionTask.LastRunStatus,
                 Logs = logs,
                 IsRunning = HomeScreenCompanionTask.IsRunning,
-                StartedUtc = HomeScreenCompanionTask.LastStartedUtc?.ToString("o") ?? ""
+                StartedUtc = HomeScreenCompanionTask.LastStartedUtc?.ToString("o") ?? "",
+                Step = HomeScreenCompanionTask.Progress.Step,
+                Waiting = RunGate.WaitingFor(HomeScreenCompanionTask.Progress.Step, HomeScreenCompanionTask.IsRunning)
             };
         }
 
@@ -1011,6 +1021,13 @@ public class HomeScreenCompanionService : IService
             var task = HomeScreenCompanionTask.Instance;
             if (task == null)
                 return new RunEntryResponse { Success = false, Message = "Task not initialized" };
+            // Another run busy: it waits in the background, so the request does not hang until then.
+            if (RunGate.Busy)
+            {
+                var holder = RunGate.Holder;
+                _ = Task.Run(() => task.RunSingleEntryAsync(request.EntryName, CancellationToken.None));
+                return new RunEntryResponse { Success = true, Queued = true, Message = QueuedMessage(holder) };
+            }
             var (success, message) = await task.RunSingleEntryAsync(request.EntryName, CancellationToken.None);
             return new RunEntryResponse { Success = success, Message = message };
         }
@@ -1022,9 +1039,19 @@ public class HomeScreenCompanionService : IService
             var task = HomeScreenCompanionTask.Instance;
             if (task == null)
                 return new RunEntryResponse { Success = false, Message = "Task not initialized" };
+            if (RunGate.Busy)
+            {
+                var holder = RunGate.Holder;
+                var name = request.TagName.Trim();
+                _ = Task.Run(() => task.RunSingleTopListAsync(name, RebuildManualTopList, CancellationToken.None));
+                return new RunEntryResponse { Success = true, Queued = true, Message = QueuedMessage(holder) };
+            }
             var (success, message) = await task.RunSingleTopListAsync(request.TagName.Trim(), RebuildManualTopList, CancellationToken.None);
             return new RunEntryResponse { Success = success, Message = message };
         }
+
+        private static string QueuedMessage(string holder) =>
+            $"Queued — {(string.IsNullOrEmpty(holder) ? "another sync" : holder)} is running. This Run Group starts as soon as it has finished; follow it under Last run / the log.";
 
         // A manual movie list is rebuilt from the entries in its folder, in their current order,
         // with its saved badge look — the same code as saving the list.
@@ -1479,7 +1506,9 @@ public class HomeScreenCompanionService : IService
                 LastSyncResult = HomeSectionSyncTask.LastSyncResult,
                 SectionsCopied = HomeSectionSyncTask.LastSectionsCopied,
                 Logs = logs,
-                StartedUtc = HomeSectionSyncTask.LastStartedUtc?.ToString("o") ?? ""
+                StartedUtc = HomeSectionSyncTask.LastStartedUtc?.ToString("o") ?? "",
+                Step = HomeSectionSyncTask.Progress.Step,
+                Waiting = RunGate.WaitingFor(HomeSectionSyncTask.Progress.Step, HomeSectionSyncTask.IsRunning)
             };
         }
 
@@ -1492,7 +1521,9 @@ public class HomeScreenCompanionService : IService
                 IsRunning = TopListSyncTask.IsRunning,
                 LastRunStatus = TopListSyncTask.LastRunStatus,
                 Logs = logs,
-                StartedUtc = TopListSyncTask.LastStartedUtc?.ToString("o") ?? ""
+                StartedUtc = TopListSyncTask.LastStartedUtc?.ToString("o") ?? "",
+                Step = TopListSyncTask.Progress.Step,
+                Waiting = RunGate.WaitingFor(TopListSyncTask.Progress.Step, TopListSyncTask.IsRunning)
             };
         }
 
@@ -3489,7 +3520,9 @@ public class HomeScreenCompanionService : IService
                     PreserveTagsOnEmptyResult = config.PreserveTagsOnEmptyResult,
                     TopListMirrorCollections  = config.TopListMirrorCollections,
                     ShowCopyPasteButtons      = config.ShowCopyPasteButtons,
-                    ShowImportCollectionButton = config.ShowImportCollectionButton
+                    ShowImportCollectionButton = config.ShowImportCollectionButton,
+                    RankedCollectionsEnabled  = config.RankedCollectionsEnabled,
+                    CollectionSortTitleEnabled = config.CollectionSortTitleEnabled
                 };
                 file.Sections.Add("Settings");
             }
@@ -3604,6 +3637,8 @@ public class HomeScreenCompanionService : IService
                     config.TopListMirrorCollections  = s.TopListMirrorCollections;
                     config.ShowCopyPasteButtons      = s.ShowCopyPasteButtons;
                     config.ShowImportCollectionButton = s.ShowImportCollectionButton;
+                    config.RankedCollectionsEnabled  = s.RankedCollectionsEnabled;
+                    config.CollectionSortTitleEnabled = s.CollectionSortTitleEnabled;
                     response.Applied.Add("Settings");
                 }
 
@@ -3873,7 +3908,9 @@ public class HomeScreenCompanionService : IService
                 PreserveTagsOnEmptyResult = legacy.PreserveTagsOnEmptyResult,
                 TopListMirrorCollections  = legacy.TopListMirrorCollections,
                 ShowCopyPasteButtons      = legacy.ShowCopyPasteButtons,
-                ShowImportCollectionButton = legacy.ShowImportCollectionButton
+                ShowImportCollectionButton = legacy.ShowImportCollectionButton,
+                RankedCollectionsEnabled  = legacy.RankedCollectionsEnabled,
+                CollectionSortTitleEnabled = legacy.CollectionSortTitleEnabled
             };
             result.Sections.Add("Settings");
             result.ApiKeys = new BackupApiKeys
@@ -4020,6 +4057,7 @@ public class HomeScreenCompanionService : IService
                 {
                     if (string.IsNullOrEmpty(m.Path)) continue;
                     if (m.Path.StartsWith(topListsFolder, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (RankedCollections.IsRankedPath(m.Path)) continue;
                     var imdb = m.GetProviderId("Imdb");
                     if (!string.IsNullOrEmpty(imdb) && !lookup.ContainsKey(imdb))
                         lookup[imdb] = m;
@@ -4411,6 +4449,7 @@ public class HomeScreenCompanionService : IService
             }))
             {
                 if (topListsFolder != null && !string.IsNullOrEmpty(item.Path) && item.Path.StartsWith(topListsFolder, StringComparison.OrdinalIgnoreCase)) continue;
+                if (RankedCollections.IsRankedPath(item.Path)) continue;
                 var type = item.GetType().Name;
                 foreach (var p in new[] { "Imdb", "Tmdb", "Tvdb" })
                 {

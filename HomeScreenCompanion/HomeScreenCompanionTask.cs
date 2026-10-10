@@ -43,7 +43,9 @@ namespace HomeScreenCompanion
         public static bool IsRunning { get; private set; } = false;
         public static DateTime? LastStartedUtc { get; private set; }
 
-        private static void PersistLog() => LogStore.Save(LogStore.Sync, ExecutionLog, LastRunStatus, LastStartedUtc);
+        private static void PersistLog() { Progress.Clear(); LogStore.Save(LogStore.Sync, ExecutionLog, LastRunStatus, LastStartedUtc); }
+        /// <summary>The step a running sync / Run Group is on, shown next to "Running" on the page.</summary>
+        internal static RunProgress Progress { get; } = new RunProgress();
 
         // Brings back the last run's log and status after a server restart.
         internal static void RestoreLog()
@@ -154,6 +156,13 @@ namespace HomeScreenCompanion
 
         public async Task Execute(CancellationToken cancellationToken, IProgress<double> progress)
         {
+            // One run at a time (see RunGate): a running Run Group or other sync finishes first.
+            using (await RunGate.EnterAsync(Name, _logger, cancellationToken).ConfigureAwait(false))
+                await ExecuteCore(cancellationToken, progress).ConfigureAwait(false);
+        }
+
+        private async Task ExecuteCore(CancellationToken cancellationToken, IProgress<double> progress)
+        {
             IsRunning = true;
             try
             {
@@ -168,7 +177,7 @@ namespace HomeScreenCompanion
                 bool debug = config.ExtendedConsoleOutput;
                 bool dryRun = config.DryRunMode;
                 bool logMissing = config.LogMissingItems;
-                _log = new RunLog(ExecutionLog, _logger, "", debug);
+                _log = new RunLog(ExecutionLog, _logger, "", debug, Progress);
 
                 var startTime = DateTime.Now;
                 var runTimer = System.Diagnostics.Stopwatch.StartNew();
@@ -192,7 +201,7 @@ namespace HomeScreenCompanion
                 {
                     if (item.LocationType != LocationType.FileSystem) continue;
                     if (!string.IsNullOrEmpty(item.Path) &&
-                        item.Path.StartsWith(topListsFolder, StringComparison.OrdinalIgnoreCase))
+                        (item.Path.StartsWith(topListsFolder, StringComparison.OrdinalIgnoreCase) || RankedCollections.IsRankedPath(item.Path)))
                         continue;
                     var imdb = item.GetProviderId("Imdb");
                     if (!string.IsNullOrEmpty(imdb))
@@ -206,7 +215,7 @@ namespace HomeScreenCompanion
                 // copies share genre/year/media info with their original and must never match.
                 // allItems itself still includes them so stale managed tags get cleaned off.
                 var matchableItems = allItems.Where(i => string.IsNullOrEmpty(i.Path)
-                    || !i.Path.StartsWith(topListsFolder, StringComparison.OrdinalIgnoreCase)).ToList();
+                    || !(i.Path.StartsWith(topListsFolder, StringComparison.OrdinalIgnoreCase) || RankedCollections.IsRankedPath(i.Path))).ToList();
 
                 int movieCount = allItems.Count(i => i.GetType().Name.Contains("Movie"));
                 int seriesCount = allItems.Count(i => i.GetType().Name.Contains("Series"));
@@ -221,6 +230,8 @@ namespace HomeScreenCompanion
                 var allScannedEpisodeItems = new Dictionary<Guid, BaseItem>();
                 var allScannedSeasonItems = new Dictionary<Guid, BaseItem>();
                 var desiredCollectionsMap = new Dictionary<string, HashSet<long>>(StringComparer.OrdinalIgnoreCase);
+                // Ranked collections (experimental): each collection's items in list order.
+                var collectionOrder = new Dictionary<string, List<BaseItem>>(StringComparer.OrdinalIgnoreCase);
                 var collectionDescriptions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 var collectionPosters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 var collectionSources = new Dictionary<string, TagConfig>(StringComparer.OrdinalIgnoreCase);
@@ -342,6 +353,7 @@ namespace HomeScreenCompanion
                         .Select(c => c.Length > 0 && c[0] == '!' ? c.Substring(1) : c)
                         .Where(c => c.StartsWith("Collection:", StringComparison.OrdinalIgnoreCase) || c.StartsWith("Playlist:", StringComparison.OrdinalIgnoreCase))
                         .Distinct(StringComparer.OrdinalIgnoreCase);
+                    Dictionary<string, List<long>>? versionIdsByKey = null;
                     foreach (var crit in allCollPlCriteria)
                     {
                         var colonIdx = crit.IndexOf(':');
@@ -367,6 +379,7 @@ namespace HomeScreenCompanion
                             foreach (var m in members)
                             {
                                 ids.Add(m.InternalId);
+                                AddOtherVersions(ids, m, allItems, ref versionIdsByKey);
                                 if (m.GetType().Name.Contains("Series"))
                                 {
                                     foreach (var ep in _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "Episode" }, Parent = m, Recursive = true, IsVirtualItem = false }))
@@ -597,6 +610,23 @@ namespace HomeScreenCompanion
                         collectionSources[cName] = tagConfig;
                     }
 
+                    // Saved without a URL / local source yet: skipped, and its tags, collection, playlist
+                    // and home row stay exactly as they are (never treated as an empty list).
+                    if (HasNoSourceYet(tagConfig))
+                    {
+                        failedFetches.Add(tagName);
+                        if (tagConfig.EnableCollection) failedFetches.Add(cName);
+                        playlistGroupsToSkip.Add(GroupKey(tagConfig));
+                        gs.Skipped = true;
+                        gs.SkipReason = NoSourceYetReason(tagConfig);
+                        statsList.Add(gs);
+                        WriteFetchLine(gs);
+                        currentProgress += step;
+                        progress.Report(currentProgress);
+                        continue;
+                    }
+
+                    _log.Step($"Fetching sources — [{gs.GroupIndex}/{gs.GroupTotal}] {displayName}");
                     var groupTimer = System.Diagnostics.Stopwatch.StartNew();
                     try
                     {
@@ -1071,6 +1101,8 @@ namespace HomeScreenCompanion
                                 desiredCollectionsMap[cName] = new HashSet<long>();
                             foreach (var localItem in collectionOutputItems)
                                 desiredCollectionsMap[cName].Add(localItem.InternalId);
+                            if (!collectionOrder.TryGetValue(cName, out var _order)) collectionOrder[cName] = _order = new List<BaseItem>();
+                            _order.AddRange(collectionOutputItems);
                         }
 
                         // Collect this entry's items for the group's playlist sync (done once per group after
@@ -1152,7 +1184,6 @@ namespace HomeScreenCompanion
                     foreach (var kvp in rankIdsByTag)
                         WriteRankFile(kvp.Key, kvp.Value);
                     TagCacheManager.Instance.Save();
-                    SaveFileHistory("homescreencompanion_history.txt", managedTags.ToList());
                 }
 
                 // Collect episodes that currently carry managed tags so they can be cleaned up
@@ -1187,8 +1218,10 @@ namespace HomeScreenCompanion
                 int tagsAdded = 0, tagsRemoved = 0, itemsChanged = 0, updateCount = 0;
                 var _dbgTagAdded = debug ? new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase) : null;
                 var _dbgTagRemoved = debug ? new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase) : null;
+                int _tagScanDone = 0;
                 foreach (var item in allItems)
                 {
+                    _log.Count("Applying tags:", ++_tagScanDone, allItems.Count, "items");
                     var existingTags = new HashSet<string>(item.Tags, StringComparer.OrdinalIgnoreCase);
                     var targetTags = desiredTagsMap.ContainsKey(item.Id) ? desiredTagsMap[item.Id] : new HashSet<string>();
 
@@ -1299,6 +1332,14 @@ namespace HomeScreenCompanion
                     }
                 }
 
+                // The history keeps only the tags of groups in the config. A deleted group's tag (or a
+                // renamed group's old tag) was just removed from its items, so it is forgotten now:
+                // HSC no longer touches it, also when someone adds that tag by hand later.
+                if (!dryRun)
+                    SaveFileHistory("homescreencompanion_history.txt", managedTags
+                        .Where(t => config.Tags.Any(c => !string.IsNullOrWhiteSpace(c.Tag) && string.Equals(c.Tag.Trim(), t, StringComparison.OrdinalIgnoreCase)))
+                        .ToList());
+
                 WriteTagDiffDebug(_dbgTagAdded, _dbgTagRemoved);
                 _log.Info(tagsAdded == 0 && tagsRemoved == 0
                     ? $"    No tag changes needed  ·  {RunLog.Elapsed(phaseTimer.Elapsed)}"
@@ -1314,12 +1355,43 @@ namespace HomeScreenCompanion
                 phaseTimer.Restart();
                 int collCreated = 0, collUpdated = 0, collWouldCreate = 0, collWouldUpdate = 0;
                 _log.Section("Collections");
+                // Ranked collections (experimental): sources that keep it (also when their list failed
+                // to load this time); every other ranked folder, its copies and library go first, so
+                // this run puts the real films back.
+                var rankedSources = collectionSources
+                    .Where(c => RankedCollections.Wants(config, c.Value))
+                    .ToDictionary(c => c.Key, c => c.Value, StringComparer.OrdinalIgnoreCase);
+                if (!dryRun)
+                    RankedCollections.Cleanup(new HashSet<string>(rankedSources.Values.Select(RankedCollections.FolderName), StringComparer.OrdinalIgnoreCase),
+                        null, _libraryManager, _collectionManager, _userManager, _log);
+                int _collIdx = 0;
                 foreach (var kvp in desiredCollectionsMap)
                 {
                     string cName = kvp.Key;
+                    _log.Step($"Collections — [{++_collIdx}/{desiredCollectionsMap.Count}] {cName}");
                     var _extraVersions = ExtraVersionIds(OrderedItems(allItems, kvp.Value));
                     var desiredIds = kvp.Value.Where(id => !_extraVersions.Contains(id)).ToHashSet();
                     if (desiredIds.Count == 0) continue;
+                    bool _ranked = false;
+                    List<BaseItem>? _rankProbe = null;
+                    if (!dryRun && rankedSources.TryGetValue(cName, out var _rankSrc) && collectionOrder.TryGetValue(cName, out var _rankOrder))
+                    {
+                        try
+                        {
+                            _log.Step($"Ranked collections — {cName}");
+                            var _rankedIds = await RankedCollections.SyncAsync(_rankSrc, cName, _rankOrder, _libraryManager, _providerManager,
+                                _fileSystem, _userManager, _collectionManager, config, _log, cancellationToken);
+                            if (_rankedIds != null)
+                            {
+                                desiredIds = _rankedIds.Value.Members.ToHashSet(); _rankProbe = _rankedIds.Value.ToProbe; _ranked = true;
+                                // Before the members change: that queues a refresh of the collection, which
+                                // would save the order it loaded over a later change.
+                                RankedCollections.SetDisplayOrder(_libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "BoxSet" }, Name = cName, Recursive = true }).FirstOrDefault(), _libraryManager);
+                            }
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (Exception ex) { _log.Warn($"Ranked collection '{cName}' failed, the real films are used: {ex.Message}"); }
+                    }
 
                     try
                     {
@@ -1338,7 +1410,7 @@ namespace HomeScreenCompanion
                                 if (collectionDescriptions.ContainsKey(cName) || collectionPosters.ContainsKey(cName))
                                     ApplyCollectionMeta(createdRef, cName, collectionDescriptions, collectionPosters, debug);
                                 if (collectionSources.TryGetValue(cName, out var _artSrc))
-                                    ApplyCollectionArt(createdRef, cName, _artSrc, OrderedItems(allItems, desiredIds));
+                                    ApplyCollectionArt(createdRef, cName, _artSrc, _ranked ? RankedArtItems(collectionOrder[cName]) : OrderedItems(allItems, desiredIds));
                             }
                         }
                         else
@@ -1377,8 +1449,11 @@ namespace HomeScreenCompanion
                             if (!dryRun && (collectionDescriptions.ContainsKey(cName) || collectionPosters.ContainsKey(cName)))
                                 ApplyCollectionMeta(existingColl, cName, collectionDescriptions, collectionPosters, debug);
                             if (!dryRun && collectionSources.TryGetValue(cName, out var _artSrc2))
-                                ApplyCollectionArt(existingColl, cName, _artSrc2, OrderedItems(allItems, desiredIds));
+                                ApplyCollectionArt(existingColl, cName, _artSrc2, _ranked ? RankedArtItems(collectionOrder[cName]) : OrderedItems(allItems, desiredIds));
                         }
+                        if (_ranked)
+                            RankedCollections.SetDisplayOrder(_libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "BoxSet" }, Name = cName, Recursive = true }).FirstOrDefault(), _libraryManager);
+                        RankedCollections.Probe(_rankProbe, _providerManager, _fileSystem);
                     }
                     catch (Exception ex)
                     {
@@ -1388,6 +1463,7 @@ namespace HomeScreenCompanion
                             _gsC.Warnings.Add($"Collection could not be updated: {ex.Message}");
                     }
                 }
+                if (!dryRun) RankedCollections.RestoreDisplayOrders(rankedSources.Keys, _libraryManager);
                 foreach (var gs in statsList)
                 {
                     if (gs.CollectionName != null)
@@ -1593,6 +1669,13 @@ namespace HomeScreenCompanion
 
         public async Task<(bool Success, string Message)> RunSingleEntryAsync(string entryName, CancellationToken cancellationToken)
         {
+            // One run at a time (see RunGate): waits for a running sync / Run Group to finish.
+            using (await RunGate.EnterAsync($"Run Group '{entryName}'", _logger, cancellationToken).ConfigureAwait(false))
+                return await RunSingleEntryGatedAsync(entryName, cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task<(bool Success, string Message)> RunSingleEntryGatedAsync(string entryName, CancellationToken cancellationToken)
+        {
             IsRunning = true;
             lock (ExecutionLog) ExecutionLog.Clear();
             LastStartedUtc = DateTime.UtcNow;
@@ -1617,7 +1700,14 @@ namespace HomeScreenCompanion
         public async Task<(bool Success, string Message)> RunSingleTopListAsync(
             string tagName, Func<TopListHomeSection, (bool Ok, string Message)> rebuildManual, CancellationToken cancellationToken)
         {
-            if (IsRunning) return (false, "A sync is already running — try again when it has finished.");
+            // One run at a time (see RunGate): waits for a running sync / Run Group to finish.
+            using (await RunGate.EnterAsync($"Run Group '{tagName}'", _logger, cancellationToken).ConfigureAwait(false))
+                return await RunSingleTopListGatedAsync(tagName, rebuildManual, cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task<(bool Success, string Message)> RunSingleTopListGatedAsync(
+            string tagName, Func<TopListHomeSection, (bool Ok, string Message)> rebuildManual, CancellationToken cancellationToken)
+        {
             IsRunning = true;
             lock (ExecutionLog) ExecutionLog.Clear();
             LastStartedUtc = DateTime.UtcNow;
@@ -1645,7 +1735,7 @@ namespace HomeScreenCompanion
         {
             var config = Plugin.Instance?.Configuration;
             var startTime = DateTime.Now;
-            _log = new RunLog(ExecutionLog, _logger, "", config?.ExtendedConsoleOutput ?? false);
+            _log = new RunLog(ExecutionLog, _logger, "", config?.ExtendedConsoleOutput ?? false, Progress);
             _log.Rule();
             _log.Info($"Home Screen Companion v{Plugin.Instance?.Version}  ·  {startTime:yyyy-MM-dd HH:mm}  ·  Single top-list: {tagName}");
             _log.Rule();
@@ -1795,7 +1885,7 @@ namespace HomeScreenCompanion
             bool dryRun = config.DryRunMode || _preview != null;
             bool logMissing = config.LogMissingItems;
             var startTime = DateTime.Now;
-            _log = _preview != null ? new RunLog(new List<string>(), null, "", false) : new RunLog(ExecutionLog, _logger, "", debug);
+            _log = _preview != null ? new RunLog(new List<string>(), null, "", false) : new RunLog(ExecutionLog, _logger, "", debug, Progress);
             if (_preview == null && tagConfig.SourceType == "AI" && tagConfig.AiRefreshIntervalDays > 0 &&
                 tagConfig.AiLastRunDate > DateTime.MinValue &&
                 (DateTime.UtcNow - tagConfig.AiLastRunDate).TotalDays < tagConfig.AiRefreshIntervalDays)
@@ -1850,7 +1940,7 @@ namespace HomeScreenCompanion
             {
                 if (item.LocationType != LocationType.FileSystem) continue;
                 if (!string.IsNullOrEmpty(item.Path) &&
-                    item.Path.StartsWith(_topListsFolder, StringComparison.OrdinalIgnoreCase))
+                    (item.Path.StartsWith(_topListsFolder, StringComparison.OrdinalIgnoreCase) || RankedCollections.IsRankedPath(item.Path)))
                     continue;
                 var imdb = item.GetProviderId("Imdb");
                 if (!string.IsNullOrEmpty(imdb))
@@ -1862,7 +1952,7 @@ namespace HomeScreenCompanion
 
             // See Execute: top-list copies never take part in local matching.
             var matchableItems = allItems.Where(i => string.IsNullOrEmpty(i.Path)
-                || !i.Path.StartsWith(_topListsFolder, StringComparison.OrdinalIgnoreCase)).ToList();
+                || !(i.Path.StartsWith(_topListsFolder, StringComparison.OrdinalIgnoreCase) || RankedCollections.IsRankedPath(i.Path))).ToList();
 
             var seriesEpisodeCache = new Dictionary<long, BaseItem>();
             var personCache = new Dictionary<string, HashSet<long>>(StringComparer.OrdinalIgnoreCase);
@@ -1950,6 +2040,7 @@ namespace HomeScreenCompanion
                     .Select(c => c.Length > 0 && c[0] == '!' ? c.Substring(1) : c)
                     .Where(c => c.StartsWith("Collection:", StringComparison.OrdinalIgnoreCase) || c.StartsWith("Playlist:", StringComparison.OrdinalIgnoreCase))
                     .Distinct(StringComparer.OrdinalIgnoreCase);
+                Dictionary<string, List<long>>? versionIdsByKey = null;
                 foreach (var crit in singleTagCollPlCriteria)
                 {
                     var colonIdx = crit.IndexOf(':');
@@ -1975,6 +2066,7 @@ namespace HomeScreenCompanion
                         foreach (var m in members)
                         {
                             ids.Add(m.InternalId);
+                            AddOtherVersions(ids, m, allItems, ref versionIdsByKey);
                             if (m.GetType().Name.Contains("Series"))
                             {
                                 foreach (var ep in _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "Episode" }, Parent = m, Recursive = true, IsVirtualItem = false }))
@@ -2107,7 +2199,19 @@ namespace HomeScreenCompanion
             _log.Blank();
             _log.Info("» Fetching sources");
             _log.Section($"[1/1] {_displayName}");
+            _log.Step($"Fetching sources — {_displayName}");
             _log.Debug("  " + DescribeSourceDetail(tagConfig, effectiveLimit) + (groupEntries.Count > 1 ? $"  ·  {groupEntries.Count} sources in group" : ""));
+
+            // Saved without a URL / local source yet: nothing is changed (see Execute).
+            if (groupEntries.All(HasNoSourceYet))
+            {
+                gs.Skipped = true;
+                gs.SkipReason = NoSourceYetReason(tagConfig);
+                gs.ElapsedMs = groupTimer.ElapsedMilliseconds;
+                WriteFetchLine(gs);
+                WriteSingleRunFooter(gs, startTime, dryRun, logMissing);
+                return (true, gs.SkipReason + " — skipped");
+            }
 
             try
             {
@@ -2663,7 +2767,13 @@ namespace HomeScreenCompanion
                             : $"Old tag \"{orphan}\" removed from {orphanRemoved} item(s) (no group uses it any more)");
                     }
                 }
-                if (orphanTags.Count > 0 && !dryRun) TagCacheManager.Instance.Save();
+                if (orphanTags.Count > 0 && !dryRun)
+                {
+                    TagCacheManager.Instance.Save();
+                    // Cleaned up once: drop them from the history so HSC leaves these tags alone from now on.
+                    SaveFileHistory("homescreencompanion_history.txt", LoadFileHistory("homescreencompanion_history.txt")
+                        .Where(t => !orphanTags.Contains(t, StringComparer.OrdinalIgnoreCase)).ToList());
+                }
             }
 
             WriteTagDiffDebug(_dbgTagAdded, _dbgTagRemoved);
@@ -2692,12 +2802,37 @@ namespace HomeScreenCompanion
                 if (dryRun) _log.Skip("Dry run — collections are not changed");
                 else if (collectionOutputItems.Count == 0) _log.Skip($"Collection \"{cName}\" left unchanged — no items matched");
             }
+            // Ranked collection (experimental): no longer wanted → its copies, folder and library go,
+            // so the collection gets the real films back below.
+            if (!dryRun && !RankedCollections.Wants(config, tagConfig))
+                RankedCollections.Cleanup(new HashSet<string>(StringComparer.OrdinalIgnoreCase), RankedCollections.FolderName(tagConfig),
+                    _libraryManager, _collectionManager, _userManager, _log);
             if (tagConfig.EnableCollection && collectionOutputItems.Count > 0 && !dryRun)
             {
                 try
                 {
                     var _extraVersions = ExtraVersionIds(collectionOutputItems);
                     var desiredIds = collectionOutputItems.Select(i => i.InternalId).Where(id => !_extraVersions.Contains(id)).ToHashSet();
+                    bool _ranked = false;
+                    List<BaseItem>? _rankProbe = null;
+                    if (RankedCollections.Wants(config, tagConfig))
+                    {
+                        try
+                        {
+                            _log.Step($"Ranked collections — {cName}");
+                            var _rankedIds = await RankedCollections.SyncAsync(tagConfig, cName, collectionOutputItems, _libraryManager, _providerManager,
+                                _fileSystem, _userManager, _collectionManager, config, _log, cancellationToken);
+                            if (_rankedIds != null)
+                            {
+                                desiredIds = _rankedIds.Value.Members.ToHashSet(); _rankProbe = _rankedIds.Value.ToProbe; _ranked = true;
+                                // Before the members change: that queues a refresh of the collection, which
+                                // would save the order it loaded over a later change.
+                                RankedCollections.SetDisplayOrder(_libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "BoxSet" }, Name = cName, Recursive = true }).FirstOrDefault(), _libraryManager);
+                            }
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch (Exception ex) { _log.Warn($"Ranked collection '{cName}' failed, the real films are used: {ex.Message}"); }
+                    }
                     var existingColl = _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "BoxSet" }, Name = cName, Recursive = true }).FirstOrDefault();
                     if (existingColl == null)
                     {
@@ -2738,8 +2873,10 @@ namespace HomeScreenCompanion
                         CollectCollectionMeta(tagConfig, cName, _collDescs, _collPosters);
                         if (_collDescs.Count > 0 || _collPosters.Count > 0)
                             ApplyCollectionMeta(_artColl, cName, _collDescs, _collPosters, debug);
-                        ApplyCollectionArt(_artColl, cName, tagConfig, collectionOutputItems);
+                        ApplyCollectionArt(_artColl, cName, tagConfig, _ranked ? RankedArtItems(collectionOutputItems) : collectionOutputItems);
+                        if (_ranked) RankedCollections.SetDisplayOrder(_artColl, _libraryManager);
                     }
+                    RankedCollections.Probe(_rankProbe, _providerManager, _fileSystem);
                     gs.CollectionCreated = _collCreated;
                     gs.CollectionItemsAdded = _collItemsAdded;
                     gs.CollectionItemsRemoved = _collItemsRemoved;
@@ -2759,6 +2896,10 @@ namespace HomeScreenCompanion
                     return (true, $"{matchedLocalItems.Count} matched, {tagsAdded}↑ {tagsRemoved}↓ tags — collection error: {ex.Message}");
                 }
             }
+
+            if (!dryRun && !RankedCollections.Wants(config, tagConfig))
+                RankedCollections.RestoreDisplayOrders(config.Tags.Where(t => RankedCollections.Wants(config, t))
+                    .Select(t => string.IsNullOrWhiteSpace(t.CollectionName) ? t.Tag.Trim() : t.CollectionName.Trim()), _libraryManager);
 
             if (tagConfig.EnablePlaylist)
             {
@@ -2856,6 +2997,15 @@ namespace HomeScreenCompanion
 
         // Identifies the UI group a flat TagConfig belongs to. The config page stores one flat entry
         // per URL / local source with the same Name + Tag, so several entries can share one key.
+        // An External source without a URL, or a local collection / playlist source without one picked.
+        internal static bool HasNoSourceYet(TagConfig t) =>
+            (string.IsNullOrEmpty(t.SourceType) || t.SourceType == "External") ? string.IsNullOrWhiteSpace(t.Url)
+            : (t.SourceType == "LocalCollection" || t.SourceType == "LocalPlaylist") && string.IsNullOrWhiteSpace(t.LocalSourceId);
+
+        private static string NoSourceYetReason(TagConfig t) =>
+            (string.IsNullOrEmpty(t.SourceType) || t.SourceType == "External") ? "no URL yet"
+            : t.SourceType == "LocalPlaylist" ? "no playlist picked yet" : "no collection picked yet";
+
         private static string GroupKey(TagConfig t) =>
             (t.Name ?? "").Trim() + "\x1F" + (t.Tag ?? "").Trim();
 
@@ -3194,8 +3344,10 @@ namespace HomeScreenCompanion
                     var lookItems = perUser == null ? PlaylistArtItems(new[] { collectionOutputItems }) : PlaylistArtItems(perUser.Values);
                     var createdPlaylists = new List<(string UserName, PlaylistMapping Mapping)>();
                     bool plMappingChanged = false;
+                    int _plUserIdx = 0;
                     foreach (var userId in plUserIds)
                     {
+                        _log.Count($"Playlists — {plName0}:", ++_plUserIdx, plUserIds.Count, "users");
                         var (desiredPlIdList, desiredPlIdSet) = perUser == null ? shared : Desired(perUser[userId]);
                         if (!Guid.TryParse(userId, out var userGuid)) continue;
                         var plUser = _userManager.GetUserById(userGuid);
@@ -3478,6 +3630,7 @@ namespace HomeScreenCompanion
 
                 bool isActive = tc.Active && IsScheduleActive(tc.ActiveIntervals);
                 if (NormalizeNextWatch(tc)) configChanged = true;
+                _log.Step($"Home sections — {(string.IsNullOrWhiteSpace(tc.Name) ? tc.Tag : tc.Name)}");
 
                 if (tc.HomeSectionTracked == null)
                     tc.HomeSectionTracked = new List<HomeSectionTracking>();
@@ -3508,6 +3661,9 @@ namespace HomeScreenCompanion
                                 try
                                 {
                                     var uid = _userManager.GetInternalId(tracking.UserId);
+                                    // Switched off by its schedule (or made inactive): remember where the row
+                                    // was, so it comes back at the same place when it switches on again.
+                                    if (tc.EnableHomeSection) RememberRowPosition(hsKey, tracking.UserId, uid, tracking.SectionId, cancellationToken);
                                     DeleteSectionForUser(uid, tracking.SectionId, sectionMarker, tc.HomeSectionSettings, cancellationToken);
                                     _removedHs++;
                                 }
@@ -3710,6 +3866,7 @@ namespace HomeScreenCompanion
                                 .Where(s => !string.IsNullOrEmpty(s.Id) && !beforeIds.Contains(s.Id))
                                 .Select(s => s.Id).FirstOrDefault() ?? "";
                             trackId = !string.IsNullOrEmpty(newId) ? newId : sectionMarker;
+                            if (!string.IsNullOrEmpty(newId)) RestoreRowPosition(hsKey, userId, userInternalId, newId, cancellationToken);
                         }
 
                         _hsSectionDone:
@@ -3751,6 +3908,57 @@ namespace HomeScreenCompanion
 
             if (configChanged)
                 Plugin.Instance.SaveConfiguration();
+        }
+
+        // Where a scheduled home row was when it was removed, per group and user (plugin data file),
+        // so it is put back at that place instead of at the bottom.
+        private Dictionary<string, int>? _rowPositions;
+        private string RowPositionsFile => Path.Combine(Plugin.Instance.DataFolderPath, "home_row_positions.json");
+
+        private Dictionary<string, int> RowPositions()
+        {
+            if (_rowPositions != null) return _rowPositions;
+            try
+            {
+                if (File.Exists(RowPositionsFile))
+                    _rowPositions = _jsonSerializer.DeserializeFromFile<Dictionary<string, int>>(RowPositionsFile);
+            }
+            catch { }
+            return _rowPositions ??= new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private void SaveRowPositions()
+        {
+            try { _jsonSerializer.SerializeToFile(RowPositions(), RowPositionsFile); } catch { }
+        }
+
+        private void RememberRowPosition(string groupKey, string userId, long userInternalId, string sectionId, CancellationToken cancellationToken)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(sectionId) || sectionId.StartsWith("hsc__")) return;
+                var sections = _userManager.GetHomeSections(userInternalId, cancellationToken)?.Sections ?? Array.Empty<ContentSection>();
+                int index = Array.FindIndex(sections, s => s.Id == sectionId);
+                if (index < 0) return;
+                RowPositions()[groupKey + "\u001F" + userId] = index;
+                SaveRowPositions();
+            }
+            catch { }
+        }
+
+        private void RestoreRowPosition(string groupKey, string userId, long userInternalId, string sectionId, CancellationToken cancellationToken)
+        {
+            var key = groupKey + "\u001F" + userId;
+            if (!RowPositions().TryGetValue(key, out var index)) return;
+            try
+            {
+                var count = (_userManager.GetHomeSections(userInternalId, cancellationToken)?.Sections ?? Array.Empty<ContentSection>()).Length;
+                if (count > 0 && index < count - 1)
+                    _userManager.MoveHomeSections(userInternalId, new[] { sectionId }, index, cancellationToken);
+            }
+            catch { }
+            RowPositions().Remove(key);
+            SaveRowPositions();
         }
 
         private void DeleteSectionForUser(long userInternalId, string sectionId, string sectionMarker, string settingsJson, CancellationToken cancellationToken)
@@ -4239,6 +4447,7 @@ namespace HomeScreenCompanion
                 bool match = false;
                 if (interval.Type == "Weekly") { if (!string.IsNullOrEmpty(interval.DayOfWeek) && interval.DayOfWeek.IndexOf(now.DayOfWeek.ToString(), StringComparison.OrdinalIgnoreCase) >= 0) match = true; }
                 else if (interval.Type == "TimeOfDay") match = TimeOfDayMatches(interval, now);
+                else if (interval.Type == "MovingDate" || interval.Type == "Easter") match = MovingDateMatches(interval, now);
                 else if (interval.Type == "EveryYear")
                 {
                     if (interval.Start.HasValue && interval.End.HasValue)
@@ -4278,6 +4487,49 @@ namespace HomeScreenCompanion
             }
             if (gone > 0) gs.Warnings.Add($"{gone} hand-picked item(s) are no longer in the library");
             return result;
+        }
+
+        // A "MovingDate" window: the anchor date (e.g. last Monday of May, or Easter Sunday) of last
+        // year, this year and next year, each widened by DaysBefore/DaysAfter (0–60), so a window
+        // that crosses New Year works. Inclusive on both ends, whole days (server time).
+        private static bool MovingDateMatches(DateInterval interval, DateTime now)
+        {
+            int before = Math.Max(0, Math.Min(60, interval.DaysBefore));
+            int after = Math.Max(0, Math.Min(60, interval.DaysAfter));
+            var today = now.Date;
+            for (int y = now.Year - 1; y <= now.Year + 1; y++)
+            {
+                var anchor = MovingDateAnchor(interval, y);
+                if (anchor == null) return false;
+                if (today >= anchor.Value.AddDays(-before) && today <= anchor.Value.AddDays(after)) return true;
+            }
+            return false;
+        }
+
+        internal static DateTime? MovingDateAnchor(DateInterval interval, int year)
+        {
+            var occ = (interval.Occurrence ?? "1").Trim().ToLowerInvariant();
+            if (interval.Type == "Easter" || occ == "easter") return WesternEaster(year);
+            if (interval.Month < 1 || interval.Month > 12) return null;
+            if (!Enum.TryParse<DayOfWeek>((interval.DayOfWeek ?? "").Split(',')[0].Trim(), true, out var wd)) return null;
+            if (occ == "last")
+            {
+                var last = new DateTime(year, interval.Month, DateTime.DaysInMonth(year, interval.Month));
+                return last.AddDays(-(((int)last.DayOfWeek - (int)wd + 7) % 7));
+            }
+            if (!int.TryParse(occ, out var n) || n < 1 || n > 4) return null;
+            var first = new DateTime(year, interval.Month, 1);
+            return first.AddDays(((int)wd - (int)first.DayOfWeek + 7) % 7 + 7 * (n - 1));
+        }
+
+        // Western (Gregorian) Easter Sunday: the anonymous Gregorian algorithm (Meeus/Jones/Butcher).
+        internal static DateTime WesternEaster(int year)
+        {
+            int a = year % 19, b = year / 100, c = year % 100, d = b / 4, e = b % 4;
+            int f = (b + 8) / 25, g = (b - f + 1) / 3, h = (19 * a + b - d - g + 15) % 30;
+            int i = c / 4, k = c % 4, l = (32 + 2 * e + 2 * i - h - k) % 7, m = (a + 11 * h + 22 * l) / 451;
+            int month = (h + l - 7 * m + 114) / 31, day = (h + l - 7 * m + 114) % 31 + 1;
+            return new DateTime(year, month, day);
         }
 
         // A "TimeOfDay" window. One that runs past midnight (22:00 → 02:00) belongs to the day it
@@ -5569,12 +5821,46 @@ namespace HomeScreenCompanion
             var extra = new HashSet<long>();
             foreach (var item in items.Where(i => i is MediaBrowser.Controller.Entities.Movies.Movie).OrderBy(i => i.InternalId))
             {
-                var imdb = item.GetProviderId("Imdb");
-                var key = !string.IsNullOrEmpty(imdb) ? "imdb:" + imdb
-                    : !string.IsNullOrEmpty(item.PresentationUniqueKey) ? "puk:" + item.PresentationUniqueKey : null;
+                var key = VersionKey(item);
                 if (key != null && !seen.Add(key)) extra.Add(item.InternalId);
             }
             return extra;
+        }
+
+        // What makes two movie items versions of one film: the same IMDb id, else the same PresentationUniqueKey.
+        private static string? VersionKey(BaseItem item)
+        {
+            var imdb = item.GetProviderId("Imdb");
+            return !string.IsNullOrEmpty(imdb) ? "imdb:" + imdb
+                : !string.IsNullOrEmpty(item.PresentationUniqueKey) ? "puk:" + item.PresentationUniqueKey : null;
+        }
+
+        // A playlist or collection holds one version of a film; its other versions count as members too,
+        // so a "Playlist:" / "Collection:" rule (or its "not in" form) treats the film as a whole.
+        private static void AddOtherVersions(HashSet<long> ids, BaseItem member, List<BaseItem> allItems, ref Dictionary<string, List<long>>? versionIdsByKey)
+        {
+            if (!(member is MediaBrowser.Controller.Entities.Movies.Movie)) return;
+            var key = VersionKey(member);
+            if (key == null) return;
+            if (versionIdsByKey == null)
+            {
+                versionIdsByKey = new Dictionary<string, List<long>>(StringComparer.OrdinalIgnoreCase);
+                foreach (var item in allItems.Where(i => i is MediaBrowser.Controller.Entities.Movies.Movie))
+                {
+                    var k = VersionKey(item);
+                    if (k == null) continue;
+                    if (!versionIdsByKey.TryGetValue(k, out var list)) versionIdsByKey[k] = list = new List<long>();
+                    list.Add(item.InternalId);
+                }
+            }
+            if (versionIdsByKey.TryGetValue(key, out var versions)) ids.UnionWith(versions);
+        }
+
+        // Ranked collection: the art is drawn from the real films in list order (one version each).
+        private static List<BaseItem> RankedArtItems(List<BaseItem> ordered)
+        {
+            var extra = ExtraVersionIds(ordered);
+            return ordered.Where(i => !extra.Contains(i.InternalId)).GroupBy(i => i.InternalId).Select(g => g.First()).ToList();
         }
 
         private static List<BaseItem> OrderedItems(List<BaseItem> allItems, IEnumerable<long> ids)
@@ -5598,7 +5884,8 @@ namespace HomeScreenCompanion
                     _libraryManager.UpdateItem(coll, coll.Parent, ItemUpdateType.ImageUpdate, null);
                     _log.Debug($"  {cName}  →  collection art applied");
                 }
-                ApplySortToTop(coll, tc.CollectionSortToTop);
+                ApplySortToTop(coll, tc.CollectionSortToTop,
+                    Plugin.Instance?.Configuration?.CollectionSortTitleEnabled == true ? (tc.CollectionSortTitle ?? "") : null);
                 if (tc.CollectionImported) MarkReplacedArt(coll, cName);
             }
             catch (Exception ex)
@@ -5734,17 +6021,23 @@ namespace HomeScreenCompanion
 
         private const string SortToTopPrefix = "!!! ";
 
-        private void ApplySortToTop(BaseItem coll, bool toTop)
+        private void ApplySortToTop(BaseItem coll, bool toTop, string? customSortTitle = null)
         {
             var name = coll.Name ?? "";
             var locked = (coll.LockedFields ?? Array.Empty<MetadataFields>()).ToList();
-            bool isTop = (coll.SortName ?? "").StartsWith(SortToTopPrefix, StringComparison.Ordinal);
-            if (toTop && !isTop)
+            var current = coll.SortName ?? "";
+            bool isTop = current.StartsWith(SortToTopPrefix, StringComparison.Ordinal);
+            var custom = (customSortTitle ?? "").Trim();
+            // "Collection sort title" on: the saved value (or "!!! " + name when empty) is written and
+            // kept exactly — also put back when it was changed in Emby.
+            bool useCustom = customSortTitle != null;
+            var desired = custom.Length > 0 ? custom : SortToTopPrefix + name;
+            if (toTop && (useCustom ? (current != desired || !locked.Contains(MetadataFields.SortName)) : !isTop))
             {
-                coll.SortName = SortToTopPrefix + name;
+                coll.SortName = useCustom ? desired : SortToTopPrefix + name;
                 if (!locked.Contains(MetadataFields.SortName)) locked.Add(MetadataFields.SortName);
             }
-            else if (!toTop && isTop)
+            else if (!toTop && (isTop || (custom.Length > 0 && current == custom)))
             {
                 coll.SortName = name;
                 locked.Remove(MetadataFields.SortName);
@@ -5882,6 +6175,7 @@ namespace HomeScreenCompanion
                 {
                     if (string.IsNullOrEmpty(m.Path)) continue;
                     if (m.Path.StartsWith(topListsFolder, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (RankedCollections.IsRankedPath(m.Path)) continue;
                     var imdb = m.GetProviderId("Imdb");
                     if (!string.IsNullOrEmpty(imdb) && !origLookup.ContainsKey(imdb))
                         origLookup[imdb] = m;

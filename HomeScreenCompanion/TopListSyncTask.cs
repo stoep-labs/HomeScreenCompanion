@@ -25,6 +25,8 @@ namespace HomeScreenCompanion
         public static List<string> ExecutionLog { get; } = new List<string>();
         public static bool IsRunning { get; private set; } = false;
         public static DateTime? LastStartedUtc { get; private set; }
+        /// <summary>The step a standalone run is on, shown next to "Running" on the page.</summary>
+        internal static RunProgress Progress { get; } = new RunProgress();
         private static RunLog _log = new RunLog(ExecutionLog, null, "", false);
         public static string LastRunStatus { get; private set; } = "Never";
 
@@ -164,7 +166,7 @@ namespace HomeScreenCompanion
             return own;
         }
 
-        private static void PersistLog() => LogStore.Save(LogStore.TopLists, ExecutionLog, LastRunStatus, LastStartedUtc);
+        private static void PersistLog() { Progress.Clear(); LogStore.Save(LogStore.TopLists, ExecutionLog, LastRunStatus, LastStartedUtc); }
 
         // Brings back the last run's log and status after a server restart.
         internal static void RestoreLog()
@@ -195,6 +197,10 @@ namespace HomeScreenCompanion
                 return SyncAllCore(libraryManager, userViewManager, userManager, jsonSerializer, logger, cancellationToken, log, onlyTag);
 
             // Standalone (scheduled task or the UI): this task's own log — keep it across restarts.
+            // One run at a time (see RunGate): a running sync / Run Group finishes first.
+            if (RunGate.Busy) Progress.Set($"Waiting for {RunGate.Holder} to finish");
+            using var gate = RunGate.Enter("Top-list section sync", logger, cancellationToken);
+            Progress.Clear();
             try
             {
                 var result = SyncAllCore(libraryManager, userViewManager, userManager, jsonSerializer, logger, cancellationToken, null);
@@ -228,7 +234,7 @@ namespace HomeScreenCompanion
             {
                 lock (ExecutionLog) { ExecutionLog.Clear(); }
                 LastStartedUtc = DateTime.UtcNow;
-                _log = new RunLog(ExecutionLog, null, "", config?.ExtendedConsoleOutput ?? false);
+                _log = new RunLog(ExecutionLog, null, "", config?.ExtendedConsoleOutput ?? false, Progress);
                 _log.Rule();
                 _log.Info($"Top-list section sync  ·  {startTime:yyyy-MM-dd HH:mm}");
                 _log.Rule();
@@ -257,6 +263,7 @@ namespace HomeScreenCompanion
                 // Run Group on one top-list: only that list's sections.
                 if (onlyTag != null && !string.Equals(tl.TagName, onlyTag, StringComparison.OrdinalIgnoreCase)) continue;
                 string tlName = tl.TagName ?? "(unnamed)";
+                _log.Step($"Top-lists — {tlName}");
                 _log.Section($"Top-list '{tlName}'");
                 if (ShowTopList.IsShowList(tl)) { _log.Skip($"Top-list '{tlName}': show list — its row is kept up to date when the list is saved"); continue; }
                 if (string.IsNullOrEmpty(tl.HomeSectionLibraryId) || tl.HomeSectionLibraryId == "auto") { _log.Skip($"Top-list '{tlName}': skipped — no library has been created for it yet"); continue; }
@@ -461,7 +468,7 @@ namespace HomeScreenCompanion
 
             var hiddenFor = TopListLibraryVisibility.Apply(config, userManager, libraryManager, m => _log.Warn(m));
             if (hiddenFor > 0)
-                _log.Info($"    Top-list libraries {(config.HideTopListLibraries ? "hidden from" : "shown again in")} My Media and Latest for {RunLog.Plural(hiddenFor, "user")}");
+                _log.Info($"    HSC libraries {(config.HideTopListLibraries ? "hidden from" : "shown again in")} My Media and Latest for {RunLog.Plural(hiddenFor, "user")}");
 
             Plugin.Instance?.SaveConfiguration();
             var summary = $"Updated {totalUpdated} section(s) across {topLists.Count} top-list(s).";

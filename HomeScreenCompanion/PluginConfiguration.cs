@@ -38,6 +38,10 @@ namespace HomeScreenCompanion
         // Settings > Features: show the Copy / Paste buttons and the Import collection button.
         public bool ShowCopyPasteButtons { get; set; } = false;
         public bool ShowImportCollectionButton { get; set; } = false;
+        // Settings > Features (experimental): offers "Keep the list order" on each source's Collection tab.
+        public bool RankedCollectionsEnabled { get; set; } = false;
+        // Settings > Features: a "Sort title" box under "Show at the top of Collections".
+        public bool CollectionSortTitleEnabled { get; set; } = false;
         public List<TagConfig> Tags { get; set; } = new List<TagConfig>();
         public List<TopListHomeSection> TopLists { get; set; } = new List<TopListHomeSection>();
         public List<SavedMediaInfoFilter> SavedFilters { get; set; } = new List<SavedMediaInfoFilter>();
@@ -112,6 +116,12 @@ namespace HomeScreenCompanion
         public string CollectionBackgroundPath { get; set; } = "";
         // Puts the collection at the top of the Collections view (sort name "!!! <name>").
         public bool CollectionSortToTop { get; set; } = false;
+        // With CollectionSortTitleEnabled and CollectionSortToTop: the collection's sort name as typed
+        // ("" = "!!! " + name). Kept when Show at the top is unticked, so re-ticking brings it back.
+        public string CollectionSortTitle { get; set; } = "";
+        // Experimental (needs RankedCollectionsEnabled): the collection holds ranked .strm copies of
+        // its movies so it opens in list order. See RankedCollections.
+        public bool CollectionKeepOrder { get; set; } = false;
         // The collection existed before HSC (Import collection) and was taken over. It is never
         // deleted when the source is removed, disabled or out of schedule: HSC just stops managing it.
         public bool CollectionImported { get; set; } = false;
@@ -229,5 +239,13 @@ namespace HomeScreenCompanion
         // DayOfWeek (empty = every day). A window past midnight (22:00 → 02:00) is allowed.
         public string FromTime { get; set; } = "";
         public string ToTime { get; set; } = "";
+        // "MovingDate" (Yearly weekday) and "Easter": every year around a date that moves — the
+        // Occurrence-th ("1".."4" or "last") DayOfWeek (one weekday name) of Month, or for "Easter"
+        // (or a MovingDate with Occurrence "easter") Western Easter Sunday, weekday and month ignored;
+        // active from DaysBefore days before to DaysAfter days after.
+        public string Occurrence { get; set; } = "1";
+        public int Month { get; set; } = 1;
+        public int DaysBefore { get; set; } = 0;
+        public int DaysAfter { get; set; } = 0;
     }
 }
