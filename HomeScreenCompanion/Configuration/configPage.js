@@ -106,6 +106,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         root.style.setProperty('--plugin-footer-left', footerLeft + 'px');
     }
 
+    // Names in lists and dropdowns: A–Z, case-insensitive, numbers in natural order ("2" before "10").
+    function natCmp(a, b) { return String(a == null ? '' : a).localeCompare(String(b == null ? '' : b), undefined, { numeric: true, sensitivity: 'base' }); }
+    function byName(a, b) { return natCmp(a && a.Name, b && b.Name); }
+
     var cachedCollections = [];
     var cachedPlaylists = [];
     var cachedTags = [];
@@ -180,6 +184,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             color: #8459ca;
             background: rgba(126, 77, 172, 0.15);
             border: 1px solid rgba(126, 77, 172, 0.35);
+        }
+
+        .tag-indicator.imported {
+            color: #d9822b;
+            background: rgba(217,130,43,0.15);
+            border: 1px solid rgba(217,130,43,0.35);
         }
 
         .tag-indicator.homescreen {
@@ -776,7 +786,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 && (r.querySelector('.txtTagName').value || r.querySelector('.txtEntryLabel').value) === tag;
         };
         var cands = getUiConfig(view, true).Tags.filter(function (t) { return t.SourceType === st && t.Name === label && t.Tag === tag; });
-        return cands[Array.from(view.querySelectorAll('.tag-row')).filter(same).indexOf(row)] || cands[0];
+        // Source rows only: the Top Lists tab's rows share the .tag-row class but have no source fields.
+        var rows = Array.from(view.querySelectorAll('.tag-row')).filter(function (r) { return r.querySelector('.selSourceType'); });
+        return cands[rows.filter(same).indexOf(row)] || cands[0];
     }
 
     // Preview art: draws the collection poster/background from the source's current (unsaved)
@@ -1082,21 +1094,24 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     function isKeepArtStyle(v) { return v === 'keep'; }
     // A generated style (drawn by the server): not Custom / Emby's own ('') and not Keep current.
     function isGenArtStyle(v) { return !!v && v !== 'keep'; }
-    function buildCollStylePickerHtml(kind, selected, scope, options) {
+    // Keep current image is offered on an imported collection only (imported = TagConfig.CollectionImported);
+    // a source that already has 'keep' saved still shows it (selected), so nothing breaks.
+    function buildCollStylePickerHtml(kind, selected, scope, options, imported) {
         var sel = selected || '';
+        var showKeep = (scope === 'collection' && !!imported) || isKeepArtStyle(sel);
         var optsVal = (options || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
         var embyOwn = scope === 'tag' && kind === 'poster';
         var name = 'collStyle_' + kind + '_' + (++_collPickerSeq);
         var cardBase = 'cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 12px;border-radius:6px;border:2px solid transparent;transition:border-color 0.15s;';
         var thumb = kind === 'poster' ? 'width:60px;height:90px;' : 'width:120px;height:68px;';
         return '<div class="coll-style-picker" data-kind="' + kind + '" data-scope="' + (scope || 'collection') + '" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">' +
-            COLLECTION_ART_STYLES.map(function (o) {
+            COLLECTION_ART_STYLES.filter(function (o) { return !isKeepArtStyle(o[0]) || showKeep; }).map(function (o) {
                 var active = o[0] === sel;
                 return '<label class="coll-style-opt" style="' + cardBase + 'border-color:' + (active ? '#52B54B' : 'var(--line-color,rgba(255,255,255,0.12))') + ';">' +
                     '<input type="radio" name="' + name + '" value="' + o[0] + '" style="position:absolute;opacity:0;pointer-events:none;"' + (active ? ' checked' : '') + '>' +
                     (isGenArtStyle(o[0])
                         ? '<img class="coll-style-thumb" data-kind="' + kind + '" data-style="' + o[0] + '" alt="" style="' + thumb + 'border-radius:4px;object-fit:cover;background:rgba(128,128,128,0.15);display:block;" />'
-                        : '<div style="' + thumb + 'border-radius:4px;border:1px dashed rgba(128,128,128,0.5);display:flex;align-items:center;justify-content:center;"><i class="md-icon" style="font-size:1.6em;opacity:0.7;">' + (isKeepArtStyle(o[0]) ? 'lock' : embyOwn ? 'block' : 'upload') + '</i></div>') +
+                        : '<div' + (isKeepArtStyle(o[0]) && scope === 'collection' ? ' class="coll-keep-thumb" data-kind="' + kind + '"' : '') + ' style="' + thumb + 'border-radius:4px;border:1px dashed rgba(128,128,128,0.5);display:flex;align-items:center;justify-content:center;"><i class="md-icon" style="font-size:1.6em;opacity:0.7;">' + (isKeepArtStyle(o[0]) ? 'lock' : embyOwn ? 'block' : 'upload') + '</i></div>') +
                     '<span style="font-size:0.78em;opacity:0.8;white-space:nowrap;">' + (o[0] || !embyOwn ? o[1] : "Emby's own") + '</span>' +
                     '</label>';
             }).join('') +
@@ -1389,8 +1404,41 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }
     }
 
+    // Keep current image tile of a collection: shows the poster / background the source's Emby
+    // collection has now (found by name, as HSC finds it). No collection or no image: the lock stays.
+    var _keepBoxSetsPromise = null;
+    function fillKeepThumbs() {
+        var tiles = document.querySelectorAll('.coll-keep-thumb:not([data-filled])');
+        if (!tiles.length) return;
+        tiles.forEach(function (t) { t.dataset.filled = '1'; });
+        if (!_keepBoxSetsPromise) {
+            // One lookup per render pass, dropped afterwards so a re-rendered card shows the image as it is now.
+            _keepBoxSetsPromise = window.ApiClient.getJSON(window.ApiClient.getUrl('Users/' + window.ApiClient.getCurrentUserId() + '/Items',
+                    { IncludeItemTypes: 'BoxSet', Recursive: true }))
+                .then(function (r) { return (r && r.Items) || []; }, function () { return []; });
+            _keepBoxSetsPromise.then(function () { setTimeout(function () { _keepBoxSetsPromise = null; }, 2000); });
+        }
+        _keepBoxSetsPromise.then(function (boxSets) {
+            tiles.forEach(function (tile) {
+                var row = tile.closest('.tag-row');
+                if (!row) return;
+                function v(sel) { return ((row.querySelector(sel) || {}).value || '').trim(); }
+                var name = (v('.txtCollectionName') || v('.txtTagName') || v('.txtEntryLabel')).toLowerCase();
+                var bs = name && boxSets.filter(function (b) { return (b.Name || '').toLowerCase() === name; })[0];
+                if (!bs) return;
+                var bg = tile.dataset.kind === 'background';
+                var tag = bg ? (bs.BackdropImageTags || [])[0] : (bs.ImageTags || {}).Primary;
+                if (!tag) return;
+                var url = window.ApiClient.getImageUrl(bs.Id, bg ? { type: 'Backdrop', index: 0, maxWidth: 240, tag: tag } : { type: 'Primary', maxHeight: 180, tag: tag });
+                tile.style.border = 'none';
+                tile.innerHTML = '<img alt="" src="' + url + '" style="width:100%;height:100%;border-radius:4px;object-fit:cover;display:block;" />';
+            });
+        });
+    }
+
     var _artSamplesPromise = null;
     function fillCollStyleThumbs() {
+        fillKeepThumbs();
         var imgs = document.querySelectorAll('img.coll-style-thumb:not([src])');
         if (!imgs.length) return;
         if (!_artSamplesPromise)
@@ -2313,6 +2361,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         if (tagConfig.EnableCollection) {
             indicatorsHtml += `<span class="tag-indicator collection"><i class="md-icon" style="font-size:1.1em;">library_books</i> Collection</span>`;
         }
+        if (tagConfig.EnableCollection && tagConfig.CollectionImported) {
+            indicatorsHtml += `<span class="tag-indicator imported"><i class="md-icon" style="font-size:1.1em;">move_to_inbox</i> Imported</span>`;
+        }
         if (tagConfig.EnableHomeSection) {
             indicatorsHtml += `<span class="tag-indicator homescreen"><i class="md-icon" style="font-size:1.1em;">home</i> Home Section</span>`;
         }
@@ -2376,12 +2427,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         <label class="selectLabel">Source Type</label>
                         <select is="emby-select" class="selSourceType" style="width:100%;">
                             <option value="" ${!sourceType ? 'selected' : ''}>-- Select source type --</option>
+                            <option value="AI" ${sourceType === 'AI' ? 'selected' : ''}>AI created lists</option>
                             <option value="External" ${sourceType === 'External' ? 'selected' : ''}>External List (Trakt/MDBList/TMDb)</option>
                             <option value="LocalCollection" ${sourceType === 'LocalCollection' ? 'selected' : ''}>Local Collection</option>
+                            <option value="MediaInfo" ${sourceType === 'MediaInfo' ? 'selected' : ''}>Local Media Information (Smart Playlist)</option>
                             <option value="LocalPlaylist" ${sourceType === 'LocalPlaylist' ? 'selected' : ''}>Local Playlist</option>
                             <option value="Manual" ${sourceType === 'Manual' ? 'selected' : ''}>Manual List (pick movies and shows)</option>
-                            <option value="MediaInfo" ${sourceType === 'MediaInfo' ? 'selected' : ''}>Local Media Information (Smart Playlist)</option>
-                            <option value="AI" ${sourceType === 'AI' ? 'selected' : ''}>AI created lists</option>
                             <option value="NextWatch" ${sourceType === 'NextWatch' ? 'selected' : ''}>Personal: Your Next Watch</option>
                         </select>
                         <p class="source-type-hint" style="margin:6px 0 0 0; font-size:1em; opacity:0.8; line-height:1.4;">${(function(st) {
@@ -2431,10 +2482,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         <div style="margin-bottom: 15px;">
                             <label class="selectLabel">AI Provider</label>
                             <select is="emby-select" class="selAiProvider" style="width:100%;">
-                                <option value="OpenAI" ${(tagConfig.AiProvider || 'OpenAI') === 'OpenAI' ? 'selected' : ''}>OpenAI (ChatGPT)</option>
-                                <option value="Gemini" ${(tagConfig.AiProvider || 'OpenAI') === 'Gemini' ? 'selected' : ''}>Google Gemini</option>
                                 <option value="Claude" ${(tagConfig.AiProvider || 'OpenAI') === 'Claude' ? 'selected' : ''}>Anthropic Claude</option>
+                                <option value="Gemini" ${(tagConfig.AiProvider || 'OpenAI') === 'Gemini' ? 'selected' : ''}>Google Gemini</option>
                                 <option value="Ollama" ${(tagConfig.AiProvider || 'OpenAI') === 'Ollama' ? 'selected' : ''}>Ollama (Local)</option>
+                                <option value="OpenAI" ${(tagConfig.AiProvider || 'OpenAI') === 'OpenAI' ? 'selected' : ''}>OpenAI (ChatGPT)</option>
                             </select>
                         </div>
 
@@ -2687,7 +2738,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                         <div style="margin-top:15px;">
                             <p class="coll-poster-heading" style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Collection Poster</p>
-                            ${buildCollStylePickerHtml('poster', tagConfig.CollectionPosterStyle, 'collection', tagConfig.CollectionPosterOptions)}
+                            ${buildCollStylePickerHtml('poster', tagConfig.CollectionPosterStyle, 'collection', tagConfig.CollectionPosterOptions, tagConfig.CollectionImported)}
                             <div class="coll-poster-upload" style="display:${tagConfig.CollectionPosterStyle ? 'none' : 'block'};">
                             <div class="poster-preview-container" style="margin-bottom:8px; display:${collPosterPath ? 'block' : 'none'};">
                                 <span class="poster-filename" style="font-size:0.85em; opacity:0.7;">${collPosterPath ? collPosterPath.split(/[\\\\/]/).pop() : ''}</span>
@@ -2714,7 +2765,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                         <div style="margin-top:15px;">
                             <p class="coll-bg-heading" style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Collection Background</p>
-                            ${buildCollStylePickerHtml('background', tagConfig.CollectionBackgroundStyle, 'collection', tagConfig.CollectionBackgroundOptions)}
+                            ${buildCollStylePickerHtml('background', tagConfig.CollectionBackgroundStyle, 'collection', tagConfig.CollectionBackgroundOptions, tagConfig.CollectionImported)}
                             <div class="coll-bg-upload" style="display:${tagConfig.CollectionBackgroundStyle ? 'none' : 'block'};">
                             <div class="bg-preview-container" style="margin-bottom:8px; display:${tagConfig.CollectionBackgroundPath ? 'block' : 'none'};">
                                 <span class="bg-filename" style="font-size:0.85em; opacity:0.7;">${tagConfig.CollectionBackgroundPath ? tagConfig.CollectionBackgroundPath.split(/[\\\\/]/).pop() : ''}</span>
@@ -2896,6 +2947,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             }
             if (hasCollection) {
                 html += `<span class="tag-indicator collection"><i class="md-icon" style="font-size:1.1em;">library_books</i> Collection</span>`;
+            }
+            if (hasCollection && row.dataset.collImported === '1') {
+                html += `<span class="tag-indicator imported"><i class="md-icon" style="font-size:1.1em;">move_to_inbox</i> Imported</span>`;
             }
             if (hasHomeSection) {
                 html += `<span class="tag-indicator homescreen"><i class="md-icon" style="font-size:1.1em;">home</i> Home Section</span>`;
@@ -3911,7 +3965,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             if (criteria === 'Name') {
                 var na = (a.querySelector('.txtEntryLabel').value || a.querySelector('.txtTagName').value).toLowerCase();
                 var nb = (b.querySelector('.txtEntryLabel').value || b.querySelector('.txtTagName').value).toLowerCase();
-                return na.localeCompare(nb);
+                return natCmp(na, nb);
             }
             if (criteria === 'Active') {
                 var aa = a.querySelector('.chkTagActive').checked ? 1 : 0;
@@ -3954,7 +4008,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     return { Id: u.Id, Name: u.Name, MaxParentalRating: max,
                         RatingName: max === null ? '' : parentalRatingName(max, ratings, country),
                         BlockUnratedItems: (p.BlockUnratedItems || []).slice() };
-                });
+                }).sort(byName);
                 return _hseUsersCache;
             })
             .catch(function (e) { _hseUsersPromise = null; throw e; });
@@ -4142,7 +4196,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         ]).then(function(results) {
             return {
                 topListFolderNames: new Set((results[0].FolderNames || []).map(function(n) { return n.toLowerCase(); })),
-                virtualFolders: results[1] || []
+                virtualFolders: (results[1] || []).slice().sort(byName)
             };
         }).catch(function() {
             _hseLibraryCachePromise = null; // tillåt omförsök vid fel
@@ -5531,11 +5585,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         var countB = parseInt(b.dataset.count || '0', 10);
                         var managedA = a.dataset.managed === '1';
                         var managedB = b.dataset.managed === '1';
-                        if (sort === 'name-asc') return nameA.localeCompare(nameB);
-                        if (sort === 'name-desc') return nameB.localeCompare(nameA);
+                        if (sort === 'name-asc') return natCmp(nameA, nameB);
+                        if (sort === 'name-desc') return natCmp(nameB, nameA);
                         if (sort === 'count-desc') return countB - countA;
                         if (sort === 'count-asc') return countA - countB;
-                        if (sort === 'managed') return (managedB ? 1 : 0) - (managedA ? 1 : 0) || nameA.localeCompare(nameB);
+                        if (sort === 'managed') return (managedB ? 1 : 0) - (managedA ? 1 : 0) || natCmp(nameA, nameB);
                         return 0;
                     });
                     visibleRows.forEach(function (r) { list.appendChild(r); });
@@ -6561,6 +6615,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             if (!groups[g]) { groups[g] = []; order.push(g); }
             groups[g].push(f);
         });
+        order.forEach(function (g) { groups[g].sort(byName); });
         return '<div class="artc-fonts">' + order.map(function (g) {
             return '<div class="artc-fontgroup">' + escapeHtml(g) + '</div>' + groups[g].map(function (f) {
                 var isDef = f.Id === defId, nm = f.Name + (isDef ? ' (default)' : '');
@@ -8443,7 +8498,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         });
 
         window.ApiClient.getJSON(window.ApiClient.getUrl('HomeScreenCompanion/Collections/ImportList')).then(function (res) {
-            var list = (res && res.Collections) || [];
+            var list = ((res && res.Collections) || []).slice().sort(byName);
             list.forEach(function (c) {
                 c.reason = c.ManagedBy ? 'Made by the source “' + c.ManagedBy + '”'
                     : onPage[(c.Name || '').trim().toLowerCase()] ? 'Made by the card “' + onPage[(c.Name || '').trim().toLowerCase()] + '” on this page'
@@ -8452,7 +8507,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             });
             var rowsHtml = list.map(function (c, i) {
                 var off = !!c.reason;
-                return '<label class="imp-coll-row" data-name="' + esc((c.Name || '').toLowerCase()) + '" style="display:flex;align-items:center;gap:10px;padding:7px 4px;border-bottom:1px solid var(--line-color,rgba(255,255,255,0.08));cursor:' + (off ? 'default' : 'pointer') + ';' + (off ? 'opacity:0.45;' : '') + '">' +
+                return '<label class="imp-coll-row" data-name="' + esc((c.Name || '').toLowerCase()) + '" data-count="' + (c.ItemCount || 0) + '" style="display:flex;align-items:center;gap:10px;padding:7px 4px;border-bottom:1px solid var(--line-color,rgba(255,255,255,0.08));cursor:' + (off ? 'default' : 'pointer') + ';' + (off ? 'opacity:0.45;' : '') + '">' +
                     '<input type="checkbox" class="chkImpColl" data-idx="' + i + '"' + (off ? ' disabled' : '') + ' />' +
                     '<span style="flex:1;min-width:0;">' +
                         '<span style="display:block;font-size:0.93em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(c.Name) + '</span>' +
@@ -8464,7 +8519,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             modal.renderBox(
                 '<h3 style="' + _backupTitleStyle + '">Import collection</h3>' +
                 '<p style="' + _backupHintStyle + '">Tick the collections HSC should take over. Each becomes a <strong>Manual List</strong> source that keeps the <strong>same collection</strong> (links, home rows and favourites keep working) with its name, sort title, description and current titles. Its poster and background are set to <strong>Keep current image</strong>. The new cards are added at the top, not saved yet – check them and click <strong>Save</strong>; HSC manages them from the next sync. Nothing is deleted – not now, and not later if you delete or switch off the source: an imported collection stays in Emby.</p>' +
-                (list.length > 8 ? '<input type="search" class="txtImpCollSearch" placeholder="Search collections…" autocomplete="off" style="width:100%;box-sizing:border-box;background:transparent;color:inherit;border:1px solid var(--line-color,rgba(255,255,255,0.2));border-radius:4px;padding:8px;margin-bottom:8px;font-size:0.9em;" />' : '') +
+                (list.length > 8 ? '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:8px;">' +
+                    '<input type="search" class="txtImpCollSearch emby-input" placeholder="Search collections…" autocomplete="off" style="flex:1 1 200px;min-width:0;width:auto;box-sizing:border-box;padding:8px;font-size:0.9em;" />' +
+                    '<div style="flex:0 0 auto;"><select is="emby-select" class="selImpCollSort" title="Sort"><option value="name">Name</option><option value="most">Most items</option><option value="fewest">Fewest items</option></select></div>' +
+                    '<div style="flex:0 0 auto;"><select is="emby-select" class="selImpCollCount" title="Items"><option value="">All</option><option value="0-0">Empty (0)</option><option value="1-2">1–2 items</option><option value="3-10">3–10 items</option><option value="11-50">11–50 items</option><option value="51-">51+ items</option></select></div>' +
+                    '</div>' : '') +
                 '<div class="imp-coll-list" style="max-height:45vh;overflow-y:auto;border:1px solid var(--line-color,rgba(255,255,255,0.12));border-radius:4px;padding:0 8px;margin-bottom:10px;">' +
                     (rowsHtml || '<div style="padding:10px 4px;opacity:0.6;font-size:0.9em;">There are no collections in the library.</div>') +
                     '<div class="imp-coll-none" style="display:none;padding:10px 4px;opacity:0.6;font-size:0.9em;">No collection matches.</div>' +
@@ -8496,14 +8555,28 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             modal.querySelectorAll('.chkImpColl').forEach(function (c) { c.addEventListener('change', refresh); });
             var search = modal.querySelector('.txtImpCollSearch');
             if (search) {
-                search.addEventListener('input', function () {
-                    var q = this.value.trim().toLowerCase(), shown = 0;
+                var selSort = modal.querySelector('.selImpCollSort'), selCount = modal.querySelector('.selImpCollCount');
+                var applyView = function () {
+                    var q = search.value.trim().toLowerCase(), shown = 0;
+                    var band = selCount.value.split('-'), lo = band[0] === '' ? 0 : +band[0], hi = band[1] === '' || band[1] == null ? Infinity : +band[1];
                     modal.querySelectorAll('.imp-coll-row').forEach(function (r) {
-                        var on = !q || r.dataset.name.indexOf(q) >= 0;
+                        var n = +r.dataset.count;
+                        var on = (!q || r.dataset.name.indexOf(q) >= 0) && n >= lo && n <= hi;
                         r.style.display = on ? 'flex' : 'none';
                         if (on) shown++;
                     });
                     modal.querySelector('.imp-coll-none').style.display = shown ? 'none' : 'block';
+                };
+                search.addEventListener('input', applyView);
+                selCount.addEventListener('change', applyView);
+                selSort.addEventListener('change', function () {
+                    var box = modal.querySelector('.imp-coll-list'), none = box.querySelector('.imp-coll-none');
+                    var rows = Array.from(box.querySelectorAll('.imp-coll-row')), dir = selSort.value === 'most' ? -1 : 1;
+                    rows.sort(function (a, b) {
+                        var ia = +a.querySelector('.chkImpColl').dataset.idx, ib = +b.querySelector('.chkImpColl').dataset.idx;
+                        return selSort.value === 'name' ? ia - ib : (dir * (a.dataset.count - b.dataset.count) || ia - ib);
+                    });
+                    rows.forEach(function (r) { box.insertBefore(r, none); });
                 });
                 search.addEventListener('keydown', function (e) { if (e.key === 'Enter') e.preventDefault(); });
                 search.focus();
@@ -9021,8 +9094,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     var nameB  = b.dataset.tlname || '';
                     var countA = parseInt(a.dataset.count || '0', 10);
                     var countB = parseInt(b.dataset.count || '0', 10);
-                    if (sort === 'name-asc')   return nameA.localeCompare(nameB);
-                    if (sort === 'name-desc')  return nameB.localeCompare(nameA);
+                    if (sort === 'name-asc')   return natCmp(nameA, nameB);
+                    if (sort === 'name-desc')  return natCmp(nameB, nameA);
                     if (sort === 'count-desc') return countB - countA;
                     if (sort === 'count-asc')  return countA - countB;
                     return 0;
@@ -9626,11 +9699,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                 <label class="filter-chk-row"><input type="checkbox" id="chkFilterHomeScreen" /><span>Home Screen Section</span></label>
                                 <div class="filter-dropdown-divider"></div>
                                 <div class="filter-dropdown-label">Sources</div>
-                                <label class="filter-chk-row"><input type="checkbox" id="chkFilterSrcExternal" /><span>External</span></label>
-                                <label class="filter-chk-row"><input type="checkbox" id="chkFilterSrcMediaInfo" /><span>Local Media Information</span></label>
-                                <label class="filter-chk-row"><input type="checkbox" id="chkFilterSrcCollection" /><span>Local Collection</span></label>
-                                <label class="filter-chk-row"><input type="checkbox" id="chkFilterSrcPlaylist" /><span>Local Playlist</span></label>
                                 <label class="filter-chk-row"><input type="checkbox" id="chkFilterSrcAI" /><span>AI created lists</span></label>
+                                <label class="filter-chk-row"><input type="checkbox" id="chkFilterSrcExternal" /><span>External</span></label>
+                                <label class="filter-chk-row"><input type="checkbox" id="chkFilterSrcCollection" /><span>Local Collection</span></label>
+                                <label class="filter-chk-row"><input type="checkbox" id="chkFilterSrcMediaInfo" /><span>Local Media Information</span></label>
+                                <label class="filter-chk-row"><input type="checkbox" id="chkFilterSrcPlaylist" /><span>Local Playlist</span></label>
                                 <div class="filter-dropdown-divider"></div>
                                 <div class="filter-dropdown-label">Status</div>
                                 <label class="filter-chk-row"><input type="checkbox" id="chkFilterActive" /><span style="display:flex;align-items:center;gap:6px;"><span style="width:8px;height:8px;border-radius:50%;background:#52B54B;flex-shrink:0;"></span>Active</span></label>
@@ -9751,9 +9824,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 window.ApiClient.getJSON(window.ApiClient.getUrl("Items", { IncludeItemTypes: "Playlist", Recursive: true })).catch(function () { return { Items: [] }; }),
                 window.ApiClient.getJSON(window.ApiClient.getUrl("Items/Filters2", { UserId: window.ApiClient.getCurrentUserId(), Recursive: true })).catch(function () { return { Tags: [] }; })
             ]).then(responses => {
-                cachedCollections = responses[0].Items || [];
-                cachedPlaylists = responses[1].Items || [];
-                cachedTags = ((responses[2] && responses[2].Tags) || []).slice().sort();
+                cachedCollections = (responses[0].Items || []).slice().sort(byName);
+                cachedPlaylists = (responses[1].Items || []).slice().sort(byName);
+                cachedTags = ((responses[2] && responses[2].Tags) || []).slice().sort(natCmp);
 
                 // Only the copy of the page being shown picks up what was left behind on leaving.
                 loadConfig({ leaveState: readLeaveState() || { ui: null } });
