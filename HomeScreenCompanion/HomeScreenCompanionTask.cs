@@ -245,6 +245,17 @@ namespace HomeScreenCompanion
                 foreach (var t in previouslyManagedTags) managedTags.Add(t);
 
                 var previouslyManagedCollections = LoadFileHistory("homescreencompanion_collections.txt");
+                // Imported collections (TagConfig.CollectionImported): remembered for good, so they
+                // are kept even after their source is gone from the config.
+                var importedCollections = new HashSet<string>(LoadFileHistory("homescreencompanion_collections_imported.txt"), StringComparer.OrdinalIgnoreCase);
+                int importedBefore = importedCollections.Count;
+                foreach (var tc in config.Tags.Where(t => t.EnableCollection && t.CollectionImported))
+                {
+                    string cn = string.IsNullOrWhiteSpace(tc.CollectionName) ? (tc.Tag ?? "").Trim() : tc.CollectionName.Trim();
+                    if (cn.Length > 0) importedCollections.Add(cn);
+                }
+                if (!dryRun && importedCollections.Count != importedBefore)
+                    SaveFileHistory("homescreencompanion_collections_imported.txt", importedCollections.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList());
                 // Also track collection names from inactive groups so they get cleaned up
                 // even if their collection was never recorded in the history file
                 foreach (var tc in config.Tags)
@@ -1403,6 +1414,12 @@ namespace HomeScreenCompanion
                     {
                         _log.Warn($"Collection \"{oldName}\" was kept because its source failed to load (safety check)");
                         activeCollections.Add(oldName);
+                        continue;
+                    }
+                    if (importedCollections.Contains(oldName))
+                    {
+                        // Taken over with Import collection: it existed before HSC, so it stays in Emby.
+                        _log.Skip($"Collection \"{oldName}\" kept (imported collection; its group is deleted, disabled or not in schedule, so HSC no longer changes it)");
                         continue;
                     }
 
@@ -4927,7 +4944,7 @@ namespace HomeScreenCompanion
         }
 
         // Returns true if the item type is a taggable top-level item (Movie, Series, or music types)
-        private static bool IsTaggableTopLevelItem(BaseItem item)
+        internal static bool IsTaggableTopLevelItem(BaseItem item)
         {
             var name = item.GetType().Name;
             return name.Contains("Movie") || name.Contains("Series")
@@ -5526,7 +5543,7 @@ namespace HomeScreenCompanion
         // A film's versions (e.g. 2160p and 1080p files) are separate items that Emby shows as one
         // movie. A collection gets one of them, the first (lowest id), like Emby's own grouping;
         // this returns the ids of the other versions. Anything that is not a movie is kept.
-        private static HashSet<long> ExtraVersionIds(IEnumerable<BaseItem> items)
+        internal static HashSet<long> ExtraVersionIds(IEnumerable<BaseItem> items)
         {
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var extra = new HashSet<long>();
@@ -5638,6 +5655,8 @@ namespace HomeScreenCompanion
             bool changed = false;
             foreach (var (style, background) in new[] { (posterStyle, false), (backgroundStyle, true) })
             {
+                // Keep current image: this kind is never touched (no render, upload or removal).
+                if (CollectionArtRenderer.IsKeep(style)) continue;
                 var opts = ArtOptions.Parse(background ? backgroundOptions : posterOptions);
                 var type = background ? ImageType.Backdrop : ImageType.Primary;
                 var current = (target.ImageInfos ?? Array.Empty<ItemImageInfo>()).FirstOrDefault(i => i.Type == type);
@@ -5739,7 +5758,8 @@ namespace HomeScreenCompanion
         {
             if (!string.IsNullOrWhiteSpace(tc.CollectionDescription))
                 descriptions[cName] = tc.CollectionDescription;
-            if (!string.IsNullOrWhiteSpace(tc.CollectionPosterPath) && File.Exists(tc.CollectionPosterPath))
+            if (!CollectionArtRenderer.IsKeep(tc.CollectionPosterStyle)
+                && !string.IsNullOrWhiteSpace(tc.CollectionPosterPath) && File.Exists(tc.CollectionPosterPath))
                 posters[cName] = tc.CollectionPosterPath;
         }
 

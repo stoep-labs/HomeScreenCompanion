@@ -119,6 +119,8 @@ namespace HomeScreenCompanion
         public static string Combine(string? style, string? options)
         {
             style = string.IsNullOrWhiteSpace(style) ? "neutral" : style!.Trim();
+            // Only the Top 10 tile is customised; options saved for a number badge (4.2.0.32-.36) are ignored.
+            if (!IsTile(style)) return style;
             return string.IsNullOrWhiteSpace(options) || options!.Trim() == "{}" ? style : style + "|" + options.Trim();
         }
 
@@ -138,8 +140,9 @@ namespace HomeScreenCompanion
         }
 
         public static string StyleOf(string? look) => Split(look).Style;
-        public static bool WantsHistory(string? look) => BadgeOptions.Parse(Split(look).Options).AnyExtras;
-        public static bool WantsPlays(string? look) => BadgeOptions.Parse(Split(look).Options).Plays == true;
+        public static bool IsTile(string? style) => string.Equals(style, "top10", StringComparison.OrdinalIgnoreCase);
+        public static bool WantsHistory(string? look) => IsTile(StyleOf(look)) && BadgeOptions.Parse(Split(look).Options).AnyExtras;
+        public static bool WantsPlays(string? look) => IsTile(StyleOf(look)) && BadgeOptions.Parse(Split(look).Options).Plays == true;
     }
 
     /// <summary>Number fonts: LemonMilk (today's badge font) and every art font.</summary>
@@ -250,10 +253,11 @@ namespace HomeScreenCompanion
                 return;
             }
 
+            // The colour presets (and No number): the original drawing; number-badge options are not used.
             if (poster != null)
-                Try("poster badge", () => { if (o.IsDefault) CreateRankedPoster(poster, rank, outputBase + ".jpg", style); else CustomBadge(poster, rank, outputBase + ".jpg", style, o, extras); });
+                Try("poster badge", () => CreateRankedPoster(poster, rank, outputBase + ".jpg", style));
             if (thumb != null)
-                Try("thumb badge", () => { if (o.IsDefault) CreateRankedPoster(thumb, rank, outputBase + "-thumb.jpg", style); else CustomBadge(thumb, rank, outputBase + "-thumb.jpg", style, o, extras); });
+                Try("thumb badge", () => CreateRankedPoster(thumb, rank, outputBase + "-thumb.jpg", style));
         }
 
         // Ranks past 10 on a Top 10 list get a circle badge; it keeps the tile's number look.
@@ -484,7 +488,7 @@ namespace HomeScreenCompanion
             };
 
             // The shape as a path (none for number-only looks); the number's box inside it.
-            SKPath? path = null; SKRect numBox = default; string label = txt; float rot = 0; SKPoint rotAt = default;
+            SKPath? path = null; SKRect numBox = default; string label = txt; float rot = 0; SKPoint rotAt = default; SKRect? square = null;
             switch (shape)
             {
                 case "circle":
@@ -528,10 +532,12 @@ namespace HomeScreenCompanion
                 }
                 case "netflix":
                 {
-                    float bs = r * 2f; var pt = Place(bs, bs * 1.08f); var box = SKRect.Create(pt.X, pt.Y, bs, bs * 1.08f);
-                    path = new SKPath(); path.AddRoundRect(box, r * 0.08f, r * 0.08f);
-                    if (o.Colour == null && !medal) bgColour = new SKColor(0xE5, 0x09, 0x14);
-                    numBox = SKRect.Create(box.MidX - bs * 0.4f, box.Top + box.Height * 0.36f, bs * 0.8f, box.Height * 0.52f); break;
+                    // The one TOP 10 square (the real posters' drawing), "#rank" on its second line, flush in the corner.
+                    float bw = SquareWidth(s, o.Size);
+                    if (rank == 1 && o.Special == "bigger") bw *= 1.3f;
+                    var sq = SquareRect(w, h, bw, true, pos);
+                    square = SKRect.Create(sq.Left, sq.Top, bw, bw * 1.12f);
+                    path = new SKPath(); path.AddRect(sq); break;
                 }
             }
 
@@ -546,6 +552,10 @@ namespace HomeScreenCompanion
                 if (o.Shadow == true)
                     using (var sh = new SKPaint { Color = SKColors.Black.WithAlpha(150), MaskFilter = SKMaskFilter.CreateBlur(SKBlurStyle.Normal, r * 0.12f), IsAntialias = true })
                     { c.Save(); c.Translate(r * 0.05f, r * 0.1f); c.DrawPath(path, sh); c.Restore(); }
+                if (square is SKRect sqr)
+                    DrawLogoBox(c, sqr, rank, o.Colour != null ? BadgeOptions.Hex(o.Colour, LogoRed) : LogoRed);
+                else
+                {
                 using var bg = new SKPaint { Color = bgColour, IsAntialias = true };
                 if (medal && o.Medal == "metal")
                 {
@@ -556,12 +566,10 @@ namespace HomeScreenCompanion
                 if (medal && o.Medal == "metal")
                     using (var ring = new SKPaint { Style = SKPaintStyle.Stroke, StrokeWidth = r * 0.09f, Color = MedalStops(rank)[0].WithAlpha(230), IsAntialias = true })
                     { c.Save(); c.ClipPath(path, SKClipOperation.Intersect, true); c.DrawPath(path, ring); c.Restore(); }
-                if (shape == "netflix")
-                    using (var cap = new SKPaint { Typeface = BadgeFonts.Face("bebas"), Color = SKColors.White, IsAntialias = true })
-                        DrawFit(c, "TOP 10", cap, pb.MidX, pb.Top + pb.Height * 0.2f, pb.Width * 0.8f, pb.Height * 0.15f);
                 using var tp = new SKPaint { Typeface = L.Face, IsAntialias = true };
                 var origin = FitCentre(tp, label, numBox.MidX, numBox.MidY, numBox.Width, numBox.Height);
                 DrawNumber(c, label, origin.X, origin.Y, tp.TextSize, L);
+                }
             }
             else if (shape == "numonly")
             {
@@ -853,21 +861,33 @@ namespace HomeScreenCompanion
         private static float LogoBoxHeight(float bw, bool withRank) => bw * 1.12f + (withRank ? bw * 0.5f : 0);
         // The TOP 10 logo in "logo" (the TOP / 10 square), with "#rank" on a red second line under it
         // when rank is given (the real posters' "TOP 10 #3" label and the list tiles' Logo label).
-        private static void DrawLogoBox(SKCanvas c, SKRect logo, int? rank)
+        private static readonly SKColor LogoRed = new SKColor(0xE5, 0x09, 0x14);
+        private static void DrawLogoBox(SKCanvas c, SKRect logo, int? rank, SKColor? colour = null)
         {
-            if (rank == null) { DrawLogo(c, logo); return; }
+            var red = colour ?? LogoRed;
+            if (rank == null) { DrawLogo(c, logo, red); return; }
             float bw = logo.Width, bh = logo.Height, rh = bw * 0.5f;
-            using (var bg = new SKPaint { Color = new SKColor(0xE5, 0x09, 0x14), IsAntialias = true })
+            using (var bg = new SKPaint { Color = red, IsAntialias = true })
                 c.DrawRect(SKRect.Create(logo.Left, logo.Top, bw, bh + rh), bg);
-            DrawLogo(c, logo);
+            DrawLogo(c, logo, red);
             using (var line = new SKPaint { Color = SKColors.White.WithAlpha(150), IsAntialias = true })
                 c.DrawRect(SKRect.Create(logo.Left + bw * 0.2f, logo.Top + bh - bw * 0.02f, bw * 0.6f, Math.Max(1f, bw * 0.02f)), line);
             using var t = new SKPaint { Typeface = BadgeFonts.Face("roboto"), Color = SKColors.White, IsAntialias = true };
             DrawFit(c, "#" + rank, t, logo.MidX, logo.Top + bh + rh * 0.45f, bw * 0.7f, rh * 0.62f);
         }
-        private static void DrawLogo(SKCanvas c, SKRect box)
+        // TOP 10 square width: S / M / L (the real posters' sizes) and XL, a share of the image's short side.
+        private static float SquareWidth(float shortSide, string? size) => shortSide * (size == "s" ? 0.14f : size == "l" ? 0.24f : size == "xl" ? 0.30f : 0.18f);
+        // The square (with its "#rank" line when withRank) flush in a corner: tl, tr, bl, br or bc.
+        private static SKRect SquareRect(int w, int h, float bw, bool withRank, string pos)
         {
-            using var bg = new SKPaint { Color = new SKColor(0xE5, 0x09, 0x14), IsAntialias = true };
+            float bh = LogoBoxHeight(bw, withRank);
+            float x = pos == "tr" || pos == "br" ? w - bw : pos == "bc" ? (w - bw) / 2f : 0;
+            float y = pos == "bl" || pos == "br" || pos == "bc" ? h - bh : 0;
+            return SKRect.Create(x, y, bw, bh);
+        }
+        private static void DrawLogo(SKCanvas c, SKRect box, SKColor red)
+        {
+            using var bg = new SKPaint { Color = red, IsAntialias = true };
             c.DrawRect(box, bg);
             using var t1 = new SKPaint { Typeface = BadgeFonts.Face("roboto"), Color = SKColors.White, IsAntialias = true };
             DrawFit(c, "TOP", t1, box.MidX, box.Top + box.Height * 0.3f, box.Width * 0.62f, box.Height * 0.2f);
@@ -876,11 +896,11 @@ namespace HomeScreenCompanion
         }
 
         /// <summary>
-        /// "Badge the real posters too": the red TOP 10 square (DrawLogo) in the top-right corner
-        /// of the real poster, with "#rank" on a second line when withRank. size s/m/l ≈ 14/18/24%
-        /// of the poster width. Writes a new JPEG; the source file is only read.
+        /// "Badge the real posters too": the red TOP 10 square (DrawLogoBox) flush in a corner of the
+        /// real poster (tl, tr, bl, bc, br), with "#rank" on a second line when withRank. size s/m/l
+        /// ≈ 14/18/24% of the poster width. Writes a new JPEG; the source file is only read.
         /// </summary>
-        internal static void RealPosterBadge(string sourcePath, string outputPath, int rank, bool withRank, string size)
+        internal static void RealPosterBadge(string sourcePath, string outputPath, int rank, bool withRank, string size, string corner)
         {
             using var src = SKBitmap.Decode(sourcePath)
                 ?? throw new InvalidOperationException($"SkiaSharp could not decode '{sourcePath}'");
@@ -889,74 +909,34 @@ namespace HomeScreenCompanion
                 ?? throw new InvalidOperationException($"SkiaSharp could not create a {w}x{h} surface");
             var c = surface.Canvas;
             c.DrawBitmap(src, 0, 0);
-            float bw = w * (size == "s" ? 0.14f : size == "l" ? 0.24f : 0.18f), bh = bw * 1.12f;
-            var logo = SKRect.Create(w - bw, 0, bw, bh);
-            DrawLogoBox(c, logo, withRank ? rank : (int?)null);
+            // The same square as the Number badge's "TOP 10 square" shape (DrawBadge), in the chosen corner.
+            float bw = SquareWidth(Math.Min(w, h), size);
+            var sq = SquareRect(w, h, bw, withRank, corner);
+            DrawLogoBox(c, SKRect.Create(sq.Left, sq.Top, bw, bw * 1.12f), withRank ? rank : (int?)null);
             using var img = surface.Snapshot();
             using var data = img.Encode(SKEncodedImageFormat.Jpeg, 92);
             using var fs = File.Create(outputPath);
             data.SaveTo(fs);
         }
 
-        /// <summary>
-        /// The real-poster badge with a Customise look: the Number badge drawing (CustomBadge) with
-        /// the options; unset shape / position mean the TOP 10 square in the top-right corner, and
-        /// "style" carries a preset colour. No list extras (movement, weeks, plays) on a real poster.
-        /// </summary>
-        internal static void RealPosterCustom(string sourcePath, string outputPath, int rank, string optionsJson)
+        /// <summary>The real-poster badge at rank 7 on the stand-in poster (the Real posters block's icon), width px wide.</summary>
+        internal static string RealPosterPreview((string Label, string Size, string Corner)? opt, string standInPoster, string tempDir, int width = 400)
         {
-            var o = BadgeOptions.Parse(optionsJson);
-            if (o.Shape == null) o.Shape = "netflix";
-            if (o.Pos == null) o.Pos = "tr";
-            o.Move = null; o.MoveEq = null; o.Weeks = null; o.Plays = null;
-            var m = Regex.Match(optionsJson ?? "", "\"style\"\\s*:\\s*\"([a-z-]+)\"");
-            CustomBadge(sourcePath, rank, outputPath, m.Success ? m.Groups[1].Value : "neutral", o, null);
-        }
-
-        /// <summary>Rank #1 real-poster badge on the stand-in poster (popup preview and the card's icon).</summary>
-        internal static string RealPosterPreview((string Label, string Size, string Options)? opt, string standInPoster, string tempDir)
-        {
-            var (label, size, options) = opt ?? ("top10", "m", "");
+            var (label, size, corner) = opt ?? ("top10", "m", "tr");
             Directory.CreateDirectory(tempDir);
             var outPath = Path.Combine(tempDir, "real-preview-" + Guid.NewGuid().ToString("N") + ".jpg");
             try
             {
                 // Rank 7 as the example, like the Badge Style tiles.
-                if (options.Length == 0) RealPosterBadge(standInPoster, outPath, 7, label == "top10rank", size);
-                else RealPosterCustom(standInPoster, outPath, 7, options);
+                RealPosterBadge(standInPoster, outPath, 7, label == "top10rank", size, corner);
                 using var full = SKBitmap.Decode(outPath);
-                int w = 400, h = full.Height * w / full.Width;
+                int w = width, h = full.Height * w / full.Width;
                 using var surface = SKSurface.Create(new SKImageInfo(w, h));
                 using (var paint = new SKPaint { FilterQuality = SKFilterQuality.High, IsAntialias = true })
                     surface.Canvas.DrawBitmap(full, SKRect.Create(0, 0, w, h), paint);
                 using var img = surface.Snapshot();
                 using var data = img.Encode(SKEncodedImageFormat.Jpeg, 88);
                 return "data:image/jpeg;base64," + Convert.ToBase64String(data.ToArray());
-            }
-            finally { try { if (File.Exists(outPath)) File.Delete(outPath); } catch { } }
-        }
-
-        private static readonly Dictionary<string, string> ShapeCache = new Dictionary<string, string>();
-
-        /// <summary>Rank #1 in the given shape on a stand-in poster, small (JPEG data: URL), for the popup's shape tiles.</summary>
-        internal static string ShapeSample(string shape, string standInPoster, string tempDir)
-        {
-            lock (ShapeCache) if (ShapeCache.TryGetValue(shape, out var cached)) return cached;
-            Directory.CreateDirectory(tempDir);
-            var outPath = Path.Combine(tempDir, "shape-" + shape + "-" + Guid.NewGuid().ToString("N") + ".jpg");
-            try
-            {
-                CustomBadge(standInPoster, 1, outPath, "neutral", BadgeOptions.Parse("{\"shape\":\"" + shape + "\",\"size\":\"l\"}"), null);
-                using var full = SKBitmap.Decode(outPath);
-                int w = 120, h = full.Height * w / full.Width;
-                using var surface = SKSurface.Create(new SKImageInfo(w, h));
-                using (var paint = new SKPaint { FilterQuality = SKFilterQuality.High, IsAntialias = true })
-                    surface.Canvas.DrawBitmap(full, SKRect.Create(0, 0, w, h), paint);
-                using var img = surface.Snapshot();
-                using var data = img.Encode(SKEncodedImageFormat.Jpeg, 85);
-                var url = "data:image/jpeg;base64," + Convert.ToBase64String(data.ToArray());
-                lock (ShapeCache) ShapeCache[shape] = url;
-                return url;
             }
             finally { try { if (File.Exists(outPath)) File.Delete(outPath); } catch { } }
         }
@@ -977,11 +957,12 @@ namespace HomeScreenCompanion
 
         // ── popup preview ────────────────────────────────────────────────────────────────
         /// <summary>
-        /// One card for the Customise popup: rank #1 drawn by the real code with the popup's look on
+        /// One card for the Customise popup: rank 7 drawn by the real code with the popup's look on
         /// a stand-in poster (no library posters, so it is quick). variant "thumb" = the landscape
-        /// image a Thumb row uses; anything else = the Primary poster (card). JPEG data: URL.
+        /// image a Thumb row uses; anything else = the Primary poster (card). JPEG data: URL, scaled
+        /// to width px (0 = the preview's 400 / 600); the shape tiles are this drawing, small.
         /// </summary>
-        internal static string Preview(string look, string standInPoster, string tempDir, string? variant)
+        internal static string Preview(string look, string standInPoster, string tempDir, string? variant, int width = 0)
         {
             var (style, json) = BadgeLook.Split(look);
             var o = BadgeOptions.Parse(json);
@@ -1010,7 +991,7 @@ namespace HomeScreenCompanion
                 // The Top 10 poster card shows in a 4:3 card (Emby crops its top and bottom): show that part.
                 var src = SKRect.Create(0, 0, full.Width, full.Height);
                 if (tile && !thumb) { float ch = full.Width * 3f / 4f; src = SKRect.Create(0, (full.Height - ch) / 2f, full.Width, ch); }
-                int w = thumb || tile ? 600 : 400, h = (int)(src.Height * w / src.Width);
+                int w = width > 0 ? width : thumb || tile ? 600 : 400, h = (int)(src.Height * w / src.Width);
                 using var surface = SKSurface.Create(new SKImageInfo(w, h));
                 using (var paint = new SKPaint { FilterQuality = SKFilterQuality.High, IsAntialias = true })
                     surface.Canvas.DrawBitmap(full, src, SKRect.Create(0, 0, w, h), paint);
@@ -1028,7 +1009,7 @@ namespace HomeScreenCompanion
         private static readonly object LandLock = new object();
         private static string StandInLandscape(string standInPoster, string dir)
         {
-            var path = Path.Combine(dir, "stand-in-land.jpg");
+            var path = Path.Combine(dir, "stand-in-badge-land.jpg");
             lock (LandLock) if (!File.Exists(path)) LandscapeFromPoster(standInPoster, path);
             return path;
         }

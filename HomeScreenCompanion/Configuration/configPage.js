@@ -1009,7 +1009,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     function buildPlaylistLookHtml(tc) {
         var esc = function (v) { return (v || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); };
         var file = function (p) { return p ? esc(p.split(/[\\/]/).pop()) : ''; };
-        var gen = !!(tc.PlaylistPosterStyle || tc.PlaylistBackgroundStyle);
+        var gen = isGenArtStyle(tc.PlaylistPosterStyle) || isGenArtStyle(tc.PlaylistBackgroundStyle);
         var orRow = '<div style="display:flex; align-items:center; gap:6px; margin-top:8px; opacity:0.45;"><div style="flex:1; height:1px; background:currentColor;"></div><span style="font-size:0.75em;">or</span><div style="flex:1; height:1px; background:currentColor;"></div></div>';
         var btnStyle = 'width:100%; background:transparent; border:2px dashed rgba(128,128,128,0.4); color:var(--theme-text-secondary);';
         return `
@@ -1041,7 +1041,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                     </div>
                                     <div class="fieldDescription">An image that never changes. Leave empty to keep Emby's own collage.</div>
                                 </div>
-                                <div class="fieldDescription pl-poster-gen-note" style="display:${tc.PlaylistPosterStyle ? 'block' : 'none'};">Drawn from the posters of the first titles in the list (Your Next Watch: the titles picked for the most users), with the playlist name. It is redrawn when the titles change; choose Custom and an image for a poster that never changes.</div>
+                                <div class="fieldDescription pl-poster-gen-note" style="display:${isGenArtStyle(tc.PlaylistPosterStyle) ? 'block' : 'none'};">Drawn from the posters of the first titles in the list (Your Next Watch: the titles picked for the most users), with the playlist name. It is redrawn when the titles change; choose Custom and an image for a poster that never changes.</div>
                             </div>
                             <div style="margin-top:15px;">
                                 <p style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Playlist Background</p>
@@ -1074,10 +1074,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     }
 
     // Collection art style picker (cards like the top-list badge picker). '' = Custom (upload);
-    // for the tag poster (scope 'tag') '' = Emby's own collage.
-    var COLLECTION_ART_STYLES = [['', 'Custom'], ['collage', 'Collage'], ['grid', 'Grid'], ['fan', 'Fan'], ['wall', 'Wall'],
+    // for the tag poster (scope 'tag') '' = Emby's own collage. 'keep' = Keep current image: the
+    // item's own image is never touched (the default of an imported collection).
+    var COLLECTION_ART_STYLES = [['', 'Custom'], ['keep', 'Keep current image'], ['collage', 'Collage'], ['grid', 'Grid'], ['fan', 'Fan'], ['wall', 'Wall'],
                                  ['hero_strip', 'Hero strip'], ['spotlight', 'Spotlight split'], ['ranked', 'Ranked (Top 10)']];
     var _collPickerSeq = 0;
+    function isKeepArtStyle(v) { return v === 'keep'; }
+    // A generated style (drawn by the server): not Custom / Emby's own ('') and not Keep current.
+    function isGenArtStyle(v) { return !!v && v !== 'keep'; }
     function buildCollStylePickerHtml(kind, selected, scope, options) {
         var sel = selected || '';
         var optsVal = (options || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
@@ -1090,18 +1094,21 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var active = o[0] === sel;
                 return '<label class="coll-style-opt" style="' + cardBase + 'border-color:' + (active ? '#52B54B' : 'var(--line-color,rgba(255,255,255,0.12))') + ';">' +
                     '<input type="radio" name="' + name + '" value="' + o[0] + '" style="position:absolute;opacity:0;pointer-events:none;"' + (active ? ' checked' : '') + '>' +
-                    (o[0]
+                    (isGenArtStyle(o[0])
                         ? '<img class="coll-style-thumb" data-kind="' + kind + '" data-style="' + o[0] + '" alt="" style="' + thumb + 'border-radius:4px;object-fit:cover;background:rgba(128,128,128,0.15);display:block;" />'
-                        : '<div style="' + thumb + 'border-radius:4px;border:1px dashed rgba(128,128,128,0.5);display:flex;align-items:center;justify-content:center;"><i class="md-icon" style="font-size:1.6em;opacity:0.7;">' + (embyOwn ? 'block' : 'upload') + '</i></div>') +
+                        : '<div style="' + thumb + 'border-radius:4px;border:1px dashed rgba(128,128,128,0.5);display:flex;align-items:center;justify-content:center;"><i class="md-icon" style="font-size:1.6em;opacity:0.7;">' + (isKeepArtStyle(o[0]) ? 'lock' : embyOwn ? 'block' : 'upload') + '</i></div>') +
                     '<span style="font-size:0.78em;opacity:0.8;white-space:nowrap;">' + (o[0] || !embyOwn ? o[1] : "Emby's own") + '</span>' +
                     '</label>';
             }).join('') +
             // Customise (generated styles only): opens the art popup; its options live here.
             '<input type="hidden" class="coll-art-opts" value="' + optsVal + '" />' +
-            '<div class="coll-art-custom-row" style="flex-basis:100%;display:' + (sel ? 'flex' : 'none') + ';align-items:center;gap:8px;">' +
+            '<div class="coll-art-custom-row" style="flex-basis:100%;display:' + (isGenArtStyle(sel) ? 'flex' : 'none') + ';align-items:center;gap:8px;">' +
                 '<button type="button" is="emby-button" class="btnArtCustomise raised" style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">settings</i><span>Customise</span></button>' +
                 '<span class="coll-art-custom-note fieldDescription" style="margin:0;' + (options ? '' : 'display:none;') + '">Customised</span>' +
             '</div>' +
+            '<div class="coll-art-keep-note fieldDescription" style="flex-basis:100%;margin:0;display:' + (isKeepArtStyle(sel) ? 'block' : 'none') + ';">' +
+                'Keeps the ' + (kind === 'poster' ? 'poster' : 'background') + ' this ' + (scope === 'tag' ? 'tag' : scope === 'playlist' ? 'playlist' : 'collection') +
+                ' has now, exactly as it is: nothing is drawn, uploaded or removed.</div>' +
             '</div>';
     }
 
@@ -1512,7 +1519,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             CollectionPosterStyle: readCollectionArt(row).CollectionPosterStyle,
             CollectionBackgroundStyle: readCollectionArt(row).CollectionBackgroundStyle,
             CollectionBackgroundPath: readCollectionArt(row).CollectionBackgroundPath,
-            CollectionSortToTop: readCollectionArt(row).CollectionSortToTop,
+            CollectionSortToTop: readCollectionArt(row).CollectionSortToTop, CollectionImported: row.dataset.collImported === '1',
             CollectionArtTitle: readCollectionArt(row).CollectionArtTitle,
             CollectionPosterOptions: readCollectionArt(row).CollectionPosterOptions,
             CollectionBackgroundOptions: readCollectionArt(row).CollectionBackgroundOptions,
@@ -2326,7 +2333,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var newClass = isNew ? "just-added" : "";
 
         var html = `
-        <div class="tag-row ${inactiveClass} ${newClass}" data-index="${idx}" data-tag="${tagName.toLowerCase()}" data-last-modified="${lastMod}" data-nw-migrated="${tagConfig.NextWatchUsersMigrated ? '1' : '0'}" data-dirty="false">
+        <div class="tag-row ${inactiveClass} ${newClass}" data-index="${idx}" data-tag="${tagName.toLowerCase()}" data-last-modified="${lastMod}" data-nw-migrated="${tagConfig.NextWatchUsersMigrated ? '1' : '0'}" data-coll-imported="${tagConfig.CollectionImported ? '1' : '0'}" data-dirty="false">
             <div class="tag-header" style="display:flex; align-items:center; justify-content:space-between; padding:10px; cursor:pointer;">
                 <div style="display:flex; align-items:center;">
                     <div class="header-actions" style="margin-right:15px; display:flex; align-items:center;" onclick="event.stopPropagation()">
@@ -2578,7 +2585,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             <div style="margin-top:15px;">
                                 <p style="margin:0 0 8px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Tag Poster</p>
                                 ${buildCollStylePickerHtml('poster', tagConfig.TagPosterStyle, 'tag', tagConfig.TagPosterOptions)}
-                                <div class="fieldDescription tag-poster-note">${tagConfig.TagPosterStyle ? 'Drawn from the posters of the first titles with this tag, with the tag name. It is redrawn when the titles change.' : "Emby's own collage of the tagged titles."}</div>
+                                <div class="fieldDescription tag-poster-note" style="display:${isKeepArtStyle(tagConfig.TagPosterStyle) ? 'none' : 'block'};">${tagConfig.TagPosterStyle ? 'Drawn from the posters of the first titles with this tag, with the tag name. It is redrawn when the titles change.' : "Emby's own collage of the tagged titles."}</div>
                             </div>
 
                             <div style="margin-top:15px;">
@@ -2608,12 +2615,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                 </div>
                             </div>
 
-                            <div class="inputContainer tag-art-title-row" style="margin-top:15px; display:${tagConfig.TagPosterStyle || tagConfig.TagBackgroundStyle ? 'block' : 'none'};">
+                            <div class="inputContainer tag-art-title-row" style="margin-top:15px; display:${isGenArtStyle(tagConfig.TagPosterStyle) || isGenArtStyle(tagConfig.TagBackgroundStyle) ? 'block' : 'none'};">
                                 <input is="emby-input" type="text" class="txtTagArtTitle" label="Title on the art" value="${(tagConfig.TagArtTitle || '').replace(/"/g, '&quot;')}" placeholder="{name}" />
                                 <div class="fieldDescription">Leave empty to use the tag name. <b>{name}</b> = tag name, <b>{week}</b> = this week's number.</div>
                             </div>
 
-                            <div class="tag-art-preview-row" style="margin-top:10px; display:${tagConfig.TagPosterStyle || tagConfig.TagBackgroundStyle ? 'block' : 'none'};">
+                            <div class="tag-art-preview-row" style="margin-top:10px; display:${isGenArtStyle(tagConfig.TagPosterStyle) || isGenArtStyle(tagConfig.TagBackgroundStyle) ? 'block' : 'none'};">
                                 <button type="button" is="emby-button" class="btnTagArtPreview raised" style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">visibility</i><span>Preview art</span></button>
                             </div>
                         </div>
@@ -2702,7 +2709,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                 <button type="button" is="emby-button" class="btnLoadPosterUrl raised btn-neutral">Load</button>
                             </div>
                             </div>
-                            <div class="fieldDescription coll-poster-gen-note" style="display:${tagConfig.CollectionPosterStyle ? 'block' : 'none'};">Drawn from the posters of the first titles in the collection, with the collection name. It is redrawn when the titles change.</div>
+                            <div class="fieldDescription coll-poster-gen-note" style="display:${isGenArtStyle(tagConfig.CollectionPosterStyle) ? 'block' : 'none'};">Drawn from the posters of the first titles in the collection, with the collection name. It is redrawn when the titles change.</div>
                         </div>
 
                         <div style="margin-top:15px;">
@@ -2732,12 +2739,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             </div>
                         </div>
 
-                        <div class="inputContainer coll-art-title-row" style="margin-top:15px; display:${tagConfig.CollectionPosterStyle || tagConfig.CollectionBackgroundStyle ? 'block' : 'none'};">
+                        <div class="inputContainer coll-art-title-row" style="margin-top:15px; display:${isGenArtStyle(tagConfig.CollectionPosterStyle) || isGenArtStyle(tagConfig.CollectionBackgroundStyle) ? 'block' : 'none'};">
                             <input is="emby-input" type="text" class="txtCollArtTitle" label="Title on the art" value="${(tagConfig.CollectionArtTitle || '').replace(/"/g, '&quot;')}" placeholder="{name}" />
                             <div class="fieldDescription coll-art-title-note">Leave empty to use the collection name. <b>{name}</b> = collection name, <b>{week}</b> = this week's number, e.g. <i>{name} {week}</i> → "Top Movies for the Week 41".</div>
                         </div>
 
-                        <div class="coll-art-preview-row" style="margin-top:10px; display:${tagConfig.CollectionPosterStyle || tagConfig.CollectionBackgroundStyle ? 'block' : 'none'};">
+                        <div class="coll-art-preview-row" style="margin-top:10px; display:${isGenArtStyle(tagConfig.CollectionPosterStyle) || isGenArtStyle(tagConfig.CollectionBackgroundStyle) ? 'block' : 'none'};">
                             <button type="button" is="emby-button" class="btnCollArtPreview raised" style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">visibility</i><span>Preview art</span></button>
                         </div>
 
@@ -3521,7 +3528,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             picker.addEventListener('change', function () {
                 var on = picker.querySelector('input[type=radio]:checked');
                 var customRow = picker.querySelector('.coll-art-custom-row');
-                if (customRow) customRow.style.display = on && on.value ? 'flex' : 'none';
+                if (customRow) customRow.style.display = on && isGenArtStyle(on.value) ? 'flex' : 'none';
+                var keepNote = picker.querySelector('.coll-art-keep-note');
+                if (keepNote) keepNote.style.display = on && isKeepArtStyle(on.value) ? 'block' : 'none';
             });
             var custBtn = picker.querySelector('.btnArtCustomise');
             if (custBtn) custBtn.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); openArtCustomise(picker); });
@@ -3530,28 +3539,31 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         function syncCollArt() {
             var art = readCollectionArt(row);
             row.querySelector('.coll-poster-upload').style.display = art.CollectionPosterStyle ? 'none' : 'block';
-            row.querySelector('.coll-poster-gen-note').style.display = art.CollectionPosterStyle ? 'block' : 'none';
+            row.querySelector('.coll-poster-gen-note').style.display = isGenArtStyle(art.CollectionPosterStyle) ? 'block' : 'none';
             row.querySelector('.coll-bg-upload').style.display = art.CollectionBackgroundStyle ? 'none' : 'block';
-            row.querySelector('.coll-art-preview-row').style.display = art.CollectionPosterStyle || art.CollectionBackgroundStyle ? 'block' : 'none';
-            row.querySelector('.coll-art-title-row').style.display = art.CollectionPosterStyle || art.CollectionBackgroundStyle ? 'block' : 'none';
+            var collGen = isGenArtStyle(art.CollectionPosterStyle) || isGenArtStyle(art.CollectionBackgroundStyle);
+            row.querySelector('.coll-art-preview-row').style.display = collGen ? 'block' : 'none';
+            row.querySelector('.coll-art-title-row').style.display = collGen ? 'block' : 'none';
         }
         function syncPlArt() {
             var look = readPlaylistLook(row), box = row.querySelector('.pl-look');
-            var gen = look.PlaylistPosterStyle || look.PlaylistBackgroundStyle;
+            var gen = isGenArtStyle(look.PlaylistPosterStyle) || isGenArtStyle(look.PlaylistBackgroundStyle);
             box.querySelector('.pl-poster-upload').style.display = look.PlaylistPosterStyle ? 'none' : 'block';
-            box.querySelector('.pl-poster-gen-note').style.display = look.PlaylistPosterStyle ? 'block' : 'none';
+            box.querySelector('.pl-poster-gen-note').style.display = isGenArtStyle(look.PlaylistPosterStyle) ? 'block' : 'none';
             box.querySelector('.pl-bg-upload').style.display = look.PlaylistBackgroundStyle ? 'none' : 'block';
             box.querySelector('.pl-art-preview-row').style.display = gen ? 'block' : 'none';
             box.querySelector('.pl-art-title-row').style.display = gen ? 'block' : 'none';
         }
         function syncTagArt() {
             var art = readTagArt(row);
+            row.querySelector('.tag-poster-note').style.display = isKeepArtStyle(art.TagPosterStyle) ? 'none' : 'block';
             row.querySelector('.tag-poster-note').textContent = art.TagPosterStyle
                 ? 'Drawn from the posters of the first titles with this tag, with the tag name. It is redrawn when the titles change.'
                 : "Emby's own collage of the tagged titles.";
             row.querySelector('.tag-bg-upload').style.display = art.TagBackgroundStyle ? 'none' : 'block';
-            row.querySelector('.tag-art-preview-row').style.display = art.TagPosterStyle || art.TagBackgroundStyle ? 'block' : 'none';
-            row.querySelector('.tag-art-title-row').style.display = art.TagPosterStyle || art.TagBackgroundStyle ? 'block' : 'none';
+            var tagGen = isGenArtStyle(art.TagPosterStyle) || isGenArtStyle(art.TagBackgroundStyle);
+            row.querySelector('.tag-art-preview-row').style.display = tagGen ? 'block' : 'none';
+            row.querySelector('.tag-art-title-row').style.display = tagGen ? 'block' : 'none';
         }
 
         // Background upload (Custom): same endpoints as the poster upload. Wired once for the
@@ -4667,7 +4679,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 CollectionPosterStyle: readCollectionArt(row).CollectionPosterStyle,
                 CollectionBackgroundStyle: readCollectionArt(row).CollectionBackgroundStyle,
                 CollectionBackgroundPath: readCollectionArt(row).CollectionBackgroundPath,
-                CollectionSortToTop: readCollectionArt(row).CollectionSortToTop,
+                CollectionSortToTop: readCollectionArt(row).CollectionSortToTop, CollectionImported: row.dataset.collImported === '1',
                 CollectionArtTitle: readCollectionArt(row).CollectionArtTitle,
                 CollectionPosterOptions: readCollectionArt(row).CollectionPosterOptions,
                 CollectionBackgroundOptions: readCollectionArt(row).CollectionBackgroundOptions,
@@ -4975,7 +4987,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     Tag: t.Tag, Name: t.Name || '', Urls: [], LocalSources: [], Active: t.Active !== false, Blacklist: t.Blacklist, ActiveIntervals: t.ActiveIntervals,
                     EnableTag: t.EnableTag !== false, EnableCollection: t.EnableCollection, CollectionName: t.CollectionName, CollectionDescription: t.CollectionDescription || '', CollectionPosterPath: t.CollectionPosterPath || '',
                     CollectionPosterStyle: t.CollectionPosterStyle || '', CollectionBackgroundStyle: t.CollectionBackgroundStyle || '',
-                    CollectionBackgroundPath: t.CollectionBackgroundPath || '', CollectionSortToTop: !!t.CollectionSortToTop,
+                    CollectionBackgroundPath: t.CollectionBackgroundPath || '', CollectionSortToTop: !!t.CollectionSortToTop, CollectionImported: !!t.CollectionImported,
                     CollectionArtTitle: t.CollectionArtTitle || '',
                     CollectionPosterOptions: t.CollectionPosterOptions || '', CollectionBackgroundOptions: t.CollectionBackgroundOptions || '',
                     TagPosterStyle: t.TagPosterStyle || '', TagBackgroundStyle: t.TagBackgroundStyle || '',
@@ -6254,10 +6266,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }); // end step 0 wrapper
     }
 
-    // ── Top-list badge: Number badge / Top 10 tile / No number ───────────────────────
-    // The list's BadgeStyle keeps today's values: a colour preset (neutral, slate-grey, …) means
-    // Number badge in that colour, 'top10' the Top 10 tile, 'none' no number. Customise options
-    // live next to it in BadgeOptions (JSON, '' = today's look; only changed fields are stored).
+    // ── Top-list badge: Badge Style ──────────────────────────────────────────────────
+    // The six colour presets, No number and the Top 10 tile (the original picker). Customise is for
+    // the Top 10 tile only: its options live in BadgeOptions (JSON, '' = the standard tile).
     var BADGE_PRESETS = [
         { val: 'neutral',    label: 'Neutral',    bg: 'rgba(0,0,0,0.82)' },
         { val: 'slate-grey', label: 'Slate grey', bg: 'rgba(65,65,75,0.88)' },
@@ -6266,57 +6277,74 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         { val: 'soft-red',   label: 'Soft red',   bg: 'rgba(201,69,69,0.82)' },
         { val: 'violet',     label: 'Violet',     bg: 'rgba(123,82,181,0.82)' }
     ];
-    function isBadgePreset(v) { return BADGE_PRESETS.some(function (p) { return p.val === v; }); }
-    function badgeKindOf(style) { return style === 'top10' ? 'top10' : style === 'none' ? 'none' : 'badge'; }
+    var _badgeStyles = [
+        { val: 'neutral',    label: 'Neutral',    bg: 'rgba(0,0,0,0.82)',        textColor: '#fff' },
+        { val: 'slate-grey', label: 'Slate grey', bg: 'rgba(65,65,75,0.88)',     textColor: '#fff' },
+        { val: 'emby-green', label: 'Emby green', bg: 'rgba(82,181,75,0.78)',    textColor: '#fff' },
+        { val: 'ocean-blue', label: 'Ocean blue', bg: 'rgba(46,134,193,0.82)',   textColor: '#fff' },
+        { val: 'soft-red',   label: 'Soft red',   bg: 'rgba(201,69,69,0.82)',    textColor: '#fff' },
+        { val: 'violet',     label: 'Violet',     bg: 'rgba(123,82,181,0.82)',   textColor: '#fff' },
+        { val: 'none',       label: 'No number',  bg: 'transparent',             textColor: '#fff', noNumber: true },
+        { val: 'top10',      label: 'Top 10 tile', bg: '#141414',                textColor: '#141414', tile: true }
+    ];
 
     var _badgePickerSeq = 0;
     function buildBadgePickerHtml(selectedVal, optionsJson, realPoster) {
         var sel = selectedVal || 'neutral';
-        var kind = badgeKindOf(sel);
-        var preset = isBadgePreset(sel) ? sel : 'neutral';
-        var presetBg = (BADGE_PRESETS.filter(function (p) { return p.val === preset; })[0] || BADGE_PRESETS[0]).bg;
         var esc = function (v) { return String(v || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;'); };
-        var cardBase = 'cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 12px;border-radius:6px;border:2px solid transparent;transition:border-color 0.15s;min-width:96px;';
-        var on = 'border-color:#52B54B;', off = 'border-color:var(--line-color,rgba(255,255,255,0.12));';
-        // Same Customise chip as the art pickers, under the tiles (greyed for No number).
-        var custBtn = '<button type="button" is="emby-button" class="btnBadgeCustomise raised"' + custDisabledAttrs(kind === 'none', BADGE_NOTHING_TIP) + ' style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;' + (kind === 'none' ? 'opacity:0.45;cursor:not-allowed;' : '') + '"><i class="md-icon" style="font-size:1em; margin-right:4px;">settings</i><span>Customise</span></button>';
-        var opts = [
-            { k: 'badge', label: 'Number badge', art: '<div class="tl-badge-swatch" style="width:46px;height:46px;border-radius:50%;background:' + presetBg + ';display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;color:#fff;font-family:sans-serif;">7</div>' },
-            { k: 'top10', label: 'Top 10 tile', art: '<div style="width:82px;height:46px;border-radius:4px;background:#141414;display:flex;align-items:flex-end;justify-content:center;gap:2px;overflow:hidden;"><span style="font-size:44px;line-height:40px;font-weight:900;color:#141414;-webkit-text-stroke:1.5px #9696a0;font-family:Impact,sans-serif;">7</span><span style="width:24px;height:36px;margin-bottom:5px;border-radius:2px;background:linear-gradient(160deg,#6b7a8f,#2c3440);"></span></div>' },
-            { k: 'none', label: 'No number', art: '<div style="width:46px;height:46px;border-radius:4px;background:linear-gradient(160deg,#6b7a8f,#2c3440);"></div>' }
-        ];
+        var cardBase = 'cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:8px;padding:10px 12px;border-radius:6px;border:2px solid transparent;transition:border-color 0.15s;';
+        var cardActive = cardBase + 'border-color:#52B54B;';
+        var cardInactive = cardBase + 'border-color:var(--line-color,rgba(255,255,255,0.12));';
+        var tileSel = sel === 'top10';
+        // Same Customise chip as the art pickers, under the tiles (Top 10 tile only).
+        var custBtn = '<button type="button" is="emby-button" class="btnBadgeCustomise raised"' + custDisabledAttrs(!tileSel, BADGE_NOTHING_TIP) + ' style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;' + (!tileSel ? 'opacity:0.45;cursor:not-allowed;' : '') + '"><i class="md-icon" style="font-size:1em; margin-right:4px;">settings</i><span>Customise</span></button>';
         // Each picker gets its own radio group: with one shared name, opening a second top-list
         // card (or the create popup) unticked the first card's choice, so its Save lit up.
         var radioName = 'tlBadgeStyle_' + (++_badgePickerSeq);
+        // Options saved for a number badge (4.2.0.32-.36) are not used: the badge draws in its preset colour.
+        var optKind = tileSel ? 'top10' : 'badge';
         return '<div class="tl-badge-picker" style="margin-bottom:16px;">' +
             '<span style="font-size:0.82em;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;opacity:0.65;display:block;margin-bottom:8px;">Badge Style</span>' +
-            '<input type="hidden" class="tl-badge-preset" value="' + esc(preset) + '">' +
-            '<input type="hidden" class="tl-badge-opts" data-optkind="' + kind + '" value="' + esc(optionsJson || '') + '">' +
-            '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:stretch;">' +
-            opts.map(function (o) {
-                var active = o.k === kind;
-                return '<label class="tl-badge-opt" data-kind="' + o.k + '" style="' + cardBase + (active ? on : off) + '">' +
-                    '<input type="radio" name="' + radioName + '" value="' + o.k + '" style="position:absolute;opacity:0;pointer-events:none;"' + (active ? ' checked' : '') + '>' +
-                    o.art + '<span style="font-size:0.78em;opacity:0.8;white-space:nowrap;">' + o.label + '</span></label>';
+            '<input type="hidden" class="tl-badge-preset" value="neutral">' +
+            '<input type="hidden" class="tl-badge-opts" data-optkind="' + optKind + '" value="' + esc(optionsJson || '') + '">' +
+            '<div style="display:flex;gap:8px;flex-wrap:wrap;">' +
+            _badgeStyles.map(function (s) {
+                var active = s.val === sel;
+                return '<label class="tl-badge-opt" data-kind="' + s.val + '" style="' + (active ? cardActive : cardInactive) + '">' +
+                    '<input type="radio" name="' + radioName + '" value="' + s.val + '" style="position:absolute;opacity:0;pointer-events:none;"' + (active ? ' checked' : '') + '>' +
+                    (s.tile
+                        ? '<div style="width:82px;height:46px;border-radius:4px;background:' + s.bg + ';display:flex;align-items:flex-end;justify-content:center;gap:2px;overflow:hidden;"><span style="font-size:44px;line-height:40px;font-weight:900;color:' + s.textColor + ';-webkit-text-stroke:1.5px #9696a0;font-family:Impact,sans-serif;">7</span><span style="width:24px;height:36px;margin-bottom:5px;border-radius:2px;background:linear-gradient(160deg,#6b7a8f,#2c3440);"></span></div>'
+                        : '<div style="width:46px;height:46px;border-radius:50%;background:' + s.bg + ';display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;color:' + s.textColor + ';font-family:sans-serif;">' + (s.noNumber ? '' : '7') + '</div>') +
+                    '<span style="font-size:0.78em;opacity:0.8;white-space:nowrap;">' + s.label + '</span>' +
+                    '</label>';
             }).join('') +
             '</div>' +
             '<div class="tl-badge-custom-row" style="display:flex;align-items:center;gap:8px;margin-top:8px;">' + custBtn +
-                '<span class="tl-badge-custom-note fieldDescription" style="margin:0;' + (optionsJson ? '' : 'display:none;') + '">Customised</span>' +
+                '<span class="tl-badge-custom-note fieldDescription" style="margin:0;' + (tileSel && optionsJson ? '' : 'display:none;') + '">Customised</span>' +
             '</div>' +
             buildRealPosterHtml(realPoster) +
             '</div>';
     }
 
-    // "Real posters" block under Badge Style: the TOP 10 badge on the title's own poster
+    // "Real posters" block under Badge Style: the TOP 10 square on the title's own poster
     // everywhere in Emby (drawn by the server's image enhancer; image files stay untouched).
-    // Stored in HomeSectionSettings.RealPosterBadge: '' = off, else 'label|size' or
-    // 'label|size|{options}' (label top10 | top10rank, size s | m | l; options = the Customise
-    // look, Number badge fields plus "style" for a preset colour; when set it replaces the square).
+    // Stored in HomeSectionSettings.RealPosterBadge: '' = off, else 'label|size' (top right) or
+    // 'label|size|{"pos":"tl"}' (label top10 | top10rank, size s | m | l, pos tl | tr | bl | bc | br).
+    // A value saved by 4.2.0.35/.36 with a whole Customise look there still loads: only its pos counts.
     function parseRealPoster(v) {
         var str = String(v || ''), i1 = str.indexOf('|'), i2 = i1 < 0 ? -1 : str.indexOf('|', i1 + 1);
         var p = [i1 < 0 ? str : str.slice(0, i1), i1 < 0 ? '' : str.slice(i1 + 1, i2 < 0 ? undefined : i2)];
-        var opts = i2 < 0 ? '' : str.slice(i2 + 1).trim();
-        return { on: !!v, label: p[0] === 'top10rank' ? 'top10rank' : 'top10', size: (p[1] === 's' || p[1] === 'l') ? p[1] : 'm', opts: opts === '{}' ? '' : opts };
+        var opts = i2 < 0 ? '' : str.slice(i2 + 1), m = /"pos"\s*:\s*"(tl|tr|bl|bc|br)"/i.exec(opts);
+        return { on: !!v, label: p[0] === 'top10rank' ? 'top10rank' : 'top10', size: (p[1] === 's' || p[1] === 'l') ? p[1] : 'm', pos: m ? m[1].toLowerCase() : 'tr' };
+    }
+    // The badge popup's Position control: a mini poster with a dot per spot, the spot's name beside it.
+    var POS_SPOTS = [['tl', 'Top left'], ['tr', 'Top right'], ['bl', 'Bottom left'], ['bc', 'Bottom centre'], ['br', 'Bottom right']];
+    function posPickerHtml(spots, sel) {
+        var on = spots.some(function (p) { return p[0] === sel; }) ? sel : spots[0][0];
+        var name = spots.filter(function (p) { return p[0] === on; })[0][1];
+        return '<div class="artc-posrow"><div class="artc-posposter" data-field="pos">' + spots.map(function (p) {
+            return '<button type="button" class="artc-posdot artc-pos-' + p[0] + (on === p[0] ? ' artc-on' : '') + '" data-value="' + p[0] + '" title="' + p[1] + '" aria-label="' + p[1] + '"><span></span></button>';
+        }).join('') + '</div><span class="artc-posname">' + escapeHtml(name) + '</span></div>';
     }
     function buildRealPosterHtml(value) {
         var rp = parseRealPoster(value);
@@ -6325,25 +6353,22 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 return '<button type="button" class="artc-segbtn' + (o[0] === cur ? ' artc-on' : '') + '" data-value="' + o[0] + '">' + o[1] + '</button>';
             }).join('') + '</div>';
         }
-        var lbl = 'font-size:0.82em;opacity:0.75;min-width:44px;';
+        var lbl = 'font-size:0.82em;opacity:0.75;min-width:56px;';
         return '<div class="tl-rp" style="margin-top:14px;">' +
             '<span style="font-size:0.82em;font-weight:600;text-transform:uppercase;letter-spacing:0.4px;opacity:0.65;display:block;margin-bottom:4px;">Real posters</span>' +
             '<div class="checkboxContainer" style="margin-bottom:6px;"><label>' +
                 '<input is="emby-checkbox" type="checkbox" class="tl-rp-on"' + (rp.on ? ' checked' : '') + ' />' +
                 '<span>Badge the real posters too</span></label></div>' +
             '<div class="tl-rp-opts" style="' + (rp.on ? '' : 'display:none;') + 'margin-left:4px;">' +
-                '<div class="tl-rp-quick">' +
+                '<div style="display:flex;align-items:flex-start;gap:16px;flex-wrap:wrap;">' +
+                '<div>' +
                 '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><span style="' + lbl + '">Label</span>' + seg('label', [['top10', 'TOP 10'], ['top10rank', 'TOP 10 #3']], rp.label) + '</div>' +
-                '<div style="display:flex;align-items:center;gap:10px;"><span style="' + lbl + '">Size</span>' + seg('size', [['s', 'S'], ['m', 'M'], ['l', 'L']], rp.size) + '</div>' +
+                '<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;"><span style="' + lbl + '">Size</span>' + seg('size', [['s', 'S'], ['m', 'M'], ['l', 'L']], rp.size) + '</div>' +
+                '<div class="tl-rp-pos" style="display:flex;align-items:center;gap:10px;"><span style="' + lbl + '">Position</span>' + posPickerHtml(POS_SPOTS, rp.pos) + '</div>' +
                 '</div>' +
-                '<div class="fieldDescription" style="margin-top:6px;">The TOP 10 square on the title\'s own poster everywhere in Emby (library, search, item page, every app). Image files are not changed.</div>' +
-            '</div>' +
-            // Same Customise chip as Badge Style (greyed while the tick box is off); the icon is the look the real posters get.
-            '<input type="hidden" class="tl-rp-custom" data-optkind="real" value="' + String(rp.opts).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;') + '">' +
-            '<div class="tl-rp-custom-row" style="display:flex;align-items:center;gap:8px;margin-top:8px;">' +
-                '<img class="tl-rp-icon" alt="" style="width:31px;height:46px;object-fit:contain;display:block;border-radius:2px;" />' +
-                '<button type="button" is="emby-button" class="btnRealPosterCustomise raised"' + custDisabledAttrs(!rp.on, RP_OFF_TIP) + ' style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;' + (rp.on ? '' : 'opacity:0.45;cursor:not-allowed;') + '"><i class="md-icon" style="font-size:1em; margin-right:4px;">settings</i><span>Customise</span></button>' +
-                '<span class="tl-rp-custom-note fieldDescription" style="margin:0;' + (rp.opts ? '' : 'display:none;') + '">Customised (replaces Label and Size)</span>' +
+                // The look the real posters get (rank 7 on a stand-in poster), drawn by the server.
+                '<img class="tl-rp-icon" alt="" style="width:60px;height:90px;object-fit:contain;display:block;border-radius:3px;" />' +
+                '</div>' +
             '</div>' +
             '</div>';
     }
@@ -6352,34 +6377,25 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         if (!on || !on.checked) return '';
         var l = container.querySelector('.tl-rp [data-rp="label"] .artc-on');
         var z = container.querySelector('.tl-rp [data-rp="size"] .artc-on');
-        var c = container.querySelector('.tl-rp .tl-rp-custom');
-        return (l ? l.getAttribute('data-value') : 'top10') + '|' + (z ? z.getAttribute('data-value') : 'm') + (c && c.value ? '|' + c.value : '');
+        var d = container.querySelector('.tl-rp .artc-posdot.artc-on'), pos = d ? d.getAttribute('data-value') : 'tr';
+        return (l ? l.getAttribute('data-value') : 'top10') + '|' + (z ? z.getAttribute('data-value') : 'm') + (pos !== 'tr' ? '|{"pos":"' + pos + '"}' : '');
     }
-    var RP_OFF_TIP = 'Tick "Badge the real posters too" first';
-    // The real-poster icon (always drawn by the server: today's square, or the Customise look) and
-    // the greyed Label / Size when a Customise look replaces them (shown, never hidden).
+    // The real-poster icon: the server's drawing of the square with the block's Label / Size / Position.
     function refreshRealPosterBlock(block) {
-        var chk = block.querySelector('.tl-rp-on'), c = block.querySelector('.tl-rp-custom');
-        var btn = block.querySelector('.btnRealPosterCustomise'), note = block.querySelector('.tl-rp-custom-note');
-        var quick = block.querySelector('.tl-rp-quick'), icon = block.querySelector('.tl-rp-icon');
-        setCustomiseEnabled(btn, chk.checked, RP_OFF_TIP);
-        var custom = !!(c && c.value);
-        if (note) note.style.display = custom ? '' : 'none';
-        if (quick) { quick.style.opacity = custom ? '0.45' : ''; quick.style.pointerEvents = custom ? 'none' : ''; quick.title = custom ? 'Customised: Reset in Customise to use Label and Size' : ''; }
-        var l = block.querySelector('[data-rp="label"] .artc-on'), z = block.querySelector('[data-rp="size"] .artc-on');
-        var rpVal = (l ? l.getAttribute('data-value') : 'top10') + '|' + (z ? z.getAttribute('data-value') : 'm');
-        var token = rpVal + '|' + (c ? c.value : '');
-        if (!icon || icon.dataset.iconFor === token) return;
+        var chk = block.querySelector('.tl-rp-on'), icon = block.querySelector('.tl-rp-icon');
+        if (!icon || !chk.checked) return;
+        var token = readRealPoster(block);
+        if (icon.dataset.iconFor === token) return;
         icon.dataset.iconFor = token;
-        realPosterIconImage(rpVal, c ? c.value : '').then(function (src) { if (icon.dataset.iconFor === token) icon.src = src; }).catch(function () { });
+        realPosterIconImage(token).then(function (src) { if (icon.dataset.iconFor === token) icon.src = src; }).catch(function () { });
     }
-    function realPosterIconImage(rpVal, options) {
-        var key = 'real|' + rpVal + '|' + options;
+    function realPosterIconImage(rpVal) {
+        var key = 'real|' + rpVal;
         if (!_badgeIconCache[key])
             _badgeIconCache[key] = fetch(window.ApiClient.getUrl('HomeScreenCompanion/BadgeCustomPreview'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
-                body: JSON.stringify({ BadgeStyle: 'neutral', Options: options, Variant: 'real', RealPoster: rpVal })
+                body: JSON.stringify({ BadgeStyle: 'neutral', Options: '', Variant: 'real', RealPoster: rpVal })
             }).then(function (r) { return r.json(); }).then(function (res) {
                 if (!res.Success) throw new Error(res.Message || 'Preview failed');
                 return res.Image;
@@ -6393,12 +6409,6 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             var chk = block.querySelector('.tl-rp-on');
             var optsEl = block.querySelector('.tl-rp-opts');
             chk.addEventListener('change', function () { optsEl.style.display = chk.checked ? '' : 'none'; refreshRealPosterBlock(block); });
-            var custBtn = block.querySelector('.btnRealPosterCustomise');
-            if (custBtn) custBtn.addEventListener('click', function (e) {
-                e.preventDefault(); e.stopPropagation();
-                if (!chk.checked) return;
-                openBadgeCustomise(block, 'real', container, null);
-            });
             refreshRealPosterBlock(block);
             block.querySelectorAll('.artc-seg').forEach(function (segEl) {
                 segEl.querySelectorAll('.artc-segbtn').forEach(function (btn) {
@@ -6412,13 +6422,24 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     });
                 });
             });
+            block.querySelectorAll('.artc-posdot').forEach(function (dot) {
+                dot.addEventListener('click', function (e) {
+                    e.preventDefault();
+                    if (dot.classList.contains('artc-on')) return;
+                    block.querySelectorAll('.artc-posdot').forEach(function (x) { x.classList.remove('artc-on'); });
+                    dot.classList.add('artc-on');
+                    var nm = block.querySelector('.tl-rp-pos .artc-posname');
+                    if (nm) nm.textContent = dot.getAttribute('title');
+                    chk.dispatchEvent(new Event('change', { bubbles: true }));
+                });
+            });
         });
     }
 
-    // Customised tile icons: when a type has saved options, its Number badge / Top 10 tile icon is
-    // drawn by the server with them (the popup's stand-in poster, small) in the same box as the
-    // default icon. One request per distinct look, cached for the page; no options = the default icon.
+    // The Top 10 tile icon: the original hand-made icon; once customised, the server's drawing of
+    // the look (rank 7 on the stand-in poster) in the same box. Cached per look for the page.
     var _badgeIconCache = {};
+    var _badgeTileCache = {};   // the badge popup's shape tiles, by look (kept for the page)
     function badgeIconImage(style, options, variant) {
         var key = style + '|' + variant + '|' + options;
         if (!_badgeIconCache[key])
@@ -6433,43 +6454,35 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         return _badgeIconCache[key];
     }
     function refreshBadgeTileIcons(picker, container) {
-        var optsIn = picker.querySelector('.tl-badge-opts'), presetIn = picker.querySelector('.tl-badge-preset');
-        if (!optsIn) return;
+        var optsIn = picker.querySelector('.tl-badge-opts');
+        var label = picker.querySelector('.tl-badge-opt[data-kind="top10"]');
+        if (!optsIn || !label) return;
+        var radio = label.querySelector('input[type="radio"]'), art = radio && radio.nextElementSibling;
+        if (!art || art.classList.contains('tl-badge-custom-icon')) return;
+        var options = optsIn.value && optsIn.dataset.optkind === 'top10' ? optsIn.value : '';
         var imgSel = container && container.querySelector && container.querySelector('.tlm-image-type, .mtlImageType');
         var variant = imgSel && imgSel.value === 'Thumb' ? 'thumb' : 'primary';
-        [['badge', 46], ['top10', 82]].forEach(function (t) {
-            var label = picker.querySelector('.tl-badge-opt[data-kind="' + t[0] + '"]');
-            if (!label) return;
-            var radio = label.querySelector('input[type="radio"]'), art = radio && radio.nextElementSibling;
-            if (!art) return;
-            var icon = label.querySelector('.tl-badge-custom-icon');
-            var options = optsIn.value && optsIn.dataset.optkind === t[0] ? optsIn.value : '';
-            if (!options) {
-                label.dataset.iconFor = '';
-                if (icon) icon.remove();
-                if (art.dataset.origDisplay != null) { art.style.display = art.dataset.origDisplay; delete art.dataset.origDisplay; }
-                return;
+        var token = variant + '|' + options;
+        label.dataset.iconFor = token;
+        var old = label.querySelector('.tl-badge-custom-icon');
+        if (art.dataset.origDisplay == null) art.dataset.origDisplay = art.style.display;
+        if (!options) { if (old) old.remove(); art.style.display = art.dataset.origDisplay; return; }
+        badgeIconImage('top10', options, variant).then(function (src) {
+            if (label.dataset.iconFor !== token) return;   // changed again meanwhile
+            var img = label.querySelector('.tl-badge-custom-icon');
+            if (!img) {
+                img = document.createElement('img');
+                img.className = 'tl-badge-custom-icon';
+                img.alt = '';
+                img.style.cssText = 'width:82px;height:46px;object-fit:contain;display:block;';
+                art.parentNode.insertBefore(img, art.nextSibling);
             }
-            var style = t[0] === 'top10' ? 'top10' : (presetIn && presetIn.value) || 'neutral';
-            var token = style + '|' + variant + '|' + options;
-            label.dataset.iconFor = token;
-            badgeIconImage(style, options, variant).then(function (src) {
-                if (label.dataset.iconFor !== token) return;   // changed again meanwhile
-                var img = label.querySelector('.tl-badge-custom-icon');
-                if (!img) {
-                    img = document.createElement('img');
-                    img.className = 'tl-badge-custom-icon';
-                    img.alt = '';
-                    img.style.cssText = 'width:' + t[1] + 'px;height:46px;object-fit:contain;display:block;';
-                    art.parentNode.insertBefore(img, art.nextSibling);
-                }
-                img.src = src;
-                if (art.dataset.origDisplay == null) { art.dataset.origDisplay = art.style.display; art.style.display = 'none'; }
-            }).catch(function () { /* keep the default icon */ });
-        });
+            img.src = src;
+            art.style.display = 'none';
+        }).catch(function () { /* keep the original icon */ });
     }
 
-    var BADGE_NOTHING_TIP = 'Nothing to customise for No number';
+    var BADGE_NOTHING_TIP = 'Customise is for the Top 10 tile';
     function initBadgePicker(container, tagName) {
         if (container && container.dataset) container.dataset.tlTag = tagName || '';
         initRealPoster(container);
@@ -6480,16 +6493,16 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 label.style.borderColor = '#52B54B';
             });
         });
-        // One Customise button: opens the popup for the selected type; greyed for No number.
+        // One Customise button: the Top 10 tile's popup; greyed for the presets and No number.
         container.querySelectorAll('.tl-badge-picker').forEach(function (picker) {
             var btn = picker.querySelector('.btnBadgeCustomise');
             if (!btn) return;
             function sync() {
                 var checked = picker.querySelector('input[name^="tlBadgeStyle"]:checked');
-                setCustomiseEnabled(btn, !!checked && checked.value !== 'none', BADGE_NOTHING_TIP);
-                // "Customised" only for the type the options were made for.
+                var tile = !!checked && checked.value === 'top10';
+                setCustomiseEnabled(btn, tile, BADGE_NOTHING_TIP);
                 var note = picker.querySelector('.tl-badge-custom-note'), optsIn = picker.querySelector('.tl-badge-opts');
-                if (note && optsIn) note.style.display = checked && checked.value !== 'none' && optsIn.value && (!optsIn.dataset.optkind || optsIn.dataset.optkind === checked.value) ? '' : 'none';
+                if (note && optsIn) note.style.display = tile && optsIn.value && optsIn.dataset.optkind === 'top10' ? '' : 'none';
             }
             picker.addEventListener('change', sync);
             sync();
@@ -6497,33 +6510,29 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             btn.addEventListener('click', function (e) {
                 e.preventDefault(); e.stopPropagation();
                 var checked = picker.querySelector('input[name^="tlBadgeStyle"]:checked');
-                if (!checked || checked.value === 'none') return;
-                openBadgeCustomise(picker, checked.value, container, null);
+                if (!checked || checked.value !== 'top10') return;
+                openBadgeCustomise(picker, 'top10', container, null);
             });
         });
     }
 
     function readBadgeStyle(container) {
         var checked = container.querySelector('input[name^="tlBadgeStyle"]:checked');
-        var kind = checked ? checked.value : 'badge';
-        if (kind === 'top10' || kind === 'none') return kind;
-        var preset = container.querySelector('.tl-badge-preset');
-        return (preset && preset.value) || 'neutral';
+        return checked ? checked.value : 'neutral';
     }
 
+    // Options only for the Top 10 tile (the ones it was customised with).
     function readBadgeOptions(container) {
         var checked = container.querySelector('input[name^="tlBadgeStyle"]:checked');
-        if (checked && checked.value === 'none') return '';
+        if (!checked || checked.value !== 'top10') return '';
         var input = container.querySelector('.tl-badge-opts');
-        if (!input) return '';
-        // Options belong to the type they were made for; another type starts from its own look.
-        if (checked && input.dataset.optkind && input.dataset.optkind !== checked.value) return '';
+        if (!input || input.dataset.optkind !== 'top10') return '';
         return input.value || '';
     }
 
     // ── Badge Customise popup ────────────────────────────────────────────────────────
     // The same popup as the art Customise (same overlay, OK / Cancel / Reset); the live preview
-    // is one card drawn by the server (rank #1 on a stand-in poster). Fields that do not apply to the chosen type
+    // is one card drawn by the server (rank 7 on a stand-in poster). Fields that do not apply to the chosen type
     // stay visible with a short note.
     var NUM_COLOURS = [['#ffffff', 'White'], ['#ececf0', 'Light grey'], ['#141414', 'Page dark'], ['#f5c518', 'Gold'], ['#e50914', 'Red'], ['#52b54b', 'Emby green'], ['#7fd4ff', 'Ice blue'], ['#000000', 'Black']];
     var OUT_COLOURS = [['#9696a0', 'Grey'], ['#000000', 'Black'], ['#ffffff', 'White'], ['#f5c518', 'Gold'], ['#e50914', 'Red'], ['#52b54b', 'Emby green']];
@@ -6574,15 +6583,11 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var overlay = (view && view.querySelector('#artCustomiseModalOverlay')) || document.querySelector('#artCustomiseModalOverlay');
         if (!overlay) return;
         var tile = kind === 'top10';
-        // 'real': the real-poster badge (Number badge fields; picker = the .tl-rp block). Its preset
-        // colour travels in the options as "style"; unset shape / position mean the TOP 10 square, top right.
-        var real = kind === 'real';
-        var optsInput = picker.querySelector(real ? '.tl-rp-custom' : '.tl-badge-opts');
-        var presetInput = real ? { value: 'neutral' } : picker.querySelector('.tl-badge-preset');
-        if (real) { try { presetInput.value = (optsInput.value && JSON.parse(optsInput.value).style) || 'neutral'; } catch (e) { } }
+        var optsInput = picker.querySelector('.tl-badge-opts');
+        var presetInput = picker.querySelector('.tl-badge-preset');
         var body = overlay.querySelector('.artc-body');
-        overlay.querySelector('.artc-title').textContent = 'Customise ' + (real ? 'real-poster badge' : tile ? 'Top 10 tile' : 'number badge');
-        overlay.querySelector('.artc-subtitle').textContent = real ? 'Real posters — the badge on the title\'s own poster' : 'Top-list badge — ' + (tile ? 'Top 10 tile' : 'Number badge');
+        overlay.querySelector('.artc-title').textContent = 'Customise ' + (tile ? 'Top 10 tile' : 'number badge');
+        overlay.querySelector('.artc-subtitle').textContent = 'Top-list badge — ' + (tile ? 'Top 10 tile' : 'Number badge');
         body.innerHTML = '<div style="padding:20px 0; text-align:center; opacity:0.8;">Loading…</div>';
         overlay.style.zIndex = '20000';
         overlay._artcCancel = onCancel || null;
@@ -6592,7 +6597,6 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
         getBadgeCustomiseInfo().then(function (info) {
             var def = badgeDefaults(kind);
-            if (real) { def.shape = 'netflix'; def.pos = 'tr'; }
             var stored = {};
             try { stored = optsInput.value ? JSON.parse(optsInput.value) : {}; } catch (e) { stored = {}; }
             if (optsInput.dataset.optkind && optsInput.dataset.optkind !== kind) stored = {};
@@ -6612,35 +6616,79 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             // One preview card, the image the list's Image Type uses (Thumb = landscape, else Primary).
             var imgSel = container && container.querySelector && container.querySelector('.tlm-image-type, .mtlImageType');
             var imageType = imgSel ? imgSel.value : '';
-            var variant = real ? 'real' : imageType === 'Thumb' ? 'thumb' : 'primary';
+            var variant = imageType === 'Thumb' ? 'thumb' : 'primary';
             var previewBox = variant === 'thumb' ? 'artc-bg' : tile ? 'artc-card43' : 'artc-poster';
+            var SHAPES = [['circle', 'Circle'], ['roundsq', 'Rounded square'], ['pill', 'Pill'], ['ribbon', 'Ribbon'], ['banner', 'Flag'], ['diag', 'Diagonal'], ['netflix', 'TOP 10 square'], ['numonly', 'Number only'], ['bigoutline', 'Big numeral'], ['hidden', 'None (extras only)']];
+            var tileCache = _badgeTileCache, lastTile = {};
+            var tileSeq = 0;
             render();
 
-            function toOptions() {
+            // The stored options of a popup state (st; default = the popup's own): only changed fields.
+            function toOptions(st) {
+                st = st || state;
                 var out = {}, any = false;
                 BADGE_FIELDS.forEach(function (k) {
-                    if (k === 'colour') { if (state.colour && state.colour[0] === '#') { out.colour = state.colour; any = true; } return; }
+                    if (k === 'colour') { if (st.colour && st.colour[0] === '#') { out.colour = st.colour; any = true; } return; }
                     // Big numeral draws its own look (Anton, outline, white edge) for unset fields, so
                     // its number fields are always stored: the preview shows what is selected.
-                    var big = !tile && state.shape === 'bigoutline' && BIG_KEYS.indexOf(k) >= 0;
-                    if (!big && k === 'numcolour' && state.numcolour === badgeNumDefault(kind, state.num)) return;
-                    if (k === 'moveeq' && !state.move) return;   // only with the movement chip on
-                    if ((k === 'logolabel' || k === 'logosize') && !state.logo) return;   // only with the TOP 10 logo on
-                    if (!big && state[k] === def[k]) return;
-                    out[k] = state[k]; any = true;
+                    var big = !tile && st.shape === 'bigoutline' && BIG_KEYS.indexOf(k) >= 0;
+                    if (!big && k === 'numcolour' && st.numcolour === badgeNumDefault(kind, st.num)) return;
+                    if (k === 'moveeq' && !st.move) return;   // only with the movement chip on
+                    if ((k === 'logolabel' || k === 'logosize') && !st.logo) return;   // only with the TOP 10 logo on
+                    if (!big && st[k] === def[k]) return;
+                    out[k] = st[k]; any = true;
                 });
                 return any ? JSON.stringify(out) : '';
             }
-            function previewStyle() { return tile ? 'top10' : (state.colour && state.colour[0] !== '#' ? state.colour : 'neutral'); }
-            // Real posters: the options plus the preset colour as "style" ('' = today's square).
-            function realOptions() {
-                var v = toOptions(), st = previewStyle();
-                if (st === 'neutral') return v;
-                var o = v ? JSON.parse(v) : {}; o.style = st; return JSON.stringify(o);
+            function previewStyle(st) { st = st || state; return tile ? 'top10' : (st.colour && st.colour[0] !== '#' ? st.colour : 'neutral'); }
+            // The state after picking a shape: switching to / from Big numeral moves untouched number fields to that shape's look.
+            function stateWithShape(v) {
+                var st = Object.assign({}, state);
+                if (!tile && (v === 'bigoutline') !== (st.shape === 'bigoutline')) {
+                    var toBig = v === 'bigoutline';
+                    var from = toBig ? normalLook() : BIG_LOOK, to = toBig ? BIG_LOOK : normalLook();
+                    BIG_KEYS.forEach(function (k) { if (st[k] === from[k]) st[k] = to[k]; });
+                    if (!toBig && st.numcolour === BIG_LOOK.numcolour) st.numcolour = badgeNumDefault(kind, st.num);
+                }
+                st.shape = v;
+                return st;
             }
-            function realQuick() {
-                var l = picker.querySelector('[data-rp="label"] .artc-on'), z = picker.querySelector('[data-rp="size"] .artc-on');
-                return (l ? l.getAttribute('data-value') : 'top10') + '|' + (z ? z.getAttribute('data-value') : 'm');
+            // Shape tiles: each is the preview's drawing of stateWithShape(shape). Keyed by the look sent,
+            // so a click on a shape (same looks) is answered from the cache.
+            function tileLook(shape) { var st = stateWithShape(shape); return { style: previewStyle(st), options: toOptions(st) }; }
+            function tileKey(shape) { var l = tileLook(shape); return variant + '|' + l.style + '|' + l.options; }
+            function refreshTiles() {
+                if (tile) return;
+                var wanted = SHAPES.map(function (o) { return { shape: o[0], key: tileKey(o[0]), look: tileLook(o[0]) }; });
+                // A hex colour typed in changes the looks without a redraw of the popup: re-key the tiles.
+                wanted.forEach(function (w) { var img = body.querySelector('.artc-shape[data-value="' + w.shape + '"] img'); if (img) img.dataset.key = w.key; });
+                function show() {
+                    wanted.forEach(function (w) {
+                        var img = body.querySelector('.artc-shape[data-value="' + w.shape + '"] img');
+                        var src = tileCache[w.key];
+                        if (src) lastTile[w.shape] = src;
+                        if (img && src && img.dataset.key === w.key && img.getAttribute('src') !== src) img.src = src;
+                    });
+                }
+                var missing = wanted.filter(function (w) { return !tileCache[w.key]; });
+                if (!missing.length) { show(); return; }
+                // One request per preview style (a hex colour vs a preset changes it per tile).
+                var byStyle = {};
+                missing.forEach(function (w) { (byStyle[w.look.style] = byStyle[w.look.style] || []).push(w); });
+                var mine = ++tileSeq, t0 = performance.now();
+                Promise.all(Object.keys(byStyle).map(function (st) {
+                    var list = byStyle[st];
+                    return fetch(window.ApiClient.getUrl('HomeScreenCompanion/BadgeShapeTiles'), {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
+                        body: JSON.stringify({ BadgeStyle: st, Variant: variant, Options: list.map(function (w) { return w.look.options; }) })
+                    }).then(function (r) { return r.json(); }).then(function (res) {
+                        if (res.Success) list.forEach(function (w, n) { if (res.Images[n]) tileCache[w.key] = res.Images[n]; });
+                    });
+                })).then(function () {
+                    window._hscTileMs = Math.round(performance.now() - t0);
+                    if (mine === tileSeq) show();
+                }).catch(function () { });
             }
 
             function seg(f, opts) {
@@ -6662,11 +6710,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             // Only fields that change the picture for this type (and shape) are shown.
             function shown(f) {
                 var noNumber = !tile && state.shape === 'hidden';
+                // The TOP 10 square draws its own white TOP / 10 / #rank (the real posters' square): no number look.
+                var square = !tile && state.shape === 'netflix';
                 var backed = ['circle', 'roundsq', 'pill', 'ribbon', 'banner', 'diag', 'netflix'].indexOf(state.shape) >= 0;
                 switch (f) {
-                    case 'font': case 'num': case 'medal': case 'special': return !noNumber;
-                    case 'numcolour': return !noNumber && state.num !== 'metallic';
-                    case 'outcolour': case 'outline': return !noNumber && (state.num === 'outline' || (!tile && state.shape === 'bigoutline' && state.num === 'filled'));
+                    case 'special': return !noNumber;
+                    case 'font': case 'num': case 'medal': return !noNumber && !square;
+                    case 'numcolour': return !noNumber && !square && state.num !== 'metallic';
+                    case 'outcolour': case 'outline': return !noNumber && !square && (state.num === 'outline' || (!tile && state.shape === 'bigoutline' && state.num === 'filled'));
                     case 'size': return !tile && !noNumber && state.shape !== 'bigoutline';
                     case 'shape': return !tile;
                     case 'colour': return !tile && backed;
@@ -6674,9 +6725,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     case 'pos': return !tile && (!noNumber || state.move || state.logo);
                     case 'tilepos': case 'tilebg': return tile;
                     case 'tilebgcolour': return tile && state.tilebg === 'solid';
-                    case 'moveeq': return !real && !!state.move;
-                    case 'logolabel': case 'logosize': return !real && !!state.logo;   // the list's own tiles (real posters have Label / Size)
-                    case 'move': case 'weeks': case 'plays': return !real;   // no list history on a real poster
+                    case 'moveeq': return !!state.move;
+                    case 'logolabel': case 'logosize': return !!state.logo;
                     default: return true;
                 }
             }
@@ -6695,28 +6745,26 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             }
             function render() {
                 var fonts = fontTilesHtml(info.Fonts, state.font, defFont());
-                var SHAPES = [['circle', 'Circle'], ['roundsq', 'Rounded square'], ['pill', 'Pill #1'], ['ribbon', 'Ribbon'], ['banner', 'Flag'], ['diag', 'Diagonal'], ['netflix', 'TOP 10 square'], ['numonly', 'Number only'], ['bigoutline', 'Big numeral'], ['hidden', 'None (extras only)']];
-                var shapes = '<div class="artc-shapes" data-field="shape">' + SHAPES.map(function (o) {
-                    var img = info.ShapeSamples && info.ShapeSamples[o[0]];
+                // Each tile is the preview's own drawing (rank 7, every current setting) with only the
+                // shape changed: from the cache when known, else the tile's last picture until the new one comes.
+                var shapes = '<div class="artc-shapes' + (variant === 'thumb' ? ' artc-shapes-land' : '') + '" data-field="shape">' + SHAPES.map(function (o) {
+                    var key = tileKey(o[0]), img = tileCache[key] || lastTile[o[0]];
                     return '<button type="button" class="artc-shape' + (state.shape === o[0] ? ' artc-on' : '') + '" data-value="' + o[0] + '" title="' + escapeHtml(o[1]) + '">' +
-                        (img ? '<img src="' + img + '" alt="" />' : '<span class="artc-shape-noimg"></span>') + '<span class="artc-shape-name">' + escapeHtml(o[1]) + '</span></button>';
+                        '<img data-key="' + escapeHtml(key) + '"' + (img ? ' src="' + img + '"' : '') + ' alt="" />' + '<span class="artc-shape-name">' + escapeHtml(o[1]) + '</span></button>';
                 }).join('') + '</div>';
                 // Mini poster with a dot at each place the number can go.
-                var POS = [['tl', 'Top left'], ['tr', 'Top right'], ['bl', 'Bottom left'], ['bc', 'Bottom centre'], ['br', 'Bottom right']];
+                var POS = POS_SPOTS;
                 // Flag and diagonal sit on an edge: no bottom-centre spot.
                 if (state.shape === 'banner' || state.shape === 'diag') POS = POS.filter(function (p) { return p[0] !== 'bc'; });
-                var posOn = POS.some(function (p) { return p[0] === state.pos; }) ? state.pos : 'bl';   // bc draws as bottom left there
-                var posName = POS.filter(function (p) { return p[0] === posOn; })[0][1];
-                var posPicker = '<div class="artc-posrow"><div class="artc-posposter" data-field="pos">' + POS.map(function (p) {
-                    return '<button type="button" class="artc-posdot artc-pos-' + p[0] + (posOn === p[0] ? ' artc-on' : '') + '" data-value="' + p[0] + '" title="' + p[1] + '" aria-label="' + p[1] + '"><span></span></button>';
-                }).join('') + '</div><span class="artc-posname">' + escapeHtml(posName) + '</span></div>';
+                // bc draws as bottom left there
+                var posPicker = posPickerHtml(POS, POS.some(function (p) { return p[0] === state.pos; }) ? state.pos : 'bl');
                 var badgeCols = BADGE_PRESETS.map(function (p) { return [p.val, p.label, p.bg]; });
                 var shapeNote = ['ribbon', 'diag', 'banner'].indexOf(state.shape) >= 0 ? 'This shape uses the left or right edge (top or bottom for flag/diagonal).' : state.shape === 'netflix' ? 'Red unless you pick a hex colour.' : '';
                 body.innerHTML =
                     '<div class="artc-wrap">' +
                       '<div class="artc-previewcol">' +
                         '<div class="artc-preview ' + previewBox + '"><img class="artc-img" alt="" /><div class="artc-busy">Drawing…</div></div>' +
-                        '<div class="fieldDescription" style="margin-top:6px;">' + (real ? 'Drawn with a stand-in poster at rank 7, as the real posters get it. Reset = the TOP 10 square (Label and Size).' : 'Drawn with a stand-in poster at rank 7 (' + (variant === 'thumb' ? 'Thumb, landscape' : 'Primary') + ', from the list\'s Image Type), so medal colours and the #1 special do not show here. Movement, weeks and plays show sample values.') + '</div>' +
+                        '<div class="fieldDescription" style="margin-top:6px;">' + ('Drawn with a stand-in poster at rank 7 (' + (variant === 'thumb' ? 'Thumb, landscape' : 'Primary') + ', from the list\'s Image Type), so medal colours and the #1 special do not show here. Movement, weeks and plays show sample values.') + '</div>' +
                       '</div>' +
                       '<div class="artc-fieldscol">' +
                         section('Number',
@@ -6753,14 +6801,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             }
             function set(f, v) {
                 if (f === 'num') { if (state.numcolour === badgeNumDefault(kind, state.num)) state.numcolour = badgeNumDefault(kind, v); }
-                // Switching to / from Big numeral moves untouched number fields to that shape's look.
-                if (f === 'shape' && !tile && (v === 'bigoutline') !== (state.shape === 'bigoutline')) {
-                    var toBig = v === 'bigoutline';
-                    var from = toBig ? normalLook() : BIG_LOOK, to = toBig ? BIG_LOOK : normalLook();
-                    BIG_KEYS.forEach(function (k) { if (state[k] === from[k]) state[k] = to[k]; });
-                    if (!toBig && state.numcolour === BIG_LOOK.numcolour) state.numcolour = badgeNumDefault(kind, state.num);
-                }
-                state[f] = v; render();
+                if (f === 'shape') state = stateWithShape(v); else state[f] = v;
+                render();
             }
             function normalLook() { return { font: def.font, num: def.num, numcolour: badgeNumDefault(kind, def.num), outcolour: def.outcolour }; }
             function wire() {
@@ -6801,7 +6843,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     fetch(window.ApiClient.getUrl('HomeScreenCompanion/BadgeCustomPreview'), {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
-                        body: JSON.stringify({ BadgeStyle: previewStyle(), Options: real ? realOptions() : toOptions(), Variant: variant, RealPoster: real ? realQuick() : '' })
+                        body: JSON.stringify({ BadgeStyle: previewStyle(), Options: toOptions(), Variant: variant })
                     }).then(function (r) { return r.json(); }).then(function (res) {
                         if (mine !== seq) return;   // a newer drawing is on its way
                         var img = body.querySelector('.artc-img'), b = body.querySelector('.artc-busy');
@@ -6811,24 +6853,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         if (mine !== seq) return;
                         var b = body.querySelector('.artc-busy'); if (b) b.textContent = 'Preview failed: ' + e.message;
                     });
+                    refreshTiles();
                 }, 300);
             }
 
             overlay._artcReset = function () { state = Object.assign({}, def); state.colour = 'neutral'; render(); };
             overlay._artcOk = function () {
-                if (real) {
-                    var rv = realOptions(), rchanged = optsInput.value !== rv;
-                    optsInput.value = rv;
-                    overlay._artcCancel = null;
-                    refreshRealPosterBlock(picker);
-                    if (rchanged) {
-                        var rchk = picker.querySelector('.tl-rp-on');
-                        if (rchk) rchk.dispatchEvent(new Event('change', { bubbles: true }));
-                        setTimeout(checkFormState, 0);
-                    }
-                    overlay.classList.remove('modal-visible');
-                    return;
-                }
                 var val = toOptions();
                 var newPreset = !tile && state.colour && state.colour[0] !== '#' ? state.colour : presetInput.value;
                 var changed = optsInput.value !== val || presetInput.value !== newPreset || optsInput.dataset.optkind !== kind;
@@ -6836,9 +6866,6 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 optsInput.dataset.optkind = kind;
                 overlay._artcCancel = null;
                 presetInput.value = newPreset || 'neutral';
-                var sw = picker.querySelector('.tl-badge-swatch');
-                var p = BADGE_PRESETS.filter(function (x) { return x.val === presetInput.value; })[0];
-                if (sw) sw.style.background = state.colour && state.colour[0] === '#' ? state.colour : (p ? p.bg : sw.style.background);
                 var note = picker.querySelector('.tl-badge-custom-note');
                 if (note) note.style.display = val ? '' : 'none';
                 refreshBadgeTileIcons(picker, container);
@@ -8129,6 +8156,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         if (config.CollectionName) config.CollectionName = config.CollectionName + ' (copy)';
         if (config.PlaylistName) config.PlaylistName = config.PlaylistName + ' (copy)';
         config.PlaylistMappings = [];
+        config.CollectionImported = false;   // a copy makes its own collection
         return config;
     }
 
@@ -8389,6 +8417,142 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 showSourceResult(modal, 'Source added: ' + String(config.Name || config.Tag).replace(/&/g, '&amp;').replace(/</g, '&lt;'),
                     'It is not saved yet – check the new card at the top and click <strong>Save</strong>.', result.Notices || []);
             }
+        });
+    }
+
+    // Import collection: existing Emby collections (made by another plugin or by hand) become Manual
+    // List sources that take the collection over – the same collection item (HSC finds it by
+    // name), its titles, description and sort title, and its images kept (Keep current image).
+    // The cards are added unsaved at the top, like Paste source; nothing changes until Save and
+    // the next sync. HSC never deletes an imported collection (TagConfig.CollectionImported). Collections a source already makes (saved, or a card on this page) and
+    // names shared by two collections cannot be ticked.
+    function showImportCollectionsModal(view) {
+        function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+        var modal = buildBackupModalShell();
+        modal.renderBox('<h3 style="' + _backupTitleStyle + '">Import collection</h3>' +
+            '<p style="' + _backupHintStyle + '">Loading collections <span class="tc-dot-loader"><span></span><span></span><span></span></span></p>');
+
+        // Collections made by a card on this page (saved or not): name → card name.
+        var onPage = {};
+        view.querySelectorAll('#tagListContainer .tag-row').forEach(function (r) {
+            if (!(r.querySelector('.chkEnableCollection') || {}).checked) return;
+            var label = ((r.querySelector('.txtEntryLabel') || {}).value || '').trim();
+            var tag = ((r.querySelector('.txtTagName') || {}).value || '').trim() || label;
+            var cn = ((r.querySelector('.txtCollectionName') || {}).value || '').trim() || tag;
+            if (cn) onPage[cn.toLowerCase()] = label || tag;
+        });
+
+        window.ApiClient.getJSON(window.ApiClient.getUrl('HomeScreenCompanion/Collections/ImportList')).then(function (res) {
+            var list = (res && res.Collections) || [];
+            list.forEach(function (c) {
+                c.reason = c.ManagedBy ? 'Made by the source “' + c.ManagedBy + '”'
+                    : onPage[(c.Name || '').trim().toLowerCase()] ? 'Made by the card “' + onPage[(c.Name || '').trim().toLowerCase()] + '” on this page'
+                    : c.DuplicateName ? 'Another collection has the same name – rename one in Emby first'
+                    : '';
+            });
+            var rowsHtml = list.map(function (c, i) {
+                var off = !!c.reason;
+                return '<label class="imp-coll-row" data-name="' + esc((c.Name || '').toLowerCase()) + '" style="display:flex;align-items:center;gap:10px;padding:7px 4px;border-bottom:1px solid var(--line-color,rgba(255,255,255,0.08));cursor:' + (off ? 'default' : 'pointer') + ';' + (off ? 'opacity:0.45;' : '') + '">' +
+                    '<input type="checkbox" class="chkImpColl" data-idx="' + i + '"' + (off ? ' disabled' : '') + ' />' +
+                    '<span style="flex:1;min-width:0;">' +
+                        '<span style="display:block;font-size:0.93em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + esc(c.Name) + '</span>' +
+                        (off ? '<span style="display:block;font-size:0.78em;opacity:0.8;">' + esc(c.reason) + '</span>' : '') +
+                    '</span>' +
+                    '<span style="font-size:0.78em;opacity:0.6;white-space:nowrap;">' + c.ItemCount + ' item' + (c.ItemCount === 1 ? '' : 's') + '</span>' +
+                    '</label>';
+            }).join('');
+            modal.renderBox(
+                '<h3 style="' + _backupTitleStyle + '">Import collection</h3>' +
+                '<p style="' + _backupHintStyle + '">Tick the collections HSC should take over. Each becomes a <strong>Manual List</strong> source that keeps the <strong>same collection</strong> (links, home rows and favourites keep working) with its name, sort title, description and current titles. Its poster and background are set to <strong>Keep current image</strong>. The new cards are added at the top, not saved yet – check them and click <strong>Save</strong>; HSC manages them from the next sync. Nothing is deleted – not now, and not later if you delete or switch off the source: an imported collection stays in Emby.</p>' +
+                (list.length > 8 ? '<input type="search" class="txtImpCollSearch" placeholder="Search collections…" autocomplete="off" style="width:100%;box-sizing:border-box;background:transparent;color:inherit;border:1px solid var(--line-color,rgba(255,255,255,0.2));border-radius:4px;padding:8px;margin-bottom:8px;font-size:0.9em;" />' : '') +
+                '<div class="imp-coll-list" style="max-height:45vh;overflow-y:auto;border:1px solid var(--line-color,rgba(255,255,255,0.12));border-radius:4px;padding:0 8px;margin-bottom:10px;">' +
+                    (rowsHtml || '<div style="padding:10px 4px;opacity:0.6;font-size:0.9em;">There are no collections in the library.</div>') +
+                    '<div class="imp-coll-none" style="display:none;padding:10px 4px;opacity:0.6;font-size:0.9em;">No collection matches.</div>' +
+                '</div>' +
+                '<div class="imp-coll-warn" style="display:none;border:1px solid rgba(224,160,48,0.5);background:rgba(224,160,48,0.08);border-radius:6px;padding:10px 12px;margin-bottom:10px;font-size:0.88em;line-height:1.45;"></div>' +
+                '<div class="backup-error" style="color:#cc3333;font-size:0.85em;min-height:1.2em;margin-bottom:6px;"></div>' +
+                '<div style="display:flex;gap:10px;justify-content:flex-end;align-items:center;">' +
+                '<span class="imp-coll-count" style="margin-right:auto;font-size:0.85em;opacity:0.7;"></span>' +
+                '<button type="button" class="btnImpCancel" style="' + _backupBtnSecondary + '">Cancel</button>' +
+                '<button type="button" class="btnImpApply" style="' + _backupBtnPrimary + '"><i class="md-icon" style="font-size:1em;vertical-align:middle;margin-right:6px;">library_add</i>Import</button>' +
+                '</div>'
+            );
+            var applyBtn = modal.querySelector('.btnImpApply');
+            function picked() {
+                return Array.from(modal.querySelectorAll('.chkImpColl:checked')).map(function (c) { return list[parseInt(c.dataset.idx, 10)]; });
+            }
+            function refresh() {
+                var sel = picked();
+                modal.querySelector('.imp-coll-count').textContent = sel.length ? sel.length + ' selected' : '';
+                applyBtn.disabled = sel.length === 0;
+                applyBtn.style.opacity = sel.length ? '' : '0.5';
+                var warn = modal.querySelector('.imp-coll-warn');
+                // Generic: HSC cannot know whether another plugin or tool also updates a collection.
+                var html = sel.length ? 'If another plugin or tool also updates ' + (sel.length === 1 ? 'this collection' : 'these collections') + ', switch that off there first, otherwise the two keep changing ' + (sel.length === 1 ? 'it' : 'them') + '.' : '';
+                warn.innerHTML = html;
+                warn.style.display = html ? 'block' : 'none';
+            }
+            refresh();
+            modal.querySelectorAll('.chkImpColl').forEach(function (c) { c.addEventListener('change', refresh); });
+            var search = modal.querySelector('.txtImpCollSearch');
+            if (search) {
+                search.addEventListener('input', function () {
+                    var q = this.value.trim().toLowerCase(), shown = 0;
+                    modal.querySelectorAll('.imp-coll-row').forEach(function (r) {
+                        var on = !q || r.dataset.name.indexOf(q) >= 0;
+                        r.style.display = on ? 'flex' : 'none';
+                        if (on) shown++;
+                    });
+                    modal.querySelector('.imp-coll-none').style.display = shown ? 'none' : 'block';
+                });
+                search.addEventListener('keydown', function (e) { if (e.key === 'Enter') e.preventDefault(); });
+                search.focus();
+            }
+            modal.querySelector('.btnImpCancel').addEventListener('click', modal.close);
+            applyBtn.addEventListener('click', function () {
+                var sel = picked();
+                if (!sel.length) return;
+                var errEl = modal.querySelector('.backup-error');
+                errEl.textContent = '';
+                applyBtn.disabled = true;
+                applyBtn.innerHTML = 'Importing <span class="tc-dot-loader"><span></span><span></span><span></span></span>';
+                modal.dataset.busy = '1';
+                postSourceJson('HomeScreenCompanion/Collections/Import', { Ids: sel.map(function (c) { return c.Id; }) })
+                    .then(function (result) {
+                        if (!result || !result.Success) throw new Error((result && result.Message) || 'Unknown error');
+                        var groups = groupConfigTags(result.Tags || []);
+                        var configs = Object.keys(groups).map(function (k) { return groups[k]; });
+                        // Prepended one by one: last first, so the cards keep the list's order.
+                        configs.slice().reverse().forEach(function (config) {
+                            config.HomeSectionTracked = [];
+                            config.PlaylistMappings = [];
+                            config.LastModified = new Date().toISOString();
+                            // A source with this name already exists (e.g. one that only tags): give the
+                            // card its own tag key so the two stay separate. The collection name is untouched.
+                            if (sourceNameTaken(view, config)) config.Tag = config.Tag + ' (collection)';
+                            renderTagGroup(config, view.querySelector('#tagListContainer'), true, undefined, true);
+                        });
+                        applyFilters(view);
+                        setTimeout(checkFormState, 0);
+                        delete modal.dataset.busy;
+                        var names = configs.map(function (c) { return esc(c.CollectionName || c.Name); }).join(', ');
+                        showSourceResult(modal,
+                            configs.length ? (configs.length === 1 ? 'Collection imported: ' : configs.length + ' collections imported: ') + names : 'Nothing was imported',
+                            configs.length ? 'Not saved yet – check the new card' + (configs.length === 1 ? '' : 's') + ' at the top and click <strong>Save</strong>. HSC manages ' + (configs.length === 1 ? 'it' : 'them') + ' from the next sync.' : '',
+                            result.Notices || []);
+                    })
+                    .catch(function (err) {
+                        delete modal.dataset.busy;
+                        applyBtn.disabled = false;
+                        applyBtn.innerHTML = '<i class="md-icon" style="font-size:1em;vertical-align:middle;margin-right:6px;">library_add</i>Import';
+                        errEl.textContent = 'Import failed: ' + (err.message || err);
+                    });
+            });
+        }).catch(function (err) {
+            modal.renderBox('<h3 style="' + _backupTitleStyle + '">Import collection</h3>' +
+                '<p style="color:#cc3333;font-size:0.9em;">The collections could not be loaded: ' + esc(err && (err.message || err.statusText) || err) + '</p>' +
+                '<div style="display:flex;justify-content:flex-end;"><button type="button" class="btnImpCancel" style="' + _backupBtnSecondary + '">Close</button></div>');
+            modal.querySelector('.btnImpCancel').addEventListener('click', modal.close);
         });
     }
 
@@ -9528,6 +9692,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
                 view.querySelector('#btnPasteSource').addEventListener('click', () => {
                     showPasteSourceModal(view);
+                });
+
+                view.querySelector('#btnImportCollection').addEventListener('click', () => {
+                    showImportCollectionsModal(view);
                 });
 
                 view.querySelector('#btnBackupConfig').addEventListener('click', function () {

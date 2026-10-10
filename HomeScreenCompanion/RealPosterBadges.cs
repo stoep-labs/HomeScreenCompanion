@@ -18,7 +18,9 @@ namespace HomeScreenCompanion
 {
     /// <summary>
     /// "Badge the real posters too" (per top list, HomeSectionSettings.RealPosterBadge = "label|size"
-    /// or "label|size|{options}", "" = off; options = the Customise look, see RealPosterLook): which real library items are in a top list with the option on, and at what rank.
+    /// or "label|size|{"pos":"tl"}", "" = off; pos tl | tr | bl | bc | br, none = top right; values
+    /// saved by 4.2.0.35/.36 with a whole Customise look
+    /// there still load: only their "pos" counts): which real library items are in a top list with the option on, and at what rank.
     /// Supports() of the image enhancer runs for every image Emby lists, so it only looks in this
     /// in-memory map; the map is rebuilt (debounced, on a background thread) after a config save,
     /// a sync / Run Group and at server start.
@@ -30,8 +32,8 @@ namespace HomeScreenCompanion
             public int Rank;
             public string Label = "top10";   // "top10" | "top10rank"
             public string Size = "m";        // "s" | "m" | "l"
-            public string Options = "";      // Customise look JSON ("" = the TOP 10 square)
-            public string CacheKey => "hsc-rpb1|" + Rank + "|" + Label + "|" + Size + (Options.Length == 0 ? "" : "|" + Options);
+            public string Corner = "tr";     // "tl" | "tr" | "bl" | "bc" | "br"
+            public string CacheKey => "hsc-rpb2|" + Rank + "|" + Label + "|" + Size + "|" + Corner;
         }
 
         private static volatile Dictionary<long, Entry> _map = new Dictionary<long, Entry>();
@@ -66,16 +68,18 @@ namespace HomeScreenCompanion
             }
         }
 
-        /// <summary>"label|size[|options]" from a list's settings, or null when the option is off.</summary>
-        internal static (string Label, string Size, string Options)? OptionOf(string? value)
+        /// <summary>"label|size[|{"pos":..}]" from a list's settings, or null when the option is off.</summary>
+        internal static (string Label, string Size, string Corner)? OptionOf(string? value)
         {
             if (string.IsNullOrWhiteSpace(value)) return null;
             var parts = value!.Split(new[] { '|' }, 3);
             var label = parts[0] == "top10rank" ? "top10rank" : "top10";
             var size = parts.Length > 1 && (parts[1] == "s" || parts[1] == "l") ? parts[1] : "m";
-            var options = parts.Length > 2 ? parts[2].Trim() : "";
-            if (options == "{}") options = "";
-            return (label, size, options);
+            var options = parts.Length > 2 ? parts[2] : "";
+            // No position = top right (the square's place since the start).
+            var m = Regex.Match(options, "\"pos\"\\s*:\\s*\"(tl|tr|bl|br|bc)\"", RegexOptions.IgnoreCase);
+            var corner = m.Success ? m.Groups[1].Value.ToLowerInvariant() : "tr";
+            return (label, size, corner);
         }
 
         private static void Rebuild()
@@ -83,14 +87,14 @@ namespace HomeScreenCompanion
             var lm = _libraryManager; var json = _json; var config = Plugin.Instance?.Configuration;
             if (lm == null || json == null || config == null) return;
 
-            var wanted = new List<(TopListHomeSection Tl, string Label, string Size, string Options)>();
+            var wanted = new List<(TopListHomeSection Tl, string Label, string Size, string Corner)>();
             foreach (var tl in config.TopLists ?? new List<TopListHomeSection>())
             {
                 Dictionary<string, string>? settings = null;
                 try { settings = json.DeserializeFromString<Dictionary<string, string>>(string.IsNullOrEmpty(tl.HomeSectionSettings) ? "{}" : tl.HomeSectionSettings); } catch { }
                 if (settings == null || !settings.TryGetValue("RealPosterBadge", out var v)) continue;
                 var opt = OptionOf(v);
-                if (opt != null) wanted.Add((tl, opt.Value.Label, opt.Value.Size, opt.Value.Options));
+                if (opt != null) wanted.Add((tl, opt.Value.Label, opt.Value.Size, opt.Value.Corner));
             }
 
             var map = new Dictionary<long, Entry>();
@@ -104,13 +108,13 @@ namespace HomeScreenCompanion
                 Dictionary<string, BaseItem>? byPath = null;
                 Dictionary<string, List<BaseItem>>? byKey = null;
 
-                void Add(BaseItem item, int rank, string label, string size, string options)
+                void Add(BaseItem item, int rank, string label, string size, string corner)
                 {
                     if (map.TryGetValue(item.InternalId, out var e) && e.Rank <= rank) return;
-                    map[item.InternalId] = new Entry { Rank = rank, Label = label, Size = size, Options = options };
+                    map[item.InternalId] = new Entry { Rank = rank, Label = label, Size = size, Corner = corner };
                 }
 
-                foreach (var (tl, label, size, options) in wanted)
+                foreach (var (tl, label, size, corner) in wanted)
                 {
                     if (ShowTopList.IsShowList(tl))
                     {
@@ -120,7 +124,7 @@ namespace HomeScreenCompanion
                             rank++;
                             if (!Guid.TryParse(e.SeriesId, out var g)) continue;
                             var series = lm.GetItemById(g);
-                            if (series != null) Add(series, rank, label, size, options);
+                            if (series != null) Add(series, rank, label, size, corner);
                         }
                         continue;
                     }
@@ -158,8 +162,8 @@ namespace HomeScreenCompanion
                             if (!byPath!.TryGetValue(File.ReadAllText(strm).Trim(), out var movie)) continue;
                             var key = KeyOf(movie);
                             if (key != null && byKey!.TryGetValue(key, out var versions))
-                                foreach (var v in versions) Add(v, rank, label, size, options);
-                            else Add(movie, rank, label, size, options);
+                                foreach (var v in versions) Add(v, rank, label, size, corner);
+                            else Add(movie, rank, label, size, corner);
                         }
                         catch { }
                     }
@@ -190,7 +194,7 @@ namespace HomeScreenCompanion
     /// <summary>
     /// Draws the TOP 10 badge on the real poster as Emby serves it. The image file is never
     /// touched: Emby writes the result to its own enhanced-image cache, keyed by the image tag,
-    /// which includes GetConfigurationCacheKey (rank + options) while Supports() is true.
+    /// which includes GetConfigurationCacheKey (rank, label, size, corner) while Supports() is true.
     /// </summary>
     public class RealPosterBadgeEnhancer : IImageEnhancer
     {
@@ -222,8 +226,7 @@ namespace HomeScreenCompanion
             }
             return Task.Run(() =>
             {
-                if (e.Options.Length == 0) BadgeRenderer.RealPosterBadge(inputFile, outputFile, e.Rank, e.Label == "top10rank", e.Size);
-                else BadgeRenderer.RealPosterCustom(inputFile, outputFile, e.Rank, e.Options);
+                BadgeRenderer.RealPosterBadge(inputFile, outputFile, e.Rank, e.Label == "top10rank", e.Size, e.Corner);
             });
         }
     }

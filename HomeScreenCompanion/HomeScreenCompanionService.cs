@@ -156,7 +156,7 @@ namespace HomeScreenCompanion
         public string Note { get; set; } = "";   // e.g. "16 posters fit best on 4 rows." (Rows is at most when Posters is set)
     }
 
-    // Top-list badge Customise popup: the number fonts, and the live preview (one card, rank #1
+    // Top-list badge Customise popup: the number fonts, and the live preview (one card, rank 7
     // drawn by the real renderer on a stand-in poster). JPEG data: URL.
     [Route("/HomeScreenCompanion/BadgeCustomiseInfo", "GET")]
     [Authenticated(Roles = "Admin")]
@@ -165,7 +165,6 @@ namespace HomeScreenCompanion
     public class BadgeCustomiseInfoResponse
     {
         public List<ArtFontInfo> Fonts { get; set; } = new List<ArtFontInfo>();
-        public Dictionary<string, string> ShapeSamples { get; set; } = new Dictionary<string, string>();   // shape id -> JPEG data: URL
     }
 
     [Route("/HomeScreenCompanion/BadgeCustomPreview", "POST")]
@@ -176,7 +175,25 @@ namespace HomeScreenCompanion
         public string Options { get; set; } = "";
         public string TagName { get; set; } = "";   // unused (kept so older pages still post)
         public string Variant { get; set; } = "";   // "thumb" = the landscape a Thumb row uses; "real" = a real poster's badge; else the Primary poster
-        public string RealPoster { get; set; } = "";   // Variant "real": the quick "label|size" (drawn when Options is empty)
+        public string RealPoster { get; set; } = "";   // Variant "real": the Real posters value "label|size[|{"pos":..}]"
+    }
+
+    // The badge popup's shape tiles: one small card per look, each drawn exactly like the preview
+    // (BadgeCustomPreview) with the popup's settings and only the shape changed. JPEG data: URLs, same order.
+    [Route("/HomeScreenCompanion/BadgeShapeTiles", "POST")]
+    [Authenticated(Roles = "Admin")]
+    public class BadgeShapeTilesRequest : IReturn<BadgeShapeTilesResponse>
+    {
+        public string BadgeStyle { get; set; } = "";
+        public string Variant { get; set; } = "";
+        public List<string> Options { get; set; } = new List<string>();   // one Options JSON per tile
+    }
+
+    public class BadgeShapeTilesResponse
+    {
+        public bool Success { get; set; }
+        public string Message { get; set; } = "";
+        public List<string> Images { get; set; } = new List<string>();
     }
 
     // The collection art a source would get, from its unsaved settings. Changes nothing.
@@ -266,6 +283,35 @@ namespace HomeScreenCompanion
     public class GetManagedCollectionsRequest : IReturn<GetManagedCollectionsResponse> { }
     public class ManagedCollectionInfo { public string Id { get; set; } = ""; public string Name { get; set; } = ""; public int ItemCount { get; set; } }
     public class GetManagedCollectionsResponse { public List<ManagedCollectionInfo> Collections { get; set; } = new List<ManagedCollectionInfo>(); }
+
+    // ── Import existing collections (Sources tab) ──
+    // Every Emby collection, with what stops it from being taken over (HSC already makes it, or
+    // another collection has the same name: HSC finds its collection by name).
+    [Route("/HomeScreenCompanion/Collections/ImportList", "GET")]
+    [Authenticated(Roles = "Admin")]
+    public class GetImportCollectionsRequest : IReturn<GetImportCollectionsResponse> { }
+    public class ImportCollectionInfo
+    {
+        public string Id { get; set; } = "";          // InternalId, as the web API shows ids
+        public string Name { get; set; } = "";
+        public int ItemCount { get; set; }
+        public string ManagedBy { get; set; } = "";   // the HSC source that makes it; "" = none
+        public bool DuplicateName { get; set; }
+    }
+    public class GetImportCollectionsResponse
+    {
+        public List<ImportCollectionInfo> Collections { get; set; } = new List<ImportCollectionInfo>();
+    }
+
+    // One unsaved Manual List source per collection, taking the collection over: same name (so
+    // the sync finds this collection and never makes a new one), its description and current
+    // titles, sort title kept, images kept ("Keep current image"). Nothing is saved or changed here.
+    [Route("/HomeScreenCompanion/Collections/Import", "POST")]
+    [Authenticated(Roles = "Admin")]
+    public class ImportCollectionsRequest : IReturn<ImportSourceResponse>
+    {
+        public List<string> Ids { get; set; } = new List<string>();
+    }
 
     [Route("/HomeScreenCompanion/Manage/DeleteTag", "POST")]
     [Authenticated(Roles = "Admin")]
@@ -1056,19 +1102,6 @@ public class HomeScreenCompanionService : IService
                 try { sample = BadgeFonts.Sample(f.Id); } catch (Exception ex) { _logger.Warn($"Badge font sample '{f.Id}' failed: {ex.Message}"); }
                 res.Fonts.Add(new ArtFontInfo { Id = f.Id, Name = f.Name, Group = BadgeFonts.Group(f.Id), Sample = sample });
             }
-            try
-            {
-                var dir = Path.Combine(Plugin.Instance!.DataFolderPath, "collection_art", "_samples");
-                Directory.CreateDirectory(dir);
-                var standIn = Path.Combine(dir, "stand-in-0.jpg");
-                if (!File.Exists(standIn)) CollectionArtRenderer.DrawStandInPoster(0, standIn);
-                foreach (var shape in BadgeOptions.Shapes)
-                {
-                    try { res.ShapeSamples[shape] = BadgeRenderer.ShapeSample(shape, standIn, dir); }
-                    catch (Exception ex) { _logger.Warn($"Badge shape sample '{shape}' failed: {ex.Message}"); }
-                }
-            }
-            catch (Exception ex) { _logger.Warn($"Badge shape samples failed: {ex.Message}"); }
             return res;
         }
 
@@ -1079,11 +1112,11 @@ public class HomeScreenCompanionService : IService
                 // A stand-in poster only (like the art Customise preview): no library posters, so it is quick.
                 var dir = Path.Combine(Plugin.Instance!.DataFolderPath, "collection_art", "_samples");
                 Directory.CreateDirectory(dir);
-                var standIn = Path.Combine(dir, "stand-in-0.jpg");
-                if (!File.Exists(standIn)) CollectionArtRenderer.DrawStandInPoster(0, standIn);
+                var standIn = Path.Combine(dir, "stand-in-badge.jpg");
+                if (!File.Exists(standIn)) CollectionArtRenderer.DrawBadgeStandInPoster(standIn);
                 var variant = (request.Variant ?? "").Trim().ToLowerInvariant();
                 var image = variant == "real"
-                    ? BadgeRenderer.RealPosterPreview(RealPosterBadges.OptionOf(string.IsNullOrWhiteSpace(request.RealPoster) ? "top10|m" : request.RealPoster + "|" + (request.Options ?? "")), standIn, dir)
+                    ? BadgeRenderer.RealPosterPreview(RealPosterBadges.OptionOf(string.IsNullOrWhiteSpace(request.RealPoster) ? "top10|m" : request.RealPoster), standIn, dir)
                     : BadgeRenderer.Preview(BadgeLook.Combine(request.BadgeStyle, request.Options), standIn, dir, variant);
                 return new ArtCustomPreviewResponse { Success = true, Image = image };
             }
@@ -1091,6 +1124,47 @@ public class HomeScreenCompanionService : IService
             {
                 _logger.Warn($"Badge preview failed: {ex.Message}");
                 return new ArtCustomPreviewResponse { Message = "Preview failed: " + ex.Message };
+            }
+        }
+
+        // Shape tiles, by look (style|variant|options): the popup asks again after every change, mostly for the same looks.
+        private static readonly Dictionary<string, string> ShapeTileCache = new Dictionary<string, string>();
+        private const int ShapeTileWidth = 180;
+
+        public object Post(BadgeShapeTilesRequest request)
+        {
+            try
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var dir = Path.Combine(Plugin.Instance!.DataFolderPath, "collection_art", "_samples");
+                Directory.CreateDirectory(dir);
+                var standIn = Path.Combine(dir, "stand-in-badge.jpg");
+                if (!File.Exists(standIn)) CollectionArtRenderer.DrawBadgeStandInPoster(standIn);
+                var variant = (request.Variant ?? "").Trim().ToLowerInvariant();
+                var looks = (request.Options ?? new List<string>()).Select(o => BadgeLook.Combine(request.BadgeStyle, o)).ToList();
+                var images = new string[looks.Count];
+                int drawn = 0;
+                // The same drawing as the preview (BadgeRenderer.Preview), only smaller; new looks drawn side by side.
+                Parallel.For(0, looks.Count, i =>
+                {
+                    var key = variant + "|" + looks[i];
+                    string? img;
+                    lock (ShapeTileCache) ShapeTileCache.TryGetValue(key, out img);
+                    if (img == null)
+                    {
+                        img = BadgeRenderer.Preview(looks[i], standIn, dir, variant, ShapeTileWidth);
+                        Interlocked.Increment(ref drawn);
+                        lock (ShapeTileCache) { if (ShapeTileCache.Count > 400) ShapeTileCache.Clear(); ShapeTileCache[key] = img; }
+                    }
+                    images[i] = img;
+                });
+                _logger.Info($"Badge shape tiles: {looks.Count} tile(s), {drawn} drawn, {sw.ElapsedMilliseconds} ms");
+                return new BadgeShapeTilesResponse { Success = true, Images = images.ToList() };
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn($"Badge shape tiles failed: {ex.Message}");
+                return new BadgeShapeTilesResponse { Message = "Shape tiles failed: " + ex.Message };
             }
         }
 
@@ -1768,6 +1842,112 @@ public class HomeScreenCompanionService : IService
             }
             result.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
             return new GetManagedCollectionsResponse { Collections = result };
+        }
+
+        // Collection names the saved sources make (collection on), name → source name.
+        private static Dictionary<string, string> HscCollectionNames()
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var t in Plugin.Instance?.Configuration?.Tags ?? new List<TagConfig>())
+            {
+                if (t == null || !t.EnableCollection) continue;
+                var cName = string.IsNullOrWhiteSpace(t.CollectionName) ? (t.Tag ?? "").Trim() : t.CollectionName.Trim();
+                if (cName.Length > 0 && !result.ContainsKey(cName))
+                    result[cName] = string.IsNullOrWhiteSpace(t.Name) ? (t.Tag ?? "") : t.Name;
+            }
+            return result;
+        }
+
+        public object Get(GetImportCollectionsRequest request)
+        {
+            var collections = _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "BoxSet" }, Recursive = true });
+            var hsc = HscCollectionNames();
+            var nameCounts = collections.GroupBy(c => (c.Name ?? "").Trim(), StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+            var response = new GetImportCollectionsResponse();
+            foreach (var c in collections)
+            {
+                var name = (c.Name ?? "").Trim();
+                response.Collections.Add(new ImportCollectionInfo
+                {
+                    Id = c.InternalId.ToString(),
+                    Name = c.Name ?? "",
+                    ItemCount = _libraryManager.GetItemList(new InternalItemsQuery { CollectionIds = new[] { c.InternalId }, IsVirtualItem = false }).Count(),
+                    ManagedBy = hsc.TryGetValue(name, out var src) ? src : "",
+                    DuplicateName = nameCounts.TryGetValue(name, out var n) && n > 1
+                });
+            }
+            response.Collections.Sort((a, b) => string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase));
+            return response;
+        }
+
+        public object Post(ImportCollectionsRequest request)
+        {
+            var response = new ImportSourceResponse();
+            try
+            {
+                var hsc = HscCollectionNames();
+                var all = _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "BoxSet" }, Recursive = true });
+                foreach (var id in (request.Ids ?? new List<string>()).Distinct())
+                {
+                    if (!long.TryParse(id, out var internalId)) continue;
+                    var coll = all.FirstOrDefault(c => c.InternalId == internalId);
+                    if (coll == null) { response.Notices.Add($"A collection (id {id}) is no longer in the library and was left out."); continue; }
+                    var name = (coll.Name ?? "").Trim();
+                    if (name.Length == 0) { response.Notices.Add($"The collection with id {id} has no name and was left out."); continue; }
+                    if (hsc.TryGetValue(name, out var src)) { response.Notices.Add($"\"{name}\" was left out: the source \"{src}\" already makes it."); continue; }
+                    if (all.Count(c => string.Equals((c.Name ?? "").Trim(), name, StringComparison.OrdinalIgnoreCase)) > 1)
+                    { response.Notices.Add($"\"{name}\" was left out: another collection has the same name. Rename one of them in Emby first."); continue; }
+
+                    // The current titles, in the collection's own order (sort title). A Manual List
+                    // holds movies and shows (and music); a film's other versions stay out, as on
+                    // every HSC collection. Top-list copies are added by the top-list mirror, not here.
+                    var members = _libraryManager.GetItemList(new InternalItemsQuery { CollectionIds = new[] { coll.InternalId }, Recursive = true, IsVirtualItem = false })
+                        .Where(i => !TopListCollectionMirror.IsTopListItem(i))
+                        .OrderBy(i => i.SortName ?? i.Name ?? "", StringComparer.OrdinalIgnoreCase).ThenBy(i => i.InternalId)
+                        .ToList();
+                    var usable = members.Where(HomeScreenCompanionTask.IsTaggableTopLevelItem).ToList();
+                    var extra = HomeScreenCompanionTask.ExtraVersionIds(usable);
+                    var kept = usable.Where(i => !extra.Contains(i.InternalId)).ToList();
+                    var other = members.Where(i => !HomeScreenCompanionTask.IsTaggableTopLevelItem(i)).ToList();
+                    string Names(IEnumerable<BaseItem> items) =>
+                        string.Join(", ", items.Take(5).Select(i => i.Name + (i.ProductionYear.HasValue ? $" ({i.ProductionYear})" : ""))) + (items.Count() > 5 ? $" and {items.Count() - 5} more" : "");
+                    if (extra.Count > 0)
+                        response.Notices.Add($"\"{name}\": {extra.Count} extra version(s) of a film leave the collection on the next sync (HSC keeps one copy per film): {Names(usable.Where(i => extra.Contains(i.InternalId)))}.");
+                    if (other.Count > 0)
+                        response.Notices.Add($"\"{name}\": {other.Count} item(s) that are not a movie or show (e.g. episodes or seasons) cannot be in a Manual List and leave the collection on the next sync: {Names(other)}.");
+
+                    var sortName = coll.SortName ?? "";
+                    response.Tags.Add(new TagConfig
+                    {
+                        Active = true,
+                        Name = name,
+                        Tag = name,
+                        SourceType = "Manual",
+                        ManualItemIds = kept.Select(i => i.InternalId.ToString()).ToList(),
+                        Limit = 0,
+                        EnableTag = false,
+                        EnableCollection = true,
+                        CollectionName = name,
+                        CollectionDescription = coll.Overview ?? "",
+                        CollectionPosterStyle = CollectionArtRenderer.KeepStyle,
+                        CollectionBackgroundStyle = CollectionArtRenderer.KeepStyle,
+                        // Only HSC's own "!!! " prefix means Show at the top; any other sort title is left alone.
+                        CollectionSortToTop = sortName.StartsWith("!!! ", StringComparison.Ordinal),
+                        CollectionImported = true,
+                        LastModified = DateTime.UtcNow
+                    });
+                }
+                response.Success = true;
+                if (response.Tags.Count == 0 && response.Notices.Count == 0) response.Message = "No collection was chosen.";
+            }
+            catch (Exception ex)
+            {
+                _logger.ErrorException("Import collections failed", ex);
+                response.Success = false;
+                response.Message = ex.Message;
+            }
+            return response;
         }
 
         public object Post(DeleteManagedTagRequest request)
@@ -3816,6 +3996,8 @@ public class HomeScreenCompanionService : IService
             t.PlaylistMappings   = new List<PlaylistMapping>();
             t.AiLastRunDate      = DateTime.MinValue;
             t.LastModified       = DateTime.MinValue;
+            // On another server the collection is HSC's own, not one it took over.
+            t.CollectionImported = false;
         }
 
         // The user id inside a smart-filter rule (IsPlayed/LastPlayed/PlayCount:<userId>:<op>:<value>,

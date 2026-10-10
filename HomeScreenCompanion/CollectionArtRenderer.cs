@@ -324,6 +324,11 @@ namespace HomeScreenCompanion
 
         public static bool IsStyle(string? style) => Styles.Contains((style ?? "").Trim().ToLowerInvariant());
 
+        /// <summary>"Keep current image": not a style. The item's own image is left exactly as it
+        /// is (nothing generated, uploaded or removed). Default for imported collections.</summary>
+        public const string KeepStyle = "keep";
+        public static bool IsKeep(string? style) => string.Equals((style ?? "").Trim(), KeepStyle, StringComparison.OrdinalIgnoreCase);
+
         /// <summary>Each title once (by IMDb id, else name + year), in order: a library can hold
         /// the same film twice (versions, copies), and the art must never show a poster twice.</summary>
         public static List<MediaBrowser.Controller.Entities.BaseItem> DistinctTitles(IEnumerable<MediaBrowser.Controller.Entities.BaseItem> items)
@@ -449,6 +454,24 @@ namespace HomeScreenCompanion
             if (st == Ranked) d.Hints["darken"] = "Ranked has a plain dark background.";
             if (st == Wall) d.Hints["pos"] = "The centre spot keeps the gold title band; any other spot puts the title over the wall.";
             return d;
+        }
+
+        // The badge previews' stand-in poster: the grey/blue gradient of the Badge Style icons
+        // (#6b7a8f to #2c3440, top left to bottom right), with the same disc and "title" bar.
+        internal static void DrawBadgeStandInPoster(string path)
+        {
+            const int w = 300, h = 450;
+            using var surface = SKSurface.Create(new SKImageInfo(w, h, SKColorType.Rgba8888, SKAlphaType.Premul));
+            var c = surface.Canvas;
+            using (var g = new SKPaint
+            {
+                Shader = SKShader.CreateLinearGradient(new SKPoint(0, 0), new SKPoint(w, h),
+                    new[] { new SKColor(0x6B, 0x7A, 0x8F), new SKColor(0x2C, 0x34, 0x40) }, null, SKShaderTileMode.Clamp)
+            }) c.DrawRect(0, 0, w, h, g);
+            using (var disc = new SKPaint { Color = SKColors.White.WithAlpha(60), IsAntialias = true }) c.DrawCircle(w / 2f, h * 0.42f, w * 0.22f, disc);
+            using (var bar = new SKPaint { Color = SKColors.White.WithAlpha(200), IsAntialias = true })
+                c.DrawRoundRect(SKRect.Create(w * 0.18f, h * 0.78f, w * 0.64f, h * 0.06f), 6, 6, bar);
+            Save(surface, path);
         }
 
         // A plain poster-shaped gradient in one of twelve hues, with a lighter "title" bar.

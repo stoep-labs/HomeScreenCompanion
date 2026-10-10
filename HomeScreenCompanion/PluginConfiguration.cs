@@ -109,6 +109,9 @@ namespace HomeScreenCompanion
         public string CollectionBackgroundPath { get; set; } = "";
         // Puts the collection at the top of the Collections view (sort name "!!! <name>").
         public bool CollectionSortToTop { get; set; } = false;
+        // The collection existed before HSC (Import collection) and was taken over. It is never
+        // deleted when the source is removed, disabled or out of schedule: HSC just stops managing it.
+        public bool CollectionImported { get; set; } = false;
         public bool OnlyCollection { get; set; } = false;
 
         // Legacy fields — kept for backwards compat, never written by new code
