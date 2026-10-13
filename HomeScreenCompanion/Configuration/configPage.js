@@ -4723,6 +4723,106 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         if (stickToBottom || wasEmpty) container.scrollTop = container.scrollHeight;
     }
 
+    // Add to Sonarr / Radarr (as Collectify): title and id, root folder (the last one used is
+    // picked), quality profile (HD-1080p when there is one); Radarr also minimum availability and
+    // Monitored. The plugin sends the add, with a search for the title.
+    function openArrAddDialog(kind, title, sourceId, onAdded) {
+        function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+        var isTv = kind === 'sonarr';
+        var name = isTv ? 'Sonarr' : 'Radarr';
+        var fieldStyle = 'width:100%; box-sizing:border-box; padding:7px 9px; font-size:inherit; color:inherit; background:var(--plugin-input-bg,rgba(255,255,255,0.08)); border:1px solid var(--plugin-input-border,rgba(255,255,255,0.2)); border-radius:6px;';
+        function field(label, html) { return '<div style="margin-bottom:14px;"><label style="display:block; font-size:0.85em; opacity:0.75; margin-bottom:4px;">' + label + '</label>' + html + '</div>'; }
+
+        var overlay = document.createElement('div');
+        overlay.className = 'modal-backdrop';
+        overlay.style.zIndex = '100000';
+        overlay.innerHTML =
+            '<div class="modal-content" style="max-width:460px;">' +
+                '<div class="modal-header-bar">' +
+                    '<i class="md-icon modal-header-icon">' + (isTv ? 'tv' : 'movie') + '</i>' +
+                    '<h2 class="modal-header-title">' + (isTv ? 'Add Show to Sonarr' : 'Add Movie to Radarr') + '</h2>' +
+                    '<button type="button" class="modal-header-close arr-cancel" aria-label="Close" title="Close"><i class="md-icon">close</i></button>' +
+                '</div>' +
+                '<div class="modal-body-scroll" style="padding:22px 24px;">' +
+                    field('Title', '<input type="text" readonly class="arr-title" style="' + fieldStyle + ' opacity:0.8;" />') +
+                    field(isTv ? 'IMDb ID' : 'Source ID', '<input type="text" readonly class="arr-id" style="' + fieldStyle + ' opacity:0.8;" />') +
+                    field('Root Folder', '<select class="arr-root" style="' + fieldStyle + '"><option>Loading...</option></select>') +
+                    field('Quality Profile', '<select class="arr-quality" style="' + fieldStyle + '"><option>Loading...</option></select>') +
+                    (isTv ? '' :
+                        field('Minimum Availability', '<select class="arr-avail" style="' + fieldStyle + '">' +
+                            '<option value="announced">Announced</option><option value="inCinemas">In Cinemas</option>' +
+                            '<option value="released">Released</option><option value="preDB">PreDB</option></select>') +
+                        '<label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer;"><input type="checkbox" class="arr-monitored" checked /> Monitored</label>') +
+                    '<div style="display:flex; justify-content:flex-end; gap:12px; margin-top:20px; border-top:1px solid var(--line-color); padding-top:16px;">' +
+                        '<button type="button" class="hsc-mbtn hsc-btn-secondary arr-cancel">Cancel</button>' +
+                        '<button type="button" class="hsc-mbtn hsc-btn-primary arr-add" disabled>Add to ' + name + '</button>' +
+                    '</div>' +
+                '</div>' +
+            '</div>';
+        document.body.appendChild(overlay);
+        overlay.querySelector('.arr-title').value = title;
+        overlay.querySelector('.arr-id').value = sourceId;
+        requestAnimationFrame(function () { overlay.classList.add('modal-visible'); });
+
+        function close() {
+            overlay.classList.remove('modal-visible');
+            document.removeEventListener('keydown', onKey, true);
+            setTimeout(function () { overlay.remove(); }, 300);
+        }
+        function onKey(e) { if (e.key === 'Escape') { e.stopPropagation(); close(); } }
+        document.addEventListener('keydown', onKey, true);
+        overlay.addEventListener('click', function (e) {
+            if (e.target === overlay || e.target.closest('.arr-cancel')) close();
+        });
+
+        var addBtn = overlay.querySelector('.arr-add');
+        var hdr = { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() };
+
+        window.ApiClient.getJSON(window.ApiClient.getUrl('HomeScreenCompanion/Arr/Options', { Kind: kind })).then(function (res) {
+            if (!res.Success) { showToast(res.Message); close(); return; }
+            var rootSel = overlay.querySelector('.arr-root');
+            rootSel.innerHTML = (res.RootFolders || []).map(function (p) { return '<option value="' + esc(p) + '">' + esc(p) + '</option>'; }).join('');
+            if (res.LastRootFolderPath && (res.RootFolders || []).indexOf(res.LastRootFolderPath) !== -1) rootSel.value = res.LastRootFolderPath;
+            var qSel = overlay.querySelector('.arr-quality');
+            var hd = null;
+            qSel.innerHTML = (res.QualityProfiles || []).map(function (p) {
+                var n = (p.Name || '').toLowerCase();
+                if (n.indexOf('hd-1080p') !== -1 || n.indexOf('hd 1080p') !== -1) hd = String(p.Id);
+                return '<option value="' + p.Id + '">' + esc(p.Name) + '</option>';
+            }).join('');
+            if (hd) qSel.value = hd;
+            addBtn.disabled = false;
+        }).catch(function (err) { showToast('Failed to load ' + name + ' options: ' + (err && err.message || err)); close(); });
+
+        addBtn.addEventListener('click', function () {
+            addBtn.disabled = true;
+            addBtn.textContent = 'Working...';
+            var req = {
+                Kind: kind,
+                SourceId: sourceId,
+                Title: title,
+                QualityProfileId: parseInt(overlay.querySelector('.arr-quality').value, 10) || 0,
+                RootFolderPath: overlay.querySelector('.arr-root').value || ''
+            };
+            if (!isTv) {
+                req.MinimumAvailability = overlay.querySelector('.arr-avail').value;
+                req.Monitored = overlay.querySelector('.arr-monitored').checked;
+            }
+            fetch(window.ApiClient.getUrl('HomeScreenCompanion/Arr/Add'), { method: 'POST', headers: hdr, body: JSON.stringify(req) })
+                .then(function (r) { return r.json(); })
+                .then(function (res) {
+                    showToast(res.Message);
+                    if (res.Success) { close(); if (onAdded) onAdded(); return; }
+                    addBtn.disabled = false;
+                    addBtn.textContent = 'Add to ' + name;
+                }).catch(function (err) {
+                    showToast('Failed to add: ' + (err && err.message || err));
+                    addBtn.disabled = false;
+                    addBtn.textContent = 'Add to ' + name;
+                });
+        });
+    }
+
     // Popup for the "Test" buttons on list/AI sources: shows every item the source returned and
     // whether it exists in the library. Opens in a loading state; call .show(result) or .fail(msg).
     // The source Preview reuses it and draws its own list into .body.
@@ -4788,10 +4888,43 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         '<div class="stm-title" title="' + esc(item.Name) + '">' + esc(item.Name || '(untitled)') + '</div>' +
                         '<div class="stm-meta">' + meta.join(' · ') + '</div>' +
                     '</div>' +
+                    (!item.InLibrary && arr.status[idx] ? arrCellHtml(arr.status[idx], idx) :
                     '<div class="stm-status ' + (item.InLibrary ? 'in' : 'out') + '" title="' + (item.InLibrary ? 'In library' : 'Not in library') + '">' +
                         '<i class="md-icon">' + (item.InLibrary ? 'check' : 'close') + '</i>' +
-                    '</div>' +
+                    '</div>') +
                 '</div>';
+            }
+
+            // Sonarr / Radarr (as Collectify): a missing show or movie is either already in
+            // Sonarr / Radarr (check) or gets an Add button. Unknown type: a disabled "?".
+            var arr = { status: {}, sonarr: false, radarr: false };
+            function arrCellHtml(st, idx) {
+                var isTv = st.MediaType === 'tv', isMovie = st.MediaType === 'movie';
+                if ((isTv && !arr.sonarr) || (isMovie && !arr.radarr) || (!isTv && !isMovie && !arr.sonarr && !arr.radarr))
+                    return '<div class="stm-status out" title="Not in library"><i class="md-icon">close</i></div>';
+                if (!isTv && !isMovie)
+                    return '<button type="button" class="stm-arr" disabled title="Unknown Media Type"><i class="md-icon">help_outline</i></button>';
+                var name = isTv ? 'Sonarr' : 'Radarr';
+                if (isTv ? st.InSonarr : st.InRadarr)
+                    return '<button type="button" class="stm-arr in" disabled title="Already in ' + name + '"><i class="md-icon">check</i>' + name + '</button>';
+                return '<button type="button" class="stm-arr add" data-idx="' + idx + '" title="Add to ' + name + '"><i class="md-icon">add</i>' + name + '</button>';
+            }
+            function loadArrStatus() {
+                var wanted = [];
+                items.forEach(function (item, idx) {
+                    if (!item.InLibrary && (item.Imdb || item.Tmdb)) wanted.push({ idx: idx, Imdb: item.Imdb || '', Tmdb: item.Tmdb || '', MediaType: item.MediaType || '' });
+                });
+                if (!wanted.length) return;
+                fetch(window.ApiClient.getUrl('HomeScreenCompanion/Arr/Status'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
+                    body: JSON.stringify({ Items: wanted.map(function (w) { return { Imdb: w.Imdb, Tmdb: w.Tmdb, MediaType: w.MediaType }; }) })
+                }).then(function (r) { return r.json(); }).then(function (res) {
+                    arr.sonarr = !!res.SonarrConfigured; arr.radarr = !!res.RadarrConfigured;
+                    if (!arr.sonarr && !arr.radarr) return;
+                    (res.Items || []).forEach(function (st, k) { if (wanted[k]) arr.status[wanted[k].idx] = st; });
+                    if (body.querySelector('.stm-list')) renderList();
+                }).catch(function () { });
             }
 
             function renderList() {
@@ -4827,7 +4960,16 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 filter = chip.dataset.filter;
                 renderList();
             });
+            body.querySelector('.stm-list').addEventListener('click', function (e) {
+                var b = e.target.closest('.stm-arr.add');
+                if (!b) return;
+                var idx = parseInt(b.dataset.idx, 10);
+                var item = items[idx], st = arr.status[idx];
+                if (!item || !st) return;
+                openArrAddDialog(st.MediaType === 'tv' ? 'sonarr' : 'radarr', item.Name || '', st.Imdb || st.Tmdb || '', loadArrStatus);
+            });
             renderList();
+            loadArrStatus();
             requestAnimationFrame(function () {
                 requestAnimationFrame(function () { body.querySelector('.stm-bar-fill').style.width = pct + '%'; });
             });
@@ -6132,6 +6274,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             ClaudeModel: fieldOr('#txtClaudeModel', 'claude-haiku-4-5-20251001'),
             OllamaBaseUrl: fieldOr('#txtOllamaBaseUrl', 'http://localhost:11434'),
             OllamaModel: (view.querySelector('#txtOllamaModel') || {}).value || '',
+            SonarrUrl: ((view.querySelector('#txtSonarrUrl') || {}).value || '').trim(),
+            SonarrApiKey: ((view.querySelector('#txtSonarrApiKey') || {}).value || '').trim(),
+            RadarrUrl: ((view.querySelector('#txtRadarrUrl') || {}).value || '').trim(),
+            RadarrApiKey: ((view.querySelector('#txtRadarrApiKey') || {}).value || '').trim(),
             AiSystemPrompt: (view.querySelector('#txtAiSystemPrompt') || {}).value || '',
             ExtendedConsoleOutput: view.querySelector('#chkExtendedConsoleOutput').checked,
             LogMissingItems: view.querySelector('#chkLogMissingItems').checked,
@@ -12205,6 +12351,9 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     }
                 });
                 configObj.TopLists = currentConfig.TopLists || [];
+                // Set by the Sonarr / Radarr Add dialog, not on this page.
+                configObj.SonarrLastRootFolderPath = currentConfig.SonarrLastRootFolderPath || '';
+                configObj.RadarrLastRootFolderPath = currentConfig.RadarrLastRootFolderPath || '';
 
                 // Ensure all items-type home sections exclude top-list libraries automatically
                 return preFetchLibraryData().then(function(libData) {
@@ -12469,6 +12618,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 var clmElInit = view.querySelector('#txtClaudeModel'); if (clmElInit) clmElInit.value = config.ClaudeModel || 'claude-haiku-4-5-20251001';
                 var olElInit = view.querySelector('#txtOllamaBaseUrl'); if (olElInit) olElInit.value = config.OllamaBaseUrl || 'http://localhost:11434';
                 var omElInit = view.querySelector('#txtOllamaModel'); if (omElInit) omElInit.value = config.OllamaModel || '';
+                ['SonarrUrl', 'SonarrApiKey', 'RadarrUrl', 'RadarrApiKey'].forEach(function (k) {
+                    var el = view.querySelector('#txt' + k); if (el) el.value = config[k] || '';
+                });
+                view.querySelectorAll('.arr-test-result').forEach(function (el) { el.textContent = ''; });
                 var spElInit = view.querySelector('#txtAiSystemPrompt'); if (spElInit) spElInit.value = config.AiSystemPrompt || ''; updateSystemPromptResetBtn(view);
                 view.querySelector('#chkExtendedConsoleOutput').checked = config.ExtendedConsoleOutput || false;
                 view.querySelector('#chkLogMissingItems').checked = config.LogMissingItems || false;
@@ -12552,6 +12705,28 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 if (wasDirty) { writeLeaveState(null); hideDraftBar(); loadConfig(); }
                 showPageTab(target);
             });
+        });
+
+        // Sonarr / Radarr: Test Connection with the URL and key as typed (system/status).
+        view.addEventListener('click', function (e) {
+            var btn = e.target.closest('.btnTestArr');
+            if (!btn) return;
+            var kind = btn.dataset.kind, Name = kind === 'sonarr' ? 'Sonarr' : 'Radarr';
+            var out = view.querySelector('.arr-test-result[data-kind="' + kind + '"]');
+            btn.disabled = true;
+            out.style.color = '';
+            out.textContent = 'Testing connection...';
+            fetch(window.ApiClient.getUrl('HomeScreenCompanion/Arr/Test'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
+                body: JSON.stringify({ Kind: kind, Url: view.querySelector('#txt' + Name + 'Url').value, ApiKey: view.querySelector('#txt' + Name + 'ApiKey').value })
+            }).then(function (r) { return r.json(); }).then(function (res) {
+                out.textContent = res.Message;
+                out.style.color = res.Success ? 'var(--hsc-primary-text)' : 'var(--hsc-danger-text)';
+            }).catch(function (err) {
+                out.textContent = 'Connection failed: ' + err.message;
+                out.style.color = 'var(--hsc-danger-text)';
+            }).finally(function () { btn.disabled = false; });
         });
 
         view.addEventListener('change', function (e) {
