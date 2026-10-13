@@ -14,7 +14,7 @@ using System.Threading.Tasks;
 
 namespace HomeScreenCompanion
 {
-    public class TopListSyncTask : IScheduledTask
+    public class TopListSyncTask : IScheduledTask, IConfigurableScheduledTask
     {
         private readonly ILibraryManager _libraryManager;
         private readonly IUserViewManager _userViewManager;
@@ -43,6 +43,11 @@ namespace HomeScreenCompanion
         public string Name => "Top-list section sync";
         public string Description => "Run after manually creating a new library. Ensures each top-list home section only shows items from its own library, and that regular home sections never include top-list libraries.";
         public string Category => "Home Screen Companion";
+
+        // Not listed in Emby's Scheduled Tasks (part of the Tag & Collection Sync; also queued when a top-list is saved, and in the Run menu). It still runs on its triggers.
+        public bool IsHidden => true;
+        public bool IsEnabled => true;
+        public bool IsLogged => true;
 
         public IEnumerable<TaskTriggerInfo> GetDefaultTriggers() => Array.Empty<TaskTriggerInfo>();
 
@@ -399,7 +404,8 @@ namespace HomeScreenCompanion
                     }
                     catch { }
 
-                    tcSettings.TryGetValue("SectionType", out var tcSt);
+                    if (!tcSettings.TryGetValue("SectionType", out var tcSt) || string.IsNullOrEmpty(tcSt))
+                        tcSt = HomeScreenCompanionTask.DefaultSectionType(tc);
                     // Only items rows get the top-list exclusion (boxset and playlist rows show one item list).
                     if (tcSt == "boxset" || tcSt == "playlist") continue;
 
@@ -418,6 +424,7 @@ namespace HomeScreenCompanion
                     tcSettings["_queryExcludeViewIds"] = tcExcStr;
                     tcSettings["ExcludedFolders"] = tcExcStr;
                     tc.HomeSectionSettings = jsonSerializer.SerializeToString(tcSettings);
+                    HomeScreenCompanionTask.ApplyRowTitle(tcSettings, tc, jsonSerializer);
 
                     if (!string.IsNullOrEmpty(tc.Tag))
                     {
@@ -434,8 +441,6 @@ namespace HomeScreenCompanion
                         catch { }
                     }
 
-                    var tcSafeTag = new string((tc.Name ?? tc.Tag ?? "").Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray());
-                    var tcMarker = "hsc__" + tcSafeTag;
 
                     var realTracked = (tc.HomeSectionTracked ?? new List<HomeSectionTracking>())
                         .Where(t => !string.IsNullOrEmpty(t.SectionId) && !t.SectionId.StartsWith("hsc__"))

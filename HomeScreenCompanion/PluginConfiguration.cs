@@ -33,6 +33,9 @@ namespace HomeScreenCompanion
         public bool HideTopListLibraries { get; set; } = true;
         public bool DryRunMode { get; set; } = false;
         public bool PreserveTagsOnEmptyResult { get; set; } = true;
+        // Last Played / Popular rules and the AI's "recently watched": count only titles that were
+        // really played (Emby's activity log), not ones only marked as watched. See PlaybackHistory.
+        public bool IgnoreMarkedAsWatched { get; set; } = false;
         // Give top-list copies the same collection memberships as their original movie.
         public bool TopListMirrorCollections { get; set; } = false;
         // Settings > Features: show the Copy / Paste buttons and the Import collection button.
@@ -122,6 +125,14 @@ namespace HomeScreenCompanion
         public string CollectionBackgroundOptions { get; set; } = "";
         // Uploaded background (used when CollectionBackgroundStyle is "", i.e. Custom).
         public string CollectionBackgroundPath { get; set; } = "";
+        // Thumb (16:9, drawn like the background) and banner of the collection. Thumb: a generated
+        // style, "" = Custom (CollectionThumbPath) or "keep". Banner: "" = Custom (CollectionBannerPath)
+        // or "keep" — there is no generated banner.
+        public string CollectionThumbStyle { get; set; } = "";
+        public string CollectionThumbOptions { get; set; } = "";
+        public string CollectionThumbPath { get; set; } = "";
+        public string CollectionBannerStyle { get; set; } = "";
+        public string CollectionBannerPath { get; set; } = "";
         // Experimental (needs RankedCollectionsEnabled): the collection holds ranked .strm copies of
         // its movies so it opens in list order. See RankedCollections.
         public bool CollectionKeepOrder { get; set; } = false;
@@ -136,6 +147,8 @@ namespace HomeScreenCompanion
         // collection's original image; from then on "Keep current image" is no longer offered for it.
         public bool CollectionPosterReplaced { get; set; } = false;
         public bool CollectionBackgroundReplaced { get; set; } = false;
+        public bool CollectionThumbReplaced { get; set; } = false;
+        public bool CollectionBannerReplaced { get; set; } = false;
         public bool OnlyCollection { get; set; } = false;
 
         // Legacy, for migration only (stoep-labs fork, see LegacyForkCleanup): "Show at the top of
@@ -230,6 +243,32 @@ namespace HomeScreenCompanion
     {
         public string UserId { get; set; } = "";
         public string SectionId { get; set; } = "";
+    }
+
+    // What groups deleted on the settings page left behind, waiting for the next full run to
+    // remove it (deleted_groups.xml in the plugin data folder).
+    public class DeletedGroupCleanup
+    {
+        public List<RemovedHomeRow> HomeRows { get; set; } = new List<RemovedHomeRow>();
+        public List<RemovedPlaylist> Playlists { get; set; } = new List<RemovedPlaylist>();
+    }
+
+    public class RemovedPlaylist
+    {
+        public string GroupName { get; set; } = "";
+        public string UserId { get; set; } = "";
+        public string PlaylistId { get; set; } = "";
+    }
+
+    public class RemovedHomeRow
+    {
+        public string GroupName { get; set; } = "";
+        public string UserId { get; set; } = "";
+        public string SectionId { get; set; } = "";
+        public string SectionMarker { get; set; } = "";
+        public string HomeSectionSettings { get; set; } = "{}";
+        // The title the row got when its Custom Title was empty (the group's name, else its tag).
+        public string DefaultTitle { get; set; } = "";
     }
 
     public class MediaInfoFilter

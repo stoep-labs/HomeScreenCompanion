@@ -42,6 +42,8 @@ namespace HomeScreenCompanion
     public class VersionResponse
     {
         public string Version { get; set; } = "";
+        // "beta" for a beta build (ReleaseChannel in the .csproj), "" for a release.
+        public string Channel { get; set; } = "";
     }
 
     [Route("/HomeScreenCompanion/UploadCollectionImage", "POST")]
@@ -113,6 +115,15 @@ namespace HomeScreenCompanion
         public string Message { get; set; } = "";
         /// <summary>Another run was busy: this one waits for it in the background (see RunGate).</summary>
         public bool Queued { get; set; }
+    }
+
+    // The settings page's Run menu: starts one of HSC's tasks, also those hidden from Emby's
+    // Scheduled Tasks (IConfigurableScheduledTask.IsHidden).
+    [Route("/HomeScreenCompanion/RunTask", "POST")]
+    [Authenticated(Roles = "Admin")]
+    public class RunTaskRequest : IReturn<RunEntryResponse>
+    {
+        public string Key { get; set; } = "";
     }
 
     // Run Group on a top-list card: rebuilds just that list (folder, tiles, home sections, collection mirror).
@@ -231,6 +242,7 @@ namespace HomeScreenCompanion
         public string Message { get; set; } = "";
         public string Poster { get; set; } = "";       // data: URL, empty when not generated
         public string Background { get; set; } = "";
+        public string Thumb { get; set; } = "";
         public int Titles { get; set; }
         public string Note { get; set; } = "";         // e.g. "this source has 12 titles; posters repeat"
         [System.Runtime.Serialization.IgnoreDataMember] public string Timing { get; set; } = "";   // for the log only
@@ -597,6 +609,7 @@ namespace HomeScreenCompanion
         public bool LogMissingItems { get; set; }
         public bool DryRunMode { get; set; }
         public bool PreserveTagsOnEmptyResult { get; set; } = true;
+        public bool IgnoreMarkedAsWatched { get; set; }
         public bool TopListMirrorCollections { get; set; }
         public bool ShowCopyPasteButtons { get; set; }
         public bool ShowImportCollectionButton { get; set; }
@@ -856,7 +869,20 @@ public class HomeScreenCompanionService : IService
 
         public object Get(VersionRequest request)
         {
-            return new VersionResponse { Version = Plugin.Instance?.Version.ToString() ?? "0.0.0" };
+            return new VersionResponse { Version = Plugin.Instance?.Version.ToString() ?? "0.0.0", Channel = ReleaseChannel() };
+        }
+
+        // The build's channel: the part after "-" in the informational version ("4.4.0.0-beta+abc123" → "beta").
+        private static string ReleaseChannel()
+        {
+            var info = typeof(HomeScreenCompanionService).Assembly
+                .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+                .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+                .FirstOrDefault()?.InformationalVersion ?? "";
+            var plus = info.IndexOf('+');
+            if (plus >= 0) info = info.Substring(0, plus);
+            var dash = info.IndexOf('-');
+            return dash >= 0 ? info.Substring(dash + 1).Trim() : "";
         }
 
         public object Get(GetStatusRequest request)
@@ -991,7 +1017,9 @@ public class HomeScreenCompanionService : IService
 
                 if (items == null || items.Count == 0)
                 {
-                    return new TestUrlResponse { Success = false, Message = "No items found. Check URL and API Keys." };
+                    return new TestUrlResponse { Success = false, Message = fetcher.LastError != null
+                        ? $"No items found ({fetcher.LastError}). Check URL and API Keys."
+                        : "No items found. Check URL and API Keys." };
                 }
 
                 var library = BuildTestLibraryIndex();
@@ -1106,6 +1134,25 @@ public class HomeScreenCompanionService : IService
             }
             var (success, message) = await task.RunSingleTopListAsync(request.TagName.Trim(), RebuildManualTopList, CancellationToken.None);
             return new RunEntryResponse { Success = success, Message = message };
+        }
+
+        // The tasks the Run menu may start.
+        private static readonly HashSet<string> RunMenuTasks = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "HomeScreenCompanionSyncTask", "HomeSectionSyncTask", "TopListSyncTask", "MergeTopListVersionsTask", "ContinueWatchingBumpTask"
+        };
+
+        public object Post(RunTaskRequest request)
+        {
+            if (!RunMenuTasks.Contains(request.Key ?? ""))
+                return new RunEntryResponse { Success = false, Message = "Unknown task." };
+            var worker = _taskManager.ScheduledTasks.FirstOrDefault(w => w.ScheduledTask.Key == request.Key);
+            if (worker == null)
+                return new RunEntryResponse { Success = false, Message = "Task not found." };
+            if (worker.State == MediaBrowser.Model.Tasks.TaskState.Running)
+                return new RunEntryResponse { Success = true, Message = $"{worker.Name} is already running." };
+            _taskManager.QueueScheduledTask(worker.ScheduledTask, new MediaBrowser.Model.Tasks.TaskOptions());
+            return new RunEntryResponse { Success = true, Message = $"{worker.Name} started." };
         }
 
         private static string QueuedMessage(string holder) =>
@@ -1275,7 +1322,7 @@ public class HomeScreenCompanionService : IService
             try { result = await PreviewCollectionArt(request.Source ?? new TagConfig()); }
             finally { ArtPreviewGate.Release(); }
             var src = request.Source ?? new TagConfig();
-            _logger.Info($"Collection art preview: '{src.Name}' [{src.SourceType}] tag '{src.Tag}' poster '{src.CollectionPosterStyle}' background '{src.CollectionBackgroundStyle}' -> "
+            _logger.Info($"Collection art preview: '{src.Name}' [{src.SourceType}] tag '{src.Tag}' poster '{src.CollectionPosterStyle}' background '{src.CollectionBackgroundStyle}' thumb '{src.CollectionThumbStyle}' -> "
                 + (result.Success ? $"drawn from {result.Titles} title(s)" : result.Message)
                 + $" in {sw.ElapsedMilliseconds} ms ({(waited > 0 ? $"waited {waited} ms; " : "")}{result.Timing})");
             return result;
@@ -1330,8 +1377,9 @@ public class HomeScreenCompanionService : IService
         {
             bool poster = CollectionArtRenderer.IsStyle(source.CollectionPosterStyle);
             bool background = CollectionArtRenderer.IsStyle(source.CollectionBackgroundStyle);
-            if (!poster && !background)
-                return new PreviewCollectionArtResponse { Message = "Choose \"Generate from the titles\" for the poster or the background first." };
+            bool thumb = CollectionArtRenderer.IsStyle(source.CollectionThumbStyle);
+            if (!poster && !background && !thumb)
+                return new PreviewCollectionArtResponse { Message = "Choose \"Generate from the titles\" for the poster, the background or the thumb first." };
 
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var timing = new List<string>();
@@ -1380,35 +1428,40 @@ public class HomeScreenCompanionService : IService
                 int distinct = titles.Count;
                 string repeatNote = "", rowsNote = "";
                 // The posters both drawings need, read once and side by side.
-                int need = Math.Max(
+                int need = Math.Max(Math.Max(
                     poster ? CollectionArtRenderer.PostersFor(source.CollectionPosterStyle, false, ArtOptions.Parse(source.CollectionPosterOptions)) : 0,
-                    background ? CollectionArtRenderer.PostersFor(source.CollectionBackgroundStyle, true, ArtOptions.Parse(source.CollectionBackgroundOptions)) : 0);
+                    background ? CollectionArtRenderer.PostersFor(source.CollectionBackgroundStyle, true, ArtOptions.Parse(source.CollectionBackgroundOptions)) : 0),
+                    thumb ? CollectionArtRenderer.PostersFor(source.CollectionThumbStyle!, true, ArtOptions.Parse(source.CollectionThumbOptions)) : 0);
                 timing.Add($"titles {clock.ElapsedMilliseconds} ms");
                 clock.Restart();
                 var paths = ArtPosterPaths(titles.Take(need).ToList(), _httpClient, tempDir);
                 timing.Add($"{need} poster files {clock.ElapsedMilliseconds} ms");
-                string Draw(string style, bool bg)
+                // kind: "poster", "background" or "thumb" (drawn like the background).
+                string Draw(string style, string kind, string? options)
                 {
-                    var opts = ArtOptions.Parse(bg ? source.CollectionBackgroundOptions : source.CollectionPosterOptions);
+                    bool bg = kind != "poster";
+                    var label = char.ToUpperInvariant(kind[0]) + kind.Substring(1);
+                    var opts = ArtOptions.Parse(options);
                     if (opts.Posters != null && style.Trim().ToLowerInvariant() != CollectionArtRenderer.Ranked && opts.Posters.Value > distinct)
                         repeatNote = $"This source has {distinct} title{(distinct == 1 ? "" : "s")}; the posters repeat to make {opts.Posters.Value} (never next to a copy).";
                     var posters = paths.Take(CollectionArtRenderer.PostersFor(style, bg, opts)).Where(p => p != null).Select(p => p!).ToList();
                     if (posters.Count == 0) return "";
-                    var output = Path.Combine(tempDir, bg ? "background.jpg" : "poster.jpg");
+                    var output = Path.Combine(tempDir, kind + ".jpg");
                     clock.Restart();
                     var note = CollectionArtRenderer.RowsNote(opts, CollectionArtRenderer.Render(style, posters, title, bg, output, opts));
-                    timing.Add($"{(bg ? "background" : "poster")} {clock.ElapsedMilliseconds} ms");
-                    if (note.Length > 0) rowsNote = rowsNote.Length == 0 ? (bg ? "Background: " : "Poster: ") + note : rowsNote + " Background: " + note;
+                    timing.Add($"{kind} {clock.ElapsedMilliseconds} ms");
+                    if (note.Length > 0) rowsNote = (rowsNote.Length == 0 ? "" : rowsNote + " ") + label + ": " + note;
                     return "data:image/jpeg;base64," + Convert.ToBase64String(File.ReadAllBytes(output));
                 }
                 var res = new PreviewCollectionArtResponse
                 {
                     Success = true,
                     Titles = items.Count,
-                    Poster = poster ? Draw(source.CollectionPosterStyle, false) : "",
-                    Background = background ? Draw(source.CollectionBackgroundStyle, true) : ""
+                    Poster = poster ? Draw(source.CollectionPosterStyle, "poster", source.CollectionPosterOptions) : "",
+                    Background = background ? Draw(source.CollectionBackgroundStyle, "background", source.CollectionBackgroundOptions) : "",
+                    Thumb = thumb ? Draw(source.CollectionThumbStyle!, "thumb", source.CollectionThumbOptions) : ""
                 };
-                if (res.Poster.Length == 0 && res.Background.Length == 0)
+                if (res.Poster.Length == 0 && res.Background.Length == 0 && res.Thumb.Length == 0)
                     return new PreviewCollectionArtResponse { Message = "None of this source's titles has a poster image on this server, so there is nothing to draw." };
                 res.Note = string.Join(" ", new[] { repeatNote, rowsNote }.Where(n => n.Length > 0));
                 res.Timing = string.Join(", ", timing);
@@ -1540,7 +1593,9 @@ public class HomeScreenCompanionService : IService
                     CancellationToken.None);
 
                 if (aiItems == null || aiItems.Count == 0)
-                    return new TestAiSourceResponse { Success = false, Message = "No items returned. Check your API key and prompt." };
+                    return new TestAiSourceResponse { Success = false, Message = fetcher.LastError != null
+                        ? $"No items returned ({fetcher.LastError}). Check your API key and prompt."
+                        : "No items returned. Check your API key and prompt." };
 
                 var preview = aiItems.Take(5)
                     .Select(i => string.IsNullOrEmpty(i.imdb_id) ? i.title : $"{i.title} — {i.imdb_id}")
@@ -1760,14 +1815,10 @@ public class HomeScreenCompanionService : IService
                 catch { }
 
                 if (!settingsDict.ContainsKey("SectionType"))
-                    settingsDict["SectionType"] = (tc.EnableCollection && !string.IsNullOrEmpty(tc.CollectionName)) ? "boxset"
-                        : !tc.EnableTag && tc.EnablePlaylist ? "playlist" : "items";
-                // An empty title would clear the row's name in Emby: use the pre-filled one, as the sync does.
-                HomeScreenCompanionTask.FillDefaultCustomName(settingsDict, tc);
-                // A tag row outside its schedule keeps its "[INACTIVE]" title (as the sync sets it).
-                if (tc.Active && !HomeScreenCompanionTask.IsScheduleActive(tc.ActiveIntervals, DateTime.Now)
-                    && HomeScreenCompanionTask.IsTagRow(tc, _jsonSerializer))
-                    HomeScreenCompanionTask.MarkInactive(settingsDict);
+                    settingsDict["SectionType"] = HomeScreenCompanionTask.DefaultSectionType(tc);
+                // An empty title would clear the row's name in Emby, and a tag row outside its
+                // schedule keeps its "[INACTIVE]" title.
+                HomeScreenCompanionTask.ApplyRowTitle(settingsDict, tc, _jsonSerializer);
                 // Playlist rows keep each user's own playlist (ParentId is left as it is).
                 HomeScreenCompanionTask.NormalizePlaylistSectionSettings(settingsDict);
 
@@ -2117,6 +2168,8 @@ public class HomeScreenCompanionService : IService
                         CollectionDescription = coll.Overview ?? "",
                         CollectionPosterStyle = CollectionArtRenderer.KeepStyle,
                         CollectionBackgroundStyle = CollectionArtRenderer.KeepStyle,
+                        CollectionThumbStyle = CollectionArtRenderer.KeepStyle,
+                        CollectionBannerStyle = CollectionArtRenderer.KeepStyle,
                         // A sort title set in Emby (locked) is kept as the source's sort title.
                         CollectionSortName = (coll.LockedFields ?? Array.Empty<MetadataFields>()).Contains(MetadataFields.SortName) ? sortName : "",
                         CollectionImported = true,
@@ -3387,6 +3440,7 @@ public class HomeScreenCompanionService : IService
                         tcSettings["_queryExcludeViewIds"] = tcExcStr;
                         tcSettings["ExcludedFolders"] = tcExcStr;
                         tc.HomeSectionSettings = _jsonSerializer.SerializeToString(tcSettings);
+                        HomeScreenCompanionTask.ApplyRowTitle(tcSettings, tc, _jsonSerializer);
 
                         // Resolve tag ID for items-type query
                         if (!string.IsNullOrEmpty(tc.Tag))
@@ -3555,6 +3609,7 @@ public class HomeScreenCompanionService : IService
                     LogMissingItems           = config.LogMissingItems,
                     DryRunMode                = config.DryRunMode,
                     PreserveTagsOnEmptyResult = config.PreserveTagsOnEmptyResult,
+                    IgnoreMarkedAsWatched     = config.IgnoreMarkedAsWatched,
                     TopListMirrorCollections  = config.TopListMirrorCollections,
                     ShowCopyPasteButtons      = config.ShowCopyPasteButtons,
                     ShowImportCollectionButton = config.ShowImportCollectionButton,
@@ -3669,6 +3724,7 @@ public class HomeScreenCompanionService : IService
                     config.LogMissingItems           = s.LogMissingItems;
                     config.DryRunMode                = s.DryRunMode;
                     config.PreserveTagsOnEmptyResult = s.PreserveTagsOnEmptyResult;
+                    config.IgnoreMarkedAsWatched     = s.IgnoreMarkedAsWatched;
                     mirrorChanged = config.TopListMirrorCollections != s.TopListMirrorCollections;
                     config.TopListMirrorCollections  = s.TopListMirrorCollections;
                     config.ShowCopyPasteButtons      = s.ShowCopyPasteButtons;
@@ -3965,6 +4021,11 @@ public class HomeScreenCompanionService : IService
             t.CollectionArtTitle        ??= "";
             t.CollectionBackgroundStyle ??= "";
             t.CollectionBackgroundPath  ??= "";
+            t.CollectionThumbStyle      ??= "";
+            t.CollectionThumbOptions    ??= "";
+            t.CollectionThumbPath       ??= "";
+            t.CollectionBannerStyle     ??= "";
+            t.CollectionBannerPath      ??= "";
             t.TagPosterStyle            ??= "";
             t.TagArtTitle               ??= "";
             t.TagBackgroundStyle        ??= "";
@@ -4129,6 +4190,7 @@ public class HomeScreenCompanionService : IService
             t.LastModified       = DateTime.MinValue;
             // On another server the collection is HSC's own, not one it took over.
             t.CollectionImported = false; t.CollectionPosterReplaced = false; t.CollectionBackgroundReplaced = false;
+            t.CollectionThumbReplaced = false; t.CollectionBannerReplaced = false;
         }
 
         // The user id inside a smart-filter rule (IsPlayed/LastPlayed/PlayCount:<userId>:<op>:<value>,
@@ -4255,6 +4317,8 @@ public class HomeScreenCompanionService : IService
 
                 AddImage(t.CollectionPosterPath, "Collection poster");
                 AddImage(t.CollectionBackgroundPath, "Collection background");
+                AddImage(t.CollectionThumbPath, "Collection thumb");
+                AddImage(t.CollectionBannerPath, "Collection banner");
                 AddImage(t.TagBackgroundPath, "Tag background");
             }
 
@@ -4433,6 +4497,8 @@ public class HomeScreenCompanionService : IService
 
                     t.CollectionPosterPath     = MapImage(t.CollectionPosterPath, "Collection poster");
                     t.CollectionBackgroundPath = MapImage(t.CollectionBackgroundPath, "Collection background");
+                    t.CollectionThumbPath      = MapImage(t.CollectionThumbPath, "Collection thumb");
+                    t.CollectionBannerPath     = MapImage(t.CollectionBannerPath, "Collection banner");
                     t.TagBackgroundPath        = MapImage(t.TagBackgroundPath, "Tag background");
 
                     if ((t.SourceType == "LocalCollection" || t.SourceType == "LocalPlaylist") && !string.IsNullOrWhiteSpace(t.LocalSourceId)
