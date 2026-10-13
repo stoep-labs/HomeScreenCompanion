@@ -49,6 +49,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }
         var c = strip(config || {});
         delete c.TopLists;
+        // Set by the Sonarr / Radarr Add dialog; Save takes them from the server.
+        delete c.SonarrLastRootFolderPath; delete c.RadarrLastRootFolderPath;
         c.Tags = (c.Tags || []).map(function (t) {
             var x = Object.assign({}, t);
             delete x.HomeSectionTracked; delete x.PlaylistMappings;
