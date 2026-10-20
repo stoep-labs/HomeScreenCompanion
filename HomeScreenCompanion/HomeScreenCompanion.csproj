@@ -33,7 +33,6 @@
 
 	<ItemGroup>
 	  <EmbeddedResource Include="Configuration\configPage.html" />
-	  <EmbeddedResource Include="Configuration\configPage.js" />
 	  <EmbeddedResource Include="thumb.png" />
 	  <EmbeddedResource Include="LemonMilk.otf" />
 	  <EmbeddedResource Include="Fonts\*.ttf" />
@@ -63,6 +62,33 @@
 	<ItemGroup>
 	  <Folder Include="Dependencies\" />
 	</ItemGroup>
+
+	<!-- The settings page script is embedded with the plugin version in it (__HSC_PAGE_VERSION__):
+	     the page sends it with every save, and the server refuses a save from a page of another
+	     version (a browser that kept the old page after an update). Inline C# task: any OS, and the
+	     script is copied byte for byte (MSBuild items would turn its backslashes into slashes). -->
+	<UsingTask TaskName="HscStampPageVersion" TaskFactory="RoslynCodeTaskFactory" AssemblyFile="$(MSBuildToolsPath)\Microsoft.Build.Tasks.Core.dll">
+		<ParameterGroup>
+			<Source ParameterType="System.String" Required="true" />
+			<Target ParameterType="System.String" Required="true" />
+			<Version ParameterType="System.String" Required="true" />
+		</ParameterGroup>
+		<Task>
+			<Code Type="Fragment" Language="cs"><![CDATA[
+				var text = System.IO.File.ReadAllText(Source).Replace("__HSC_PAGE_VERSION__", Version);
+				System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Target));
+				if (!System.IO.File.Exists(Target) || System.IO.File.ReadAllText(Target) != text)
+					System.IO.File.WriteAllText(Target, text, new System.Text.UTF8Encoding(false));
+			]]></Code>
+		</Task>
+	</UsingTask>
+
+	<Target Name="StampPageVersion" BeforeTargets="PrepareForBuild">
+		<HscStampPageVersion Source="$(MSBuildProjectDirectory)/Configuration/configPage.js" Target="$(IntermediateOutputPath)configPage.js" Version="$(Version)" />
+		<ItemGroup>
+			<EmbeddedResource Include="$(IntermediateOutputPath)configPage.js" LogicalName="HomeScreenCompanion.Configuration.configPage.js" />
+		</ItemGroup>
+	</Target>
 
 	<Target Name="InjectVersionIntoHtml" BeforeTargets="BeforeBuild">
 		<Exec Command="powershell -Command &quot;$f='$(ProjectDir)Configuration\configPage.html'; (Get-Content $f -Raw) -replace 'Home Screen Companion v[\d.]+', 'Home Screen Companion v$(Version)' | Set-Content $f -NoNewline&quot;" />
