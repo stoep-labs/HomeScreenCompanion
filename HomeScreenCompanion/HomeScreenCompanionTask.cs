@@ -3907,7 +3907,7 @@ namespace HomeScreenCompanion
         private HashSet<string>? RotatingTitles(TagConfig tc, PluginConfiguration config)
         {
             if (!RotatingRow.Is(tc)) return null;
-            try { return RotatingRow.PoolTitles(tc, RotatingRow.CustomTitle(tc, _jsonSerializer), RotatingRow.Pool(tc, config, _libraryManager)); }
+            try { return RotatingRow.PoolTitles(tc, RotatingRow.CustomTitle(tc, _jsonSerializer), RotatingRow.Pool(tc, config, _libraryManager), config, _jsonSerializer); }
             catch (Exception swallowed) { PluginLog.Swallowed(swallowed); return null; }
         }
 
@@ -4597,7 +4597,7 @@ namespace HomeScreenCompanion
                 {
                     var rot = RotatingRow.Resolve(tc, config, _libraryManager, _userManager);
                     var rotCustom = RotatingRow.CustomTitle(tc, _jsonSerializer);
-                    rotTitles = RotatingRow.PoolTitles(tc, rotCustom, rot.Pool);
+                    rotTitles = RotatingRow.PoolTitles(tc, rotCustom, rot.Pool, config, _jsonSerializer);
                     if (rot.Pick == null)
                     {
                         // Nothing to show: the row goes (its place is remembered) until the pool has a collection again.

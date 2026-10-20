@@ -177,9 +177,34 @@ namespace HomeScreenCompanion
             return "";
         }
 
-        /// <summary>Every title the row can have (one per pool collection), to find it by title.</summary>
-        internal static HashSet<string> PoolTitles(TagConfig t, string? customTitle, IEnumerable<BaseItem> pool)
-            => new HashSet<string>(pool.Select(b => Title(customTitle, b.Name)).Where(x => x.Length > 0), StringComparer.OrdinalIgnoreCase);
+        /// <summary>
+        /// Every title the row can have (one per pool collection), to find it by title — except the
+        /// titles of other sources' rows (e.g. a pool collection's own collection row with the same
+        /// name), so a row of another source is never taken for this one.
+        /// </summary>
+        internal static HashSet<string> PoolTitles(TagConfig t, string? customTitle, IEnumerable<BaseItem> pool,
+            PluginConfiguration? cfg, MediaBrowser.Model.Serialization.IJsonSerializer json)
+        {
+            var titles = new HashSet<string>(pool.Select(b => Title(customTitle, b.Name)).Where(x => x.Length > 0), StringComparer.OrdinalIgnoreCase);
+            var own = GroupIssues.Key(t.Name, t.Tag);
+            foreach (var o in cfg?.Tags ?? new List<TagConfig>())
+            {
+                if (!o.EnableHomeSection || Is(o) || string.Equals(GroupIssues.Key(o.Name, o.Tag), own, StringComparison.OrdinalIgnoreCase)) continue;
+                var ct = CustomTitle(o, json).Trim();
+                titles.Remove(ct.Length > 0 ? ct : HomeScreenCompanionTask.DefaultRowTitle(o));
+            }
+            foreach (var tl in cfg?.TopLists ?? new List<TopListHomeSection>())
+            {
+                try
+                {
+                    var s = json.DeserializeFromString<Dictionary<string, string>>(string.IsNullOrEmpty(tl.HomeSectionSettings) ? "{}" : tl.HomeSectionSettings);
+                    if (s != null && s.TryGetValue("CustomName", out var n) && !string.IsNullOrWhiteSpace(n)) titles.Remove(n.Trim());
+                }
+                catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
+                titles.Remove((tl.TagName ?? "").Trim());
+            }
+            return titles;
+        }
 
         /// <summary>A collection row whose title is one of <paramref name="titles"/>.</summary>
         internal static bool IsRowTitle(ContentSection s, HashSet<string> titles)

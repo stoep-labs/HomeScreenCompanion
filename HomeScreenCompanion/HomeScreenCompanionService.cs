@@ -1973,7 +1973,7 @@ public class HomeScreenCompanionService : IService
                     if (rot.Pick == null)
                         return new HscApplyTagHomeSectionsResponse { Success = true, Message = "No collection to show today — the next sync hides the row." };
                     var rotCustom = RotatingRow.CustomTitle(tc, _jsonSerializer);
-                    rotTitles = RotatingRow.PoolTitles(tc, rotCustom, rot.Pool);
+                    rotTitles = RotatingRow.PoolTitles(tc, rotCustom, rot.Pool, config, _jsonSerializer);
                     resolvedLibraryId = rot.Pick.InternalId.ToString(System.Globalization.CultureInfo.InvariantCulture);
                     settingsDict["CustomName"] = RotatingRow.Title(rotCustom, rot.Pick.Name);
                 }

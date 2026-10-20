@@ -69,9 +69,20 @@ namespace HomeScreenCompanion
                     ? $"{kv.Key.Substring(RotationKey.Length)}: next collection"
                     : $"{kv.Key} {(kv.Value == "1" ? "started" : "ended")}")
                 .Concat(was.Keys.Where(k => !now.ContainsKey(k)).Select(k => k.StartsWith(RotationKey, StringComparison.Ordinal) ? $"{k.Substring(RotationKey.Length)}: rotation stopped" : $"{k} removed")).ToList();
-            _logger.Info("Schedule changed ({0}); running the Tag & Collection Sync", string.Join(", ", changed));
+            // Only rotating rows moved on: just those groups run (Run Group), not the full sync.
+            var rotated = now.Where(kv => kv.Key.StartsWith(RotationKey, StringComparison.Ordinal) && (!was.TryGetValue(kv.Key, out var w) || w != kv.Value))
+                .Select(kv => kv.Key.Substring(RotationKey.Length)).ToList();
+            bool onlyRotation = rotated.Count > 0 && rotated.Count == changed.Count && HomeScreenCompanionTask.Instance != null;
+            _logger.Info("Schedule changed ({0}); running {1}", string.Join(", ", changed),
+                onlyRotation ? string.Join(", ", rotated.Select(n => $"Run Group '{n}'")) : "the Tag & Collection Sync");
             Save(statePath, state);
-            _taskManager.QueueScheduledTask<HomeScreenCompanionTask>();
+            if (onlyRotation)
+            {
+                var task = HomeScreenCompanionTask.Instance!;
+                foreach (var name in rotated)
+                    _ = Task.Run(() => task.RunSingleEntryAsync(name, CancellationToken.None));
+            }
+            else _taskManager.QueueScheduledTask<HomeScreenCompanionTask>();
             return Task.CompletedTask;
         }
 

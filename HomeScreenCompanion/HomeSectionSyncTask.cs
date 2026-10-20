@@ -260,7 +260,7 @@ namespace HomeScreenCompanion
                             }
                             // A rotating row (RotatingRow) only for the source's own users, tracked for them,
                             // so the sync moves it on to the next collection in place.
-                            var rotating = managed.RotatingRowOf(section, sourceKey);
+                            var rotating = managed.RotatingRowOf(config, section, sourceKey);
                             if (rotating != null && (managed.SourceUserId(rotating, targetKey) == null || kept.Any(k => k.Source == rotating)))
                             {
                                 if (managed.SourceUserId(rotating, targetKey) == null)
@@ -492,7 +492,7 @@ namespace HomeScreenCompanion
                     // A rotating row's title is the collection it shows: any of the pool's.
                     if (RotatingRow.Is(tc) && (!settings.TryGetValue("SectionType", out var rst) || string.IsNullOrEmpty(rst) || rst == "boxset"))
                     {
-                        try { m._rotTitles[tc] = RotatingRow.PoolTitles(tc, RotatingRow.CustomTitle(tc, json), RotatingRow.Pool(tc, config, libraryManager)); }
+                        try { m._rotTitles[tc] = RotatingRow.PoolTitles(tc, RotatingRow.CustomTitle(tc, json), RotatingRow.Pool(tc, config, libraryManager), config, json); }
                         catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
                     }
                 }
@@ -538,12 +538,18 @@ namespace HomeScreenCompanion
                         && !HomeScreenCompanionTask.SectionOwnedElsewhere(config, tc, SourceUserId(tc, user)!, s.Id));
             }
 
-            // The rotating source whose row this (master's) section is: tracked for the master, else by title.
-            public TagConfig? RotatingRowOf(ContentSection s, string master)
+            // The rotating source whose row this (master's) section is: tracked for the master, else by
+            // title — never a row another source or a top-list tracks for the master.
+            public TagConfig? RotatingRowOf(PluginConfiguration config, ContentSection s, string master)
             {
                 if (string.IsNullOrEmpty(s.Id)) return null;
-                return _rotTitles.Keys.FirstOrDefault(tc => (tc.HomeSectionTracked ?? new List<HomeSectionTracking>()).Any(t => NormId(t.UserId) == master && t.SectionId == s.Id))
-                    ?? _rotTitles.Keys.FirstOrDefault(tc => RotatingRow.IsRowTitle(s, _rotTitles[tc]));
+                var tracked = _rotTitles.Keys.FirstOrDefault(tc => (tc.HomeSectionTracked ?? new List<HomeSectionTracking>()).Any(t => NormId(t.UserId) == master && t.SectionId == s.Id));
+                if (tracked != null) return tracked;
+                bool TrackedFor(List<HomeSectionTracking>? l) => l?.Any(t => NormId(t.UserId) == master && t.SectionId == s.Id) == true;
+                if ((config.Tags ?? new List<TagConfig>()).Any(o => !RotatingRow.Is(o) && TrackedFor(o.HomeSectionTracked))
+                    || (config.TopLists ?? new List<TopListHomeSection>()).Any(tl => TrackedFor(tl.HomeSectionTracked)) || TopListRow(s) != null)
+                    return null;
+                return _rotTitles.Keys.FirstOrDefault(tc => RotatingRow.IsRowTitle(s, _rotTitles[tc]));
             }
 
             private readonly Dictionary<TagConfig, HashSet<string>> _rotTitles = new Dictionary<TagConfig, HashSet<string>>();
