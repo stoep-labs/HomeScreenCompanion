@@ -4882,6 +4882,240 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         });
     }
 
+    // Missing tab: titles the External and AI sources want that the library does not have, with
+    // their Sonarr / Radarr status and Add (as in the source Test popup). Shown only when Sonarr
+    // or Radarr has a URL and an API key (saved settings).
+    function arrConfigured(cfg) {
+        cfg = cfg || {};
+        function set(v) { return !!String(v || '').trim(); }
+        return (set(cfg.SonarrUrl) && set(cfg.SonarrApiKey)) || (set(cfg.RadarrUrl) && set(cfg.RadarrApiKey));
+    }
+
+    function updateMissingTab(view, cfg) {
+        var btn = view.querySelector('#btnTabMissing');
+        if (!btn) return;
+        var on = arrConfigured(cfg);
+        btn.style.display = on ? '' : 'none';
+        if (!on && btn.classList.contains('active') && view._hscShowPageTab) view._hscShowPageTab('TagCollection');
+    }
+
+    function loadMissingTab(view, refresh) {
+        var container = view.querySelector('#missingContainer');
+        if (!container) return;
+        function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+        var hdr = { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() };
+        var state = container._mt || (container._mt = { filter: 'all', list: '', sort: 'rank', search: '', view: 'list' });
+        try { state.view = localStorage.getItem('HomeScreenCompanion_MissingView') || state.view; } catch (e) { }
+
+        if (!container.firstChild || refresh) {
+            var busy = container.querySelector('.mt-refresh');
+            if (busy) { busy.disabled = true; busy.querySelector('span').textContent = 'Refreshing…'; }
+            else container.innerHTML = '<div style="padding:20px;color:var(--theme-text-secondary);display:flex;align-items:center;gap:10px;">Loading <span class="tc-dot-loader"><span></span><span></span><span></span></span></div>';
+        }
+        var gen = (container._mtGen = (container._mtGen || 0) + 1);
+        var req = refresh
+            ? fetch(window.ApiClient.getUrl('HomeScreenCompanion/Missing/Refresh'), { method: 'POST', headers: hdr, body: '{}' })
+            : fetch(window.ApiClient.getUrl('HomeScreenCompanion/Missing'), { headers: hdr });
+        req.then(function (r) { return r.json(); }).then(function (res) {
+            if (gen !== container._mtGen) return;
+            render(res);
+        }).catch(function (err) {
+            if (gen !== container._mtGen) return;
+            container.innerHTML = '<div class="mt-empty">' + esc('Could not load: ' + (err && err.message || err)) + '</div>';
+        });
+
+        function render(res) {
+            var items = res.Items || [];
+            var sources = res.Sources || [];
+            var arr = { status: {}, sonarr: false, radarr: false, loaded: false };
+            if (state.list && !sources.some(function (s) { return s.Group === state.list; })) state.list = '';
+            var movies = items.filter(function (i) { return i.MediaType === 'movie'; }).length;
+            var shows = items.filter(function (i) { return i.MediaType === 'tv'; }).length;
+            var checked = res.CheckedUtc ? new Date(res.CheckedUtc) : null;
+
+            container.innerHTML =
+                '<div class="mt-head">' +
+                    '<h2 class="sectionTitle">Missing</h2>' +
+                    '<span class="mt-count">' + items.length + '</span>' +
+                    '<span class="mt-checked">' + (checked ? 'Checked ' + esc(checked.toLocaleString()) : '') + '</span>' +
+                    '<button is="emby-button" type="button" class="raised btn-neutral mt-refresh"><i class="md-icon" style="margin-right:5px;">refresh</i><span>Refresh</span></button>' +
+                '</div>' +
+                '<div class="mt-controls">' +
+                    '<input type="search" class="mt-search" placeholder="Search" autocomplete="off" value="' + esc(state.search) + '" />' +
+                    '<select class="mt-listsel"><option value="">All sources</option>' +
+                        sources.map(function (s) {
+                            return '<option value="' + esc(s.Group) + '"' + (s.Group === state.list ? ' selected' : '') + '>' + esc(s.Group) + (s.Kind === 'AI' ? ' (AI)' : '') + ' · ' + s.MissingCount + '</option>';
+                        }).join('') +
+                    '</select>' +
+                    '<select class="mt-sort">' +
+                        [['rank', 'Rank'], ['title', 'Title'], ['year', 'Year'], ['lists', 'Sources']].map(function (o) {
+                            return '<option value="' + o[0] + '"' + (o[0] === state.sort ? ' selected' : '') + '>' + o[1] + '</option>';
+                        }).join('') +
+                    '</select>' +
+                '</div>' +
+                '<div class="mt-bar">' +
+                    '<button type="button" class="stm-chip" data-filter="all"><i class="md-icon">list</i>All ' + items.length + '</button>' +
+                    '<button type="button" class="stm-chip" data-filter="movie"><i class="md-icon">movie</i>Movies ' + movies + '</button>' +
+                    '<button type="button" class="stm-chip" data-filter="tv"><i class="md-icon">tv</i>Shows ' + shows + '</button>' +
+                    '<div class="mt-view">' +
+                        '<button type="button" data-view="list" title="List"><i class="md-icon">view_list</i></button>' +
+                        '<button type="button" data-view="grid" title="Posters"><i class="md-icon">grid_view</i></button>' +
+                    '</div>' +
+                '</div>' +
+                '<div class="mt-body"></div>';
+
+            var body = container.querySelector('.mt-body');
+
+            function visible() {
+                var q = state.search.trim().toLowerCase();
+                var out = [];
+                items.forEach(function (it, idx) {
+                    if (state.filter !== 'all' && it.MediaType !== state.filter) return;
+                    if (state.list && !(it.Lists || []).some(function (l) { return l.Group === state.list; })) return;
+                    if (q && (it.Title || '').toLowerCase().indexOf(q) === -1 && (it.Imdb || '').toLowerCase().indexOf(q) === -1) return;
+                    out.push(idx);
+                });
+                function rankOf(it) {
+                    if (!state.list) return it.Rank || 1e9;
+                    var l = (it.Lists || []).filter(function (x) { return x.Group === state.list; })[0];
+                    return (l && l.Rank) || 1e9;
+                }
+                out.sort(function (a, b) {
+                    var x = items[a], y = items[b], d = 0;
+                    if (state.sort === 'title') d = (x.Title || '').localeCompare(y.Title || '');
+                    else if (state.sort === 'year') d = (y.Year || 0) - (x.Year || 0);
+                    else if (state.sort === 'lists') d = (y.Lists || []).length - (x.Lists || []).length;
+                    return d || (rankOf(x) - rankOf(y)) || (x.Title || '').localeCompare(y.Title || '');
+                });
+                return out;
+            }
+
+            function arrCell(idx) {
+                var st = arr.status[idx];
+                if (!st) return '';
+                var isTv = st.MediaType === 'tv', isMovie = st.MediaType === 'movie';
+                if ((isTv && !arr.sonarr) || (isMovie && !arr.radarr)) return '';
+                if (!isTv && !isMovie)
+                    return '<button type="button" class="stm-arr" disabled title="Unknown Media Type"><i class="md-icon">help_outline</i></button>';
+                var name = isTv ? 'Sonarr' : 'Radarr';
+                if (isTv ? st.InSonarr : st.InRadarr)
+                    return '<button type="button" class="stm-arr in" disabled title="Already in ' + name + '"><i class="md-icon">check</i>' + name + '</button>';
+                return '<button type="button" class="stm-arr add" data-idx="' + idx + '" title="Add to ' + name + '"><i class="md-icon">add</i>' + name + '</button>';
+            }
+
+            function imdbLink(it) {
+                return it.Imdb ? '<a href="https://www.imdb.com/title/' + encodeURIComponent(it.Imdb) + '/" target="_blank" rel="noopener">' + esc(it.Imdb) + '</a>' : '';
+            }
+
+            function listChips(it) {
+                return (it.Lists || []).map(function (l) {
+                    return '<span class="mt-src">' + esc(l.Group) + (l.Kind === 'AI' ? ' · AI' : '') + (l.Rank ? ' <b>#' + l.Rank + '</b>' : '') + '</span>';
+                }).join('');
+            }
+
+            function rowHtml(idx) {
+                var it = items[idx];
+                var poster = it.Poster
+                    ? '<div class="stm-poster" style="background-image:url(&quot;' + esc(it.Poster) + '&quot;)"></div>'
+                    : '<div class="stm-poster"><i class="md-icon">' + (it.MediaType === 'tv' ? 'tv' : 'movie') + '</i></div>';
+                var meta = [];
+                if (it.Year) meta.push(it.Year);
+                if (it.MediaType) meta.push(it.MediaType === 'tv' ? 'Series' : 'Movie');
+                if (it.Imdb) meta.push(imdbLink(it));
+                return '<div class="stm-row" data-idx="' + idx + '">' +
+                    '<div class="stm-rank">' + (it.Rank || '') + '</div>' +
+                    poster +
+                    '<div class="stm-info">' +
+                        '<div class="stm-title">' + esc(it.Title || it.Imdb || '') + '</div>' +
+                        '<div class="stm-meta">' + meta.join(' · ') + '</div>' +
+                        '<div class="mt-lists">' + listChips(it) + '</div>' +
+                    '</div>' +
+                    '<div class="mt-arr">' + arrCell(idx) + '</div>' +
+                '</div>';
+            }
+
+            function cardHtml(idx) {
+                var it = items[idx];
+                var href = it.Imdb ? 'https://www.imdb.com/title/' + encodeURIComponent(it.Imdb) + '/' : '';
+                var cover = (href ? '<a class="mt-cover" href="' + href + '" target="_blank" rel="noopener"' : '<div class="mt-cover"') +
+                    (it.Poster ? ' style="background-image:url(&quot;' + esc(it.Poster) + '&quot;)">' : '><i class="md-icon">' + (it.MediaType === 'tv' ? 'tv' : 'movie') + '</i>') +
+                    (it.Rank ? '<span class="mt-rank">#' + it.Rank + '</span>' : '') +
+                    (href ? '</a>' : '</div>');
+                var meta = [];
+                if (it.Year) meta.push(it.Year);
+                meta.push(esc((it.Lists || []).map(function (l) { return l.Group; }).join(', ')));
+                return '<div class="mt-card" data-idx="' + idx + '">' + cover +
+                    '<div class="mt-ctitle">' + esc(it.Title || it.Imdb || '') + '</div>' +
+                    '<div class="mt-cmeta">' + meta.join(' · ') + '</div>' +
+                    '<div class="mt-arr">' + arrCell(idx) + '</div>' +
+                '</div>';
+            }
+
+            function renderBody() {
+                container.querySelectorAll('.mt-bar .stm-chip').forEach(function (c) { c.classList.toggle('active', c.dataset.filter === state.filter); });
+                container.querySelectorAll('.mt-view button').forEach(function (b) { b.classList.toggle('active', b.dataset.view === state.view); });
+                var idxs = visible();
+                if (!idxs.length) { body.innerHTML = '<div class="mt-empty">' + (items.length ? 'Nothing to show.' : 'Nothing missing.') + '</div>'; return; }
+                body.innerHTML = state.view === 'grid'
+                    ? '<div class="mt-grid">' + idxs.map(cardHtml).join('') + '</div>'
+                    : '<div class="mt-list">' + idxs.map(rowHtml).join('') + '</div>';
+            }
+
+            function paintArr() {
+                body.querySelectorAll('[data-idx] > .mt-arr').forEach(function (cell) {
+                    var html = arrCell(parseInt(cell.parentNode.dataset.idx, 10));
+                    if (cell.innerHTML !== html) cell.innerHTML = html;
+                });
+            }
+
+            // Sonarr / Radarr status, 50 titles per request so the first ones show quickly.
+            function loadArrStatus() {
+                var wanted = [];
+                items.forEach(function (it, idx) { if (it.Imdb || it.Tmdb) wanted.push(idx); });
+                var my = (container._mtArrGen = (container._mtArrGen || 0) + 1);
+                function next(start) {
+                    if (my !== container._mtArrGen || start >= wanted.length) return;
+                    var chunk = wanted.slice(start, start + 50);
+                    fetch(window.ApiClient.getUrl('HomeScreenCompanion/Arr/Status'), {
+                        method: 'POST', headers: hdr,
+                        body: JSON.stringify({ Items: chunk.map(function (i) { return { Imdb: items[i].Imdb || '', Tmdb: items[i].Tmdb || '', MediaType: items[i].MediaType || '' }; }) })
+                    }).then(function (r) { return r.json(); }).then(function (res) {
+                        if (my !== container._mtArrGen) return;
+                        arr.sonarr = !!res.SonarrConfigured; arr.radarr = !!res.RadarrConfigured;
+                        (res.Items || []).forEach(function (st, k) { if (chunk[k] != null) arr.status[chunk[k]] = st; });
+                        paintArr();
+                        next(start + 50);
+                    }).catch(function () { });
+                }
+                next(0);
+            }
+
+            container.querySelector('.mt-refresh').addEventListener('click', function () { loadMissingTab(view, true); });
+            container.querySelector('.mt-search').addEventListener('input', function () { state.search = this.value; renderBody(); });
+            container.querySelector('.mt-listsel').addEventListener('change', function () { state.list = this.value; renderBody(); });
+            container.querySelector('.mt-sort').addEventListener('change', function () { state.sort = this.value; renderBody(); });
+            container.querySelector('.mt-bar').addEventListener('click', function (e) {
+                var chip = e.target.closest('.stm-chip');
+                if (chip) { state.filter = chip.dataset.filter; renderBody(); return; }
+                var v = e.target.closest('.mt-view button');
+                if (v) {
+                    state.view = v.dataset.view;
+                    try { localStorage.setItem('HomeScreenCompanion_MissingView', state.view); } catch (err) { }
+                    renderBody();
+                }
+            });
+            body.addEventListener('click', function (e) {
+                var b = e.target.closest('.stm-arr.add');
+                if (!b) return;
+                var idx = parseInt(b.dataset.idx, 10), it = items[idx], st = arr.status[idx];
+                if (!it || !st) return;
+                openArrAddDialog(st.MediaType === 'tv' ? 'sonarr' : 'radarr', it.Title || '', st.Imdb || st.Tmdb || '', loadArrStatus);
+            });
+            renderBody();
+            loadArrStatus();
+        }
+    }
+
     // Popup for the "Test" buttons on list/AI sources: shows every item the source returned and
     // whether it exists in the library. Opens in a loading state; call .show(result) or .fail(msg).
     // The source Preview reuses it and draws its own list into .body.
@@ -12463,6 +12697,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 });
             }).then(r => {
                 window.Dashboard.processPluginConfigurationUpdateResult(r);
+                updateMissingTab(view, configObj);
                 _topListTagNames = new Set((configObj.TopLists || []).map(function (tl) { return (tl.TagName || '').toLowerCase(); }).filter(Boolean));
                 noteTopListTypes(configObj.TopLists);
 
@@ -12696,6 +12931,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     var el = view.querySelector('#txt' + k); if (el) el.value = config[k] || '';
                 });
                 view.querySelectorAll('.arr-test-result').forEach(function (el) { el.textContent = ''; });
+                updateMissingTab(view, config);
                 var spElInit = view.querySelector('#txtAiSystemPrompt'); if (spElInit) spElInit.value = config.AiSystemPrompt || ''; updateSystemPromptResetBtn(view);
                 view.querySelector('#chkExtendedConsoleOutput').checked = config.ExtendedConsoleOutput || false;
                 view.querySelector('#chkLogMissingItems').checked = config.LogMissingItems || false;
@@ -12769,6 +13005,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 } else if (target === 'TopLists') {
                     var tlContainer = view.querySelector('#tlContainer');
                     if (tlContainer && !tlContainer.dataset.loaded) loadTopListsTab(view);
+                } else if (target === 'Missing') {
+                    loadMissingTab(view);
                 }
         }
 
