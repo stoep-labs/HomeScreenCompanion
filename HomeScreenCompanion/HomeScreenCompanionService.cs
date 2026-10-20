@@ -1965,7 +1965,19 @@ public class HomeScreenCompanionService : IService
 
                 // Resolve library ID
                 string? resolvedLibraryId = null;
-                if (sectionType == "boxset")
+                // A rotating row: today's collection and its title (see RotatingRow).
+                HashSet<string>? rotTitles = null;
+                if (sectionType == "boxset" && RotatingRow.Is(tc))
+                {
+                    var rot = RotatingRow.Resolve(tc, config, _libraryManager, _userManager);
+                    if (rot.Pick == null)
+                        return new HscApplyTagHomeSectionsResponse { Success = true, Message = "No collection to show today — the next sync hides the row." };
+                    var rotCustom = RotatingRow.CustomTitle(tc, _jsonSerializer);
+                    rotTitles = RotatingRow.PoolTitles(tc, rotCustom, rot.Pool);
+                    resolvedLibraryId = rot.Pick.InternalId.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                    settingsDict["CustomName"] = RotatingRow.Title(rotCustom, rot.Pick.Name);
+                }
+                else if (sectionType == "boxset")
                 {
                     if (tc.HomeSectionLibraryId == "auto")
                     {
@@ -2024,6 +2036,10 @@ public class HomeScreenCompanionService : IService
                         ContentSection ownedSection = allSections.FirstOrDefault(s => s.Id == tracking.SectionId);
                         if (ownedSection == null && settingsDict.TryGetValue("CustomName", out var _applyFallbackName) && !string.IsNullOrEmpty(_applyFallbackName))
                             ownedSection = allSections.FirstOrDefault(s => HomeScreenCompanionTask.SameTitle(s.CustomName, _applyFallbackName)
+                                && !HomeScreenCompanionTask.SectionOwnedElsewhere(config, tc, userId, s.Id)
+                                && !TopListSyncTask.IsTopListRow(s, topListLibraries));
+                        if (ownedSection == null && rotTitles != null)
+                            ownedSection = allSections.FirstOrDefault(s => RotatingRow.IsRowTitle(s, rotTitles)
                                 && !HomeScreenCompanionTask.SectionOwnedElsewhere(config, tc, userId, s.Id)
                                 && !TopListSyncTask.IsTopListRow(s, topListLibraries));
 
