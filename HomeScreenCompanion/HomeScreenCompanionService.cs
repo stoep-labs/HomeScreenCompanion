@@ -664,6 +664,9 @@ namespace HomeScreenCompanion
         public string ClaudeModel { get; set; } = "";
         public string OllamaBaseUrl { get; set; } = "";
         public string OllamaModel { get; set; } = "";
+        // OpenAI-compatible connections without their keys (those are in BackupApiKeys).
+        // Nullable so backups made before this feature leave the current connections alone.
+        public List<AiConnection>? AiConnections { get; set; }
         public string AiSystemPrompt { get; set; } = "";
         public bool ExtendedConsoleOutput { get; set; }
         public bool LogMissingItems { get; set; }
@@ -689,6 +692,8 @@ namespace HomeScreenCompanion
         public string? SonarrApiKey { get; set; }
         public string? RadarrUrl { get; set; }
         public string? RadarrApiKey { get; set; }
+        // OpenAI-compatible connection keys, by connection id.
+        public Dictionary<string, string>? AiConnectionKeys { get; set; }
     }
 
     public class BackupHomeSync
@@ -1714,6 +1719,7 @@ public class HomeScreenCompanionService : IService
                     config.ClaudeModel,
                     config.OllamaBaseUrl,
                     config.OllamaModel,
+                    config.AiConnections,
                     config.AiSystemPrompt,
                     recentlyWatchedContext,
                     20,
@@ -3876,6 +3882,8 @@ public class HomeScreenCompanionService : IService
                     ClaudeModel               = config.ClaudeModel ?? "",
                     OllamaBaseUrl             = config.OllamaBaseUrl ?? "",
                     OllamaModel               = config.OllamaModel ?? "",
+                    AiConnections             = (config.AiConnections ?? new List<AiConnection>()).Where(c => c != null)
+                        .Select(c => new AiConnection { Id = c.Id, Name = c.Name, BaseUrl = c.BaseUrl, Model = c.Model }).ToList(),
                     AiSystemPrompt            = config.AiSystemPrompt ?? "",
                     ExtendedConsoleOutput     = config.ExtendedConsoleOutput,
                     LogMissingItems           = config.LogMissingItems,
@@ -3903,7 +3911,10 @@ public class HomeScreenCompanionService : IService
                     SonarrUrl     = config.SonarrUrl ?? "",
                     SonarrApiKey  = config.SonarrApiKey ?? "",
                     RadarrUrl     = config.RadarrUrl ?? "",
-                    RadarrApiKey  = config.RadarrApiKey ?? ""
+                    RadarrApiKey  = config.RadarrApiKey ?? "",
+                    AiConnectionKeys = (config.AiConnections ?? new List<AiConnection>())
+                        .Where(c => c != null && !string.IsNullOrEmpty(c.Id) && !string.IsNullOrEmpty(c.ApiKey))
+                        .GroupBy(c => c.Id).ToDictionary(g => g.Key, g => g.First().ApiKey)
                 };
                 file.Sections.Add("ApiKeys");
             }
@@ -3999,6 +4010,16 @@ public class HomeScreenCompanionService : IService
                     config.ClaudeModel               = s.ClaudeModel ?? "";
                     config.OllamaBaseUrl             = s.OllamaBaseUrl ?? "";
                     config.OllamaModel               = s.OllamaModel ?? "";
+                    if (s.AiConnections != null)
+                    {
+                        // A connection that is still here keeps its key; the keys come with "API keys".
+                        var oldConns = config.AiConnections ?? new List<AiConnection>();
+                        config.AiConnections = s.AiConnections.Where(c => c != null && !string.IsNullOrEmpty(c.Id)).Select(c => new AiConnection
+                        {
+                            Id = c.Id, Name = c.Name ?? "", BaseUrl = c.BaseUrl ?? "", Model = c.Model ?? "",
+                            ApiKey = oldConns.FirstOrDefault(o => o != null && o.Id == c.Id)?.ApiKey ?? ""
+                        }).ToList();
+                    }
                     config.AiSystemPrompt            = s.AiSystemPrompt ?? "";
                     config.ExtendedConsoleOutput     = s.ExtendedConsoleOutput;
                     config.LogMissingItems           = s.LogMissingItems;
@@ -4026,6 +4047,9 @@ public class HomeScreenCompanionService : IService
                     if (k.SonarrApiKey != null) config.SonarrApiKey = k.SonarrApiKey;
                     if (k.RadarrUrl != null)    config.RadarrUrl    = k.RadarrUrl;
                     if (k.RadarrApiKey != null) config.RadarrApiKey = k.RadarrApiKey;
+                    if (k.AiConnectionKeys != null)
+                        foreach (var c in config.AiConnections ?? new List<AiConnection>())
+                            if (c != null && c.Id != null && k.AiConnectionKeys.TryGetValue(c.Id, out var ck)) c.ApiKey = ck ?? "";
                     response.Applied.Add("API keys");
                 }
 

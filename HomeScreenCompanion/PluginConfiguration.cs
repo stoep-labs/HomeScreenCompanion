@@ -17,6 +17,8 @@ namespace HomeScreenCompanion
         public string ClaudeModel { get; set; } = "claude-haiku-4-5-20251001";
         public string OllamaBaseUrl { get; set; } = "http://localhost:11434";
         public string OllamaModel { get; set; } = "";
+        // OpenAI-compatible AI services (Groq, OpenRouter, LM Studio …), any number of them.
+        public List<AiConnection> AiConnections { get; set; } = new List<AiConnection>();
         // Sonarr / Radarr: the "Add" button on titles that are not in the library.
         public string SonarrUrl { get; set; } = "";
         public string SonarrApiKey { get; set; } = "";
