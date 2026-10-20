@@ -737,7 +737,7 @@ namespace HomeScreenCompanion
         }
 
         // MDBList's mediatype ("movie" / "show") as Sonarr / Radarr's "movie" / "tv".
-        private static string MdbMediaType(string mediatype)
+        private static string? MdbMediaType(string? mediatype)
         {
             if (string.Equals(mediatype, "movie", StringComparison.OrdinalIgnoreCase)) return "movie";
             if (string.Equals(mediatype, "show", StringComparison.OrdinalIgnoreCase)) return "tv";
