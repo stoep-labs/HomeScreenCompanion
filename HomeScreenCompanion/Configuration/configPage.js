@@ -2,6 +2,55 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     'use strict';
 
     var pluginId = "7c10708f-43e4-4d69-923c-77d01802315b";
+
+    // The plugin version this script was built for (stamped at build time). Every save sends it:
+    // the server refuses a save from a page of another version (a browser that kept the old page
+    // after an update would save the newer settings empty).
+    var HSC_PAGE_VERSION = '__HSC_PAGE_VERSION__';
+    var _hscPageStale = false;
+
+    function sameVersion(a, b) {
+        var pa = String(a || '').split('.'), pb = String(b || '').split('.');
+        for (var i = 0; i < Math.max(4, pa.length, pb.length); i++)
+            if ((parseInt(pa[i], 10) || 0) !== (parseInt(pb[i], 10) || 0)) return false;
+        return !!a && !!b;
+    }
+
+    // The page is older (or newer) than the plugin: Save is off until the page is reloaded.
+    function markPageStale(serverVersion) {
+        _hscPageStale = true;
+        document.querySelectorAll('.btn-save').forEach(function (b) { b.disabled = true; b.style.opacity = '0.5'; });
+        var view = activeView();
+        if (!view || view.querySelector('.hsc-stale-page')) return;
+        var bar = document.createElement('div');
+        bar.className = 'hsc-callout danger hsc-stale-page';
+        bar.style.cssText = 'margin:0 0 12px;display:flex;align-items:center;gap:12px;';
+        // Emby's app keeps the page's script for the whole session, also through a reload from the
+        // page itself: only the browser's own reload (F5) loads the new one.
+        bar.innerHTML = '<i class="md-icon">sync_problem</i><span style="flex:1;"><strong>This page is out of date — reload.</strong> '
+            + 'The plugin is now v' + String(serverVersion || '?').replace(/[^0-9.]/g, '') + '. Reload this page in your browser (F5) before saving.</span>';
+        var host = view.querySelector('.content-primary') || view.firstElementChild || view;
+        host.insertBefore(bar, host.firstChild);
+        bar.scrollIntoView({ block: 'nearest' });
+    }
+
+    // Compares the plugin version with this page's; resolves false (and marks the page) when they differ.
+    function checkPageVersion() {
+        return window.ApiClient.getJSON(window.ApiClient.getUrl('HomeScreenCompanion/Version')).then(function (r) {
+            var v = (r && r.Version) || '';
+            if (v && !sameVersion(v, HSC_PAGE_VERSION)) { markPageStale(v); return false; }
+            return true;
+        }, function () { return true; });
+    }
+
+    // Every settings save goes through here: it carries the page version. A refused save (page out
+    // of date) shows the reload bar.
+    function savePluginConfig(cfg) {
+        cfg.PageVersion = HSC_PAGE_VERSION;
+        return window.ApiClient.updatePluginConfiguration(pluginId, cfg).catch(function (err) {
+            return checkPageVersion().then(function () { throw err; });
+        });
+    }
     var statusInterval = null;
 
     // One status timer at most, for the page on screen. Starting a new one always stops the old
@@ -833,7 +882,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             .then(function (currentConfig) {
                 var before = hscServerStamp(currentConfig);
                 currentConfig.SettingsLevel = settingsLevel;
-                return window.ApiClient.updatePluginConfiguration(pluginId, currentConfig)
+                return savePluginConfig(currentConfig)
                     .then(function (r) { return advanceServerStamp(before).then(function () { return r; }); });
             })
             .then(function () {
@@ -2808,7 +2857,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             .then(function (currentConfig) {
                 var before = hscServerStamp(currentConfig);
                 currentConfig.SavedFilters = savedFilters;
-                return window.ApiClient.updatePluginConfiguration(pluginId, currentConfig)
+                return savePluginConfig(currentConfig)
                     .then(function (r) { return advanceServerStamp(before).then(function () { return r; }); });
             })
             .then(function () {
@@ -6724,7 +6773,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var btnSave = view.querySelector('.btn-save');
         if (btnSave) {
             var isSyncRunning = (btnSave.querySelector('span').textContent || "").includes("progress");
-            if (isSyncRunning) {
+            if (isSyncRunning || _hscPageStale) {
                 btnSave.disabled = true;
                 btnSave.style.opacity = "0.5";
             } else {
@@ -6835,6 +6884,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     function checkForUpdates(view) {
         window.ApiClient.getJSON(window.ApiClient.getUrl("HomeScreenCompanion/Version")).then(function (result) {
             var currentVer = result.Version || '';
+            if (currentVer && !sameVersion(currentVer, HSC_PAGE_VERSION)) markPageStale(currentVer);
             var channel = (result.Channel || '').replace(/[^A-Za-z0-9 .-]/g, '');
             var footerVer = view.querySelector('#footerVersionText');
             if (footerVer && currentVer) {
@@ -7687,7 +7737,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         window.ApiClient.getPluginConfiguration(pluginId).then(function (cfg) {
                             var before = hscServerStamp(cfg);
                             cfg.OrigPostersEnabled = false;
-                            return window.ApiClient.updatePluginConfiguration(pluginId, cfg)
+                            return savePluginConfig(cfg)
                                 .then(function (r) { return advanceServerStamp(before).then(function () { return r; }); });
                         }).then(function () {
                             if (originalConfigState) {
@@ -8743,7 +8793,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                     if (t.Tag && tagsToInactivate.has(t.Tag.trim().toLowerCase()))
                                         t.Active = false;
                                 });
-                                return window.ApiClient.updatePluginConfiguration(pluginId, cfg)
+                                return savePluginConfig(cfg)
                                     .then(function (r) { return advanceServerStamp(stampBefore).then(function () { return r; }); });
                             });
                         }).then(function () {
@@ -8999,7 +9049,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     });
                 }
                 config.TopLists = topLists;
-                return window.ApiClient.updatePluginConfiguration(pluginId, config)
+                return savePluginConfig(config)
                     .then(function () { return { prepareResult: ctx.prepareResult, libraryItemId: ctx.libraryItemId }; });
             });
         })
@@ -13067,11 +13117,16 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             return 'hsc-draft-' + sid + '-' + uid;
         }
         function readLeaveState() {
-            try { var s = sessionStorage.getItem(leaveStateKey()); return s ? JSON.parse(s) : null; } catch (e) { return null; }
+            try {
+                var s = sessionStorage.getItem(leaveStateKey());
+                var st = s ? JSON.parse(s) : null;
+                // A draft left by a page of another version lacks (or has other) fields: not restored.
+                return st && st.pageVersion === HSC_PAGE_VERSION ? st : null;
+            } catch (e) { return null; }
         }
         function writeLeaveState(obj) {
             try {
-                if (obj) sessionStorage.setItem(leaveStateKey(), JSON.stringify(obj));
+                if (obj) { obj.pageVersion = HSC_PAGE_VERSION; sessionStorage.setItem(leaveStateKey(), JSON.stringify(obj)); }
                 else sessionStorage.removeItem(leaveStateKey());
             } catch (e) { }
         }
@@ -13091,7 +13146,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         // Save: is the server still as this page loaded it? If not, nothing is saved and the user
         // chooses between reloading (losing their edits here) and going on editing.
         function serverUnchangedSinceLoad() {
-            return window.ApiClient.getPluginConfiguration(pluginId).then(function (c) {
+            return checkPageVersion().then(function (current) {
+                return current && window.ApiClient.getPluginConfiguration(pluginId);
+            }).then(function (c) {
+                if (!c) return false;
                 if (!view._hscServerStamp || serverStamp(c) === view._hscServerStamp) return true;
                 showSaveConflictDialog(function () { writeLeaveState(null); hideDraftBar(); loadConfig(); });
                 return false;
@@ -13233,6 +13291,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
 
         view.querySelector('.HomeScreenCompanionForm').addEventListener('submit', e => {
             e.preventDefault();
+            if (_hscPageStale) return;
 
             // A home row with nothing to show (no tag, collection, playlist or top-list) is not saved.
             var _hseEmpty = Array.from(view.querySelectorAll('#tagListContainer .tag-row')).filter(function (r) {
@@ -13407,7 +13466,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                             }
                         });
                     }
-                    return window.ApiClient.updatePluginConfiguration(pluginId, configObj);
+                    return savePluginConfig(configObj);
                 });
             }).then(r => {
                 window.Dashboard.processPluginConfigurationUpdateResult(r);
@@ -13477,6 +13536,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         console.log('[HSC] Top-list rows', tag, res);
                     }).catch(function (e) { console.warn('[HSC] Top-list rows failed', tag, e); });
                 });
+            }).catch(function (err) {
+                // Refused (a page out of date shows its reload bar) or failed: nothing was saved.
+                console.warn('[HSC] Settings not saved', err);
+                if (!_hscPageStale) window.Dashboard.alert('Settings not saved: ' + ((err && (err.statusText || err.message)) || 'the server refused them') + '.');
             });
             } // end doSave
         });
@@ -13558,7 +13621,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         });
 
         function beforeUnloadHandler(e) {
-            if (hasDirtyState()) {
+            if (!_hscPageStale && hasDirtyState()) {
                 e.preventDefault();
                 e.returnValue = '';
             }

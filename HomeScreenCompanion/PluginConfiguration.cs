@@ -113,6 +113,11 @@ namespace HomeScreenCompanion
         // Set once the old Top-Lists tab lists have been moved to their sources (SourceTopLists.Migrate).
         public bool TopListsMovedToSources { get; set; } = false;
 
+        // Sent by the settings page with every save: the plugin version its script was built for.
+        // A save from a page of another version is refused (Plugin.UpdateConfiguration). Never stored.
+        [System.Xml.Serialization.XmlIgnore]
+        public string PageVersion { get; set; } = "";
+
         // Legacy, for migration only: settings of the stoep-labs fork (4.2.0.x), read once by
         // LegacyForkCleanup and then cleared.
         public bool? ShowTopListsEnabled { get; set; } = null;
