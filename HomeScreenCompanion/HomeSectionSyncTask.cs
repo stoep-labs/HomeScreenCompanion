@@ -437,7 +437,10 @@ namespace HomeScreenCompanion
                 var copy = PrepareCopy(config, managed, section, sourceKey, targetKey, targetName, notCopied);
                 if (copy == null) continue;
                 _log.Debug($"  {targetName}: + [{section.SectionType}] \"{section.CustomName ?? section.Name}\"");
+                var rotating = managed.RotatingSource(config, section, sourceKey);
+                var beforeAdd = rotating != null ? (_userManager.GetHomeSections(targetInternalId, cancellationToken)?.Sections ?? Array.Empty<ContentSection>()) : null;
                 _userManager.AddHomeSection(targetInternalId, copy, cancellationToken);
+                if (rotating != null && TrackRotatingCopy(managed, rotating, beforeAdd!, targetIdStr, targetInternalId, cancellationToken)) totals.ConfigChanged = true;
                 totals.Copied++;
                 copiedHere++;
             }
@@ -458,6 +461,14 @@ namespace HomeScreenCompanion
                     if (row == null) continue;
                     HomeScreenCompanionTask.RestoreRowPosition(_userManager, _jsonSerializer, k.PositionKey, targetIdStr, targetInternalId, row.Id, cancellationToken);
                     copiedHere++;
+                }
+                // A kept rotating row: tracked by its id (see TrackRotatingCopy).
+                if (k.Source != null && RotatingRow.Is(k.Source))
+                {
+                    string tk = NormId(targetIdStr);
+                    var tracked = (k.Source.HomeSectionTracked ??= new List<HomeSectionTracking>()).FirstOrDefault(t => NormId(t.UserId) == tk);
+                    if (tracked == null) { k.Source.HomeSectionTracked.Add(new HomeSectionTracking { UserId = managed.SourceUserId(k.Source, tk) ?? targetIdStr, SectionId = row.Id }); totals.ConfigChanged = true; }
+                    else if (tracked.SectionId != row.Id) { tracked.SectionId = row.Id; totals.ConfigChanged = true; }
                 }
                 _log.Debug($"  {targetName}: = '{row.CustomName ?? row.Name}' kept ({(k.Source != null ? "source row; the master is not one of its users" : "top-list row")})");
             }
@@ -526,6 +537,8 @@ namespace HomeScreenCompanion
                     if (added != null)
                     {
                         done.Add(added.Id);
+                        var rotating = managed.RotatingSource(config, section, sourceKey);
+                        if (rotating != null && TrackRotatingCopy(managed, rotating, current, targetIdStr, targetInternalId, cancellationToken)) totals.ConfigChanged = true;
                         // Below the row that is above it on the master's home screen. When this user
                         // does not have that row, PlaceNewRow looks on the master's screen (the
                         // reference user) for the nearest row above it that this user has; else the top.
@@ -547,6 +560,22 @@ namespace HomeScreenCompanion
                 copiedHere++;
             }
             return copiedHere;
+        }
+
+        // A rotating row just copied to the user: tracked for them by its id. Its title and
+        // collection can be the same as another source's row on the same home screen (a pool
+        // collection with a row of its own), so only the id tells the two apart afterwards.
+        private bool TrackRotatingCopy(ManagedRows managed, TagConfig rotating, ContentSection[] before, string targetIdStr, long targetInternalId, CancellationToken cancellationToken)
+        {
+            var added = (_userManager.GetHomeSections(targetInternalId, cancellationToken)?.Sections ?? Array.Empty<ContentSection>())
+                .FirstOrDefault(x => !string.IsNullOrEmpty(x.Id) && !before.Any(b => b.Id == x.Id));
+            if (added == null) return false;
+            string targetKey = NormId(targetIdStr);
+            var tracked = (rotating.HomeSectionTracked ??= new List<HomeSectionTracking>()).FirstOrDefault(t => NormId(t.UserId) == targetKey);
+            if (tracked != null && tracked.SectionId == added.Id) return false;
+            if (tracked != null) tracked.SectionId = added.Id;
+            else rotating.HomeSectionTracked.Add(new HomeSectionTracking { UserId = managed.SourceUserId(rotating, targetKey) ?? targetIdStr, SectionId = added.Id });
+            return true;
         }
 
         // The copy of a master row for this user; null when they do not get it (said in notCopied).
