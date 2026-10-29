@@ -63,6 +63,10 @@ namespace HomeScreenCompanion
             {
                 incoming.HomeSyncAdditions = (current.HomeSyncAdditions ?? new List<HomeSyncAddition>())
                     .Select(a => new HomeSyncAddition { List = a.List, Key = a.Key, UserId = a.UserId, Picked = a.Picked, SectionId = a.SectionId }).ToList();
+                // The root folders last picked in the Missing tab's Add dialog (ArrService): the
+                // server's own record too.
+                incoming.SonarrLastRootFolderPath = current.SonarrLastRootFolderPath ?? "";
+                incoming.RadarrLastRootFolderPath = current.RadarrLastRootFolderPath ?? "";
                 HomeSectionSyncTask.KeepKeysOfRenamedSources(current, incoming);
             }
             base.UpdateConfiguration(configuration);

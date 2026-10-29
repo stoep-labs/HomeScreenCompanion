@@ -101,6 +101,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         var c = strip(config || {});
         delete c.TopLists;
         delete c.HomeSyncAdditions;
+        // Set by the Missing tab's Sonarr / Radarr Add dialog (the server keeps them on Save).
+        delete c.SonarrLastRootFolderPath; delete c.RadarrLastRootFolderPath;
         c.Tags = (c.Tags || []).map(function (t) {
             var x = Object.assign({}, t);
             delete x.HomeSectionTracked; delete x.PlaylistMappings;
@@ -6598,6 +6600,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             MissingExportFolder: view.querySelector('#txtMissingExportFolder').value.trim(),
             MissingExportJson: view.querySelector('#chkMissingExportJson').checked,
             MissingExportCsv: view.querySelector('#chkMissingExportCsv').checked,
+            SonarrUrl: view.querySelector('#txtSonarrUrl').value.trim(),
+            SonarrApiKey: view.querySelector('#txtSonarrApiKey').value.trim(),
+            RadarrUrl: view.querySelector('#txtRadarrUrl').value.trim(),
+            RadarrApiKey: view.querySelector('#txtRadarrApiKey').value.trim(),
             RankedCollectionsEnabled: view.querySelector('#chkRankedCollectionsEnabled').checked,
             SettingsLevel: settingsLevel,
             ShowAdvancedBadges: view.querySelector('#chkShowAdvancedBadges').checked,
@@ -6792,6 +6798,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         ShowCopyPasteButtons: 'Copy & paste sources', ShowImportCollectionButton: 'Import collection', ShowMissingTitles: 'Show missing titles',
         MissingIncludeGaps: 'Missing: include shows that lack episodes', MissingExportToFile: 'Missing: keep the list in a file',
         MissingExportFolder: 'Missing: file folder', MissingExportJson: 'Missing: JSON file', MissingExportCsv: 'Missing: CSV files',
+        SonarrUrl: 'Sonarr URL', RadarrUrl: 'Radarr URL',
         RankedCollectionsEnabled: 'Ranked collections', ShowAdvancedBadges: 'Show Advanced badges', SavedFilters: 'Saved filters',
         HomeSyncEnabled: 'Home Screen sync: on/off', HomeSyncProfiles: 'Home Screen sync: profiles',
         ContinueWatchingBumpEnabled: 'Continue Watching bump: on/off', ContinueWatchingBumpMode: 'Continue Watching bump: mode',
@@ -6916,6 +6923,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             view.classList.toggle('hsc-no-ranked', !saved.RankedCollectionsEnabled);
             refreshAdvBadges(view);
             view.classList.toggle('hsc-no-missing', !saved.ShowMissingTitles);
+            // Sonarr / Radarr on the Missing tab: with a saved URL and API key. Set up (or
+            // taken away) while the tab is open: its titles are drawn again.
+            var arrWas = !view.classList.contains('hsc-no-arr');
+            view.classList.toggle('hsc-no-arr', !arrConfigured(saved));
+            var mtShown = view.querySelector('#tabMissing');
+            if (arrWas !== arrConfigured(saved) && mtShown && mtShown.style.display !== 'none') loadMissingTab(view);
             // Turned off while its tab is open: back to Settings, where it was turned off.
             var mtTab = view.querySelector('#tabMissing');
             if (!saved.ShowMissingTitles && mtTab && mtTab.style.display !== 'none' && view._hscShowPageTab) view._hscShowPageTab('Settings');
@@ -7998,6 +8011,111 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }
     }
 
+    // ---- Missing tab: Sonarr & Radarr (ArrIntegration.cs) ----
+    // A missing movie shows whether it is in Radarr (monitored, downloaded), a missing show whether
+    // it is in Sonarr (monitored, episodes downloaded); one that is not gets an Add button. Only
+    // with a saved URL and API key (the hsc-no-arr class hides it otherwise).
+    function arrConfigured(cfg) {
+        function set(v) { return !!(v || '').trim(); }
+        return !!cfg && ((set(cfg.SonarrUrl) && set(cfg.SonarrApiKey)) || (set(cfg.RadarrUrl) && set(cfg.RadarrApiKey)));
+    }
+
+    // Test Connection with the URL and key as typed (Sonarr / Radarr system/status).
+    function testArrConnection(view, btn) {
+        var kind = btn.dataset.kind, name = kind === 'sonarr' ? 'Sonarr' : 'Radarr';
+        var out = view.querySelector('.arr-test-result[data-kind="' + kind + '"]');
+        btn.disabled = true;
+        out.style.color = '';
+        out.textContent = 'Testing…';
+        fetch(window.ApiClient.getUrl('HomeScreenCompanion/Arr/Test'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
+            body: JSON.stringify({ Kind: kind, Url: view.querySelector('#txt' + name + 'Url').value, ApiKey: view.querySelector('#txt' + name + 'ApiKey').value })
+        }).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }).then(function (res) {
+            out.textContent = res.Message;
+            out.style.color = res.Success ? 'var(--hsc-primary-text)' : 'var(--hsc-danger-text)';
+        }).catch(function (err) {
+            out.textContent = 'Connection failed: ' + err.message;
+            out.style.color = 'var(--hsc-danger-text)';
+        }).then(function () { btn.disabled = false; });
+    }
+
+    // Add to Sonarr / Radarr: root folder (the last one used is picked) and quality profile
+    // (HD-1080p when there is one); Radarr also minimum availability and Monitored. The plugin
+    // sends the add, with a search for the title.
+    function openArrAddDialog(kind, title, sourceId, onAdded) {
+        var isTv = kind === 'sonarr';
+        var name = isTv ? 'Sonarr' : 'Radarr';
+        var fieldStyle = 'width:100%; box-sizing:border-box; padding:7px 9px; font-size:inherit; color:inherit; background:var(--plugin-input-bg,rgba(255,255,255,0.08)); border:1px solid var(--plugin-input-border,rgba(255,255,255,0.2)); border-radius:6px;';
+        function field(label, html) { return '<div style="margin-bottom:14px;"><label style="display:block; font-size:0.85em; opacity:0.75; margin-bottom:4px;">' + label + '</label>' + html + '</div>'; }
+        var idLabel = /^tt/i.test(sourceId) ? 'IMDb ID' : (isTv ? 'TVDb ID' : 'TMDb ID');
+        var modal = buildBackupModalShell();
+        modal.renderBox(
+            '<h3 style="' + _backupTitleStyle + '">' + (isTv ? 'Add show to Sonarr' : 'Add movie to Radarr') + '</h3>' +
+            field('Title', '<input type="text" readonly class="arr-title" style="' + fieldStyle + ' opacity:0.8;" />') +
+            field(idLabel, '<input type="text" readonly class="arr-id" style="' + fieldStyle + ' opacity:0.8;" />') +
+            field('Root Folder', '<select class="arr-root" style="' + fieldStyle + '"><option>Loading…</option></select>') +
+            field('Quality Profile', '<select class="arr-quality" style="' + fieldStyle + '"><option>Loading…</option></select>') +
+            (isTv ? '' :
+                field('Minimum Availability', '<select class="arr-avail" style="' + fieldStyle + '">' +
+                    '<option value="announced">Announced</option><option value="inCinemas">In Cinemas</option>' +
+                    '<option value="released">Released</option></select>') +
+                '<label style="display:inline-flex; align-items:center; gap:8px; cursor:pointer;"><input type="checkbox" class="arr-monitored" checked /> Monitored</label>') +
+            '<div style="display:flex;gap:10px;justify-content:flex-end;align-items:center;flex-wrap:wrap;margin-top:18px;">' +
+            '<button type="button" class="arr-cancel hsc-mbtn hsc-btn-secondary">Cancel</button>' +
+            '<button type="button" class="arr-add hsc-mbtn hsc-btn-primary" disabled>Add to ' + name + '</button>' +
+            '</div>'
+        );
+        modal.querySelector('.arr-title').value = title;
+        modal.querySelector('.arr-id').value = sourceId;
+        modal.querySelector('.arr-cancel').addEventListener('click', modal.close);
+        var addBtn = modal.querySelector('.arr-add');
+
+        window.ApiClient.getJSON(window.ApiClient.getUrl('HomeScreenCompanion/Arr/Options', { Kind: kind })).then(function (res) {
+            if (!res.Success) { showToast(res.Message); modal.close(); return; }
+            var rootSel = modal.querySelector('.arr-root');
+            rootSel.innerHTML = (res.RootFolders || []).map(function (p) { return '<option value="' + escapeHtml(p) + '">' + escapeHtml(p) + '</option>'; }).join('');
+            if (res.LastRootFolderPath && (res.RootFolders || []).indexOf(res.LastRootFolderPath) !== -1) rootSel.value = res.LastRootFolderPath;
+            var qSel = modal.querySelector('.arr-quality');
+            var hd = null;
+            qSel.innerHTML = (res.QualityProfiles || []).map(function (p) {
+                var n = (p.Name || '').toLowerCase();
+                if (n.indexOf('hd-1080p') !== -1 || n.indexOf('hd 1080p') !== -1) hd = String(p.Id);
+                return '<option value="' + p.Id + '">' + escapeHtml(p.Name) + '</option>';
+            }).join('');
+            if (hd) qSel.value = hd;
+            addBtn.disabled = !(res.RootFolders || []).length || !(res.QualityProfiles || []).length;
+        }).catch(function (err) { showToast(name + ' could not be read: ' + (err && err.message || err)); modal.close(); });
+
+        addBtn.addEventListener('click', function () {
+            addBtn.disabled = true;
+            addBtn.textContent = 'Adding…';
+            var req = {
+                Kind: kind, SourceId: sourceId, Title: title,
+                QualityProfileId: parseInt(modal.querySelector('.arr-quality').value, 10) || 0,
+                RootFolderPath: modal.querySelector('.arr-root').value || ''
+            };
+            if (!isTv) {
+                req.MinimumAvailability = modal.querySelector('.arr-avail').value;
+                req.Monitored = modal.querySelector('.arr-monitored').checked;
+            }
+            fetch(window.ApiClient.getUrl('HomeScreenCompanion/Arr/Add'), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
+                body: JSON.stringify(req)
+            }).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }).then(function (res) {
+                showToast(res.Message);
+                if (res.Success || res.AlreadyIn) { modal.close(); if (onAdded) onAdded(); return; }
+                addBtn.disabled = false;
+                addBtn.textContent = 'Add to ' + name;
+            }).catch(function (err) {
+                showToast('Not added: ' + (err && err.message || err));
+                addBtn.disabled = false;
+                addBtn.textContent = 'Add to ' + name;
+            });
+        });
+    }
+
     function renderMissingTab(view, container, data) {
         renderMissingExportStatus(view, data);
         var movies = data.Movies || [], shows = data.Shows || [];
@@ -8018,10 +8136,15 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         }
         function searchText(t) { return ((t.Name || '') + ' ' + (t.Year || '') + ' ' + (t.Lists || []).join(' ')).toLowerCase(); }
 
-        function movieRow(m) {
+        // Sonarr / Radarr: every title of the tab, by its index (movies, then shows).
+        var arrItems = movies.map(function (m) { return { t: m, Type: 'movie' }; })
+            .concat(shows.map(function (s) { return { t: s, Type: 'show' }; }));
+        function arrSlot(i) { return '<span class="mt-arr" data-arr="' + i + '"></span>'; }
+
+        function movieRow(m, i) {
             return '<div class="mt-row" data-search="' + escapeHtml(searchText(m)) + '"><div class="mt-head"><span class="mt-chev-spacer"></span>' +
                 '<span class="mt-title">' + escapeHtml(m.Name) + yearHtml(m.Year) + '</span>' +
-                listsHtml(m) + linksHtml(m, 'movie') + '</div></div>';
+                listsHtml(m) + arrSlot(i) + linksHtml(m, 'movie') + '</div></div>';
         }
 
         function episodeRow(e) {
@@ -8040,7 +8163,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '<span class="mt-title">Season ' + se.Number + '</span><span class="mt-count">' + label + '</span></div>' +
                 '<div class="mt-body">' + (later ? '<div class="mt-ep" style="color:var(--theme-text-secondary);">Loading…</div>' : se.Episodes.map(episodeRow).join('')) + '</div></div>';
         }
-        function showRow(s) {
+        function showRow(s, i) {
             var inLib = !!s.LibraryId;
             var pill = inLib
                 ? '<a class="mt-pill lib mt-nav" href="javascript:void(0)" data-navid="' + escapeHtml(s.LibraryId) + '" title="Open the show in Emby" style="text-decoration:none;">In library</a>'
@@ -8053,7 +8176,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 '<div class="mt-head' + (open ? ' mt-toggle' : '') + '">' +
                 (open ? '<i class="md-icon mt-chev">chevron_right</i>' : '<span class="mt-chev-spacer"></span>') +
                 '<span class="mt-title">' + escapeHtml(s.Name) + yearHtml(s.Year) + '</span>' +
-                listsHtml(s) + (count ? '<span class="mt-count">' + count + '</span>' : '') + pill + linksHtml(s, 'tv') + '</div>' +
+                listsHtml(s) + (count ? '<span class="mt-count">' + count + '</span>' : '') + pill + arrSlot(movies.length + i) + linksHtml(s, 'tv') + '</div>' +
                 (open ? '<div class="mt-body">' + s.Seasons.map(seasonRow).join('') + '</div>' : '') +
                 '</div>';
         }
@@ -8084,6 +8207,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             }).join('') + '</div>' +
             '<div style="margin-bottom:12px;"><input type="text" id="mtSearch" placeholder="Search titles or lists…" style="background:rgba(128,128,128,0.08);border:1px solid var(--line-color);border-radius:6px;padding:5px 10px;font-size:0.9em;color:inherit;width:400px;max-width:100%;" /></div>' +
             '<div id="mtMovies" style="display:' + (shown === 'movies' ? '' : 'none') + ';">' +
+            '<div id="mtArrError"></div>' +
             (movies.length ? movies.map(movieRow).join('') : '<div style="color:var(--theme-text-secondary);padding:8px 0;">' + (data.HasData ? 'Every movie on your lists is in your library.' : '') + '</div>') +
             '</div>' +
             '<div id="mtShows" style="display:' + (shown === 'shows' ? '' : 'none') + ';">' + noKey +
@@ -8105,6 +8229,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         container.querySelector('#mtSearch').addEventListener('input', applySearch);
 
         container.onclick = function (e) {
+            var add = e.target.closest('.mt-arr-add');
+            if (add) {
+                var it = arrItems[+add.closest('.mt-arr').dataset.arr];
+                if (it) openArrAddDialog(it.Type === 'show' ? 'sonarr' : 'radarr', it.t.Name || '', add.dataset.id, loadArrStatus);
+                return;
+            }
             var nav = e.target.closest('.mt-nav');
             if (nav) {
                 var serverId = (window.ApiClient && window.ApiClient.serverId) ? window.ApiClient.serverId() : '';
@@ -8130,6 +8260,55 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             // A show without its episodes reads them as soon as it opens, so its seasons are ready.
             if (box.classList.contains('mt-open') && (box.classList.contains('mt-later') || box.querySelector('.mt-later'))) loadShowEpisodes(box.closest('.mt-show'));
         };
+
+        // Sonarr / Radarr status, 100 titles per request, so the first ones show quickly.
+        function paintArr(i, st, res) {
+            var slot = container.querySelector('.mt-arr[data-arr="' + i + '"]');
+            if (!slot) return;
+            var isShow = st.Type === 'show', name = isShow ? 'Sonarr' : 'Radarr';
+            if (!(isShow ? res.SonarrConfigured && !res.SonarrError : res.RadarrConfigured && !res.RadarrError)) { slot.innerHTML = ''; return; }
+            if (st.In) {
+                var parts = [name, st.Monitored ? 'monitored' : 'unmonitored'];
+                var done = isShow ? st.Episodes > 0 && st.EpisodeFiles >= st.Episodes : st.Downloaded;
+                if (isShow) { if (st.Episodes > 0) parts.push(st.EpisodeFiles + ' of ' + plural(st.Episodes, 'episode')); }
+                else parts.push(st.Downloaded ? 'downloaded' : 'not downloaded');
+                slot.innerHTML = '<span class="mt-pill arr' + (done ? ' done' : st.Monitored ? ' mon' : '') + '">' + escapeHtml(parts.join(' · ')) + '</span>';
+                return;
+            }
+            // Sonarr adds by TVDb id (else IMDb), Radarr by IMDb id (else TMDb).
+            var id = isShow ? (st.Tvdb || st.Imdb) : (st.Imdb || st.Tmdb);
+            slot.innerHTML = id ? '<button type="button" class="mt-arr-add" data-id="' + escapeHtml(id) + '" title="Add to ' + name + '">+ ' + name + '</button>' : '';
+        }
+        function loadArrStatus() {
+            if (view.classList.contains('hsc-no-arr') || !arrItems.length) return;
+            var my = (container._mtArrGen = (container._mtArrGen || 0) + 1);
+            var errors = {};
+            (function next(start) {
+                if (my !== container._mtArrGen || start >= arrItems.length) return;
+                var part = arrItems.slice(start, start + 100).map(function (it) {
+                    return { Type: it.Type, Imdb: it.t.Imdb || '', Tmdb: it.t.Tmdb || '', Tvdb: it.t.Tvdb || '' };
+                });
+                fetch(window.ApiClient.getUrl('HomeScreenCompanion/Arr/Status'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'X-MediaBrowser-Token': window.ApiClient.accessToken() },
+                    body: JSON.stringify({ Items: part })
+                }).then(function (r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }).then(function (res) {
+                    if (my !== container._mtArrGen) return;
+                    (res.Items || []).forEach(function (st, j) { paintArr(start + j, st, res); });
+                    if (res.SonarrError) errors.Sonarr = res.SonarrError;
+                    if (res.RadarrError) errors.Radarr = res.RadarrError;
+                    var box = container.querySelector('#mtArrError');
+                    if (box) box.innerHTML = Object.keys(errors).map(function (n) {
+                        return '<div class="hsc-callout danger" style="margin-bottom:12px;"><i class="md-icon">error</i><span>' + n + ' could not be read: ' + escapeHtml(errors[n]) + '</span></div>';
+                    }).join('');
+                    next(start + 100);
+                }).catch(function (err) {
+                    var box = container.querySelector('#mtArrError');
+                    if (box && my === container._mtArrGen) box.innerHTML = '<div class="hsc-callout danger" style="margin-bottom:12px;"><i class="md-icon">error</i><span>Sonarr / Radarr could not be read (' + escapeHtml(err.message) + ').</span></div>';
+                });
+            })(0);
+        }
+        loadArrStatus();
 
         // Fills every season of a show that came without its episodes (one request per show).
         function loadShowEpisodes(showEl) {
@@ -11253,7 +11432,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     // sync tasks generate (tags, collections, playlists, top-list files, images) is rebuilt on run.
     var _backupSections = [
         { key: 'Settings',     label: 'General settings',          desc: 'AI models, system prompt, logging, dry run, preserve-on-empty.' },
-        { key: 'ApiKeys',      label: 'API keys',                  desc: 'Trakt, MDBList, TMDB, OpenAI, Gemini, Claude, OpenAI-compatible. Stored in plain text in the file.' },
+        { key: 'ApiKeys',      label: 'API keys',                  desc: 'Trakt, MDBList, TMDB, OpenAI, Gemini, Claude, OpenAI-compatible, Sonarr &amp; Radarr. Stored in plain text in the file.' },
         { key: 'Tags',         label: 'Tag & collection groups',   desc: 'All source groups incl. schedules, blacklists, filters, collection settings, home sections and playlists.' },
         { key: 'SavedFilters', label: 'Saved media-info filters',  desc: 'Your saved filter presets.' },
         { key: 'TopLists',     label: 'Top lists',                 desc: 'Top-list settings and the movie and show lists of manual top-lists.' },
@@ -12839,6 +13018,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
             mtExport.addEventListener('input',  changeHandler, { signal: _signal });
             mtExport.addEventListener('change', function () { updateMissingExportUi(view); changeHandler(); }, { signal: _signal });
             view.querySelector('.btnMtRefresh').addEventListener('click', function () { loadMissingTab(view); }, { signal: _signal });
+            // Sonarr & Radarr on the Missing tab: saved with the settings.
+            var mtArr = view.querySelector('#mtArrPanel');
+            mtArr.addEventListener('input',  changeHandler, { signal: _signal });
+            mtArr.addEventListener('change', changeHandler, { signal: _signal });
+            mtArr.addEventListener('click', function (e) {
+                var btn = e.target.closest('.btnTestArr');
+                if (btn) testArrConnection(view, btn);
+            }, { signal: _signal });
             mtExport.addEventListener('click', function (e) {
                 var btn = e.target.closest('.btnMtDownload');
                 if (btn) downloadMissingTitles(view, btn);
@@ -13858,6 +14045,10 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                 view.querySelector('#chkMissingExportJson').checked = config.MissingExportJson !== false;
                 view.querySelector('#chkMissingExportCsv').checked = config.MissingExportCsv !== false;
                 updateMissingExportUi(view);
+                view.querySelector('#txtSonarrUrl').value = config.SonarrUrl || '';
+                view.querySelector('#txtSonarrApiKey').value = config.SonarrApiKey || '';
+                view.querySelector('#txtRadarrUrl').value = config.RadarrUrl || '';
+                view.querySelector('#txtRadarrApiKey').value = config.RadarrApiKey || '';
                 view.querySelector('#chkRankedCollectionsEnabled').checked = config.RankedCollectionsEnabled || false;
                 view.querySelector('#chkShowAdvancedBadges').checked = config.ShowAdvancedBadges !== false;
                 if (view.querySelector('#txtSearchTags')) {

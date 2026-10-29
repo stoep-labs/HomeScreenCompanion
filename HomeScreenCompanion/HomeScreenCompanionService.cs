@@ -759,6 +759,11 @@ namespace HomeScreenCompanion
         public string ClaudeApiKey { get; set; } = "";
         // OpenAI-compatible connection keys, by connection id.
         public Dictionary<string, string>? AiConnectionKeys { get; set; }
+        // Null in backups from before Sonarr / Radarr: the current settings are kept.
+        public string? SonarrUrl { get; set; }
+        public string? SonarrApiKey { get; set; }
+        public string? RadarrUrl { get; set; }
+        public string? RadarrApiKey { get; set; }
     }
 
     public class BackupHomeSync
@@ -4080,7 +4085,11 @@ public class HomeScreenCompanionService : IService
                     ClaudeApiKey  = config.ClaudeApiKey ?? "",
                     AiConnectionKeys = (config.AiConnections ?? new List<AiConnection>())
                         .Where(c => c != null && !string.IsNullOrEmpty(c.Id) && !string.IsNullOrEmpty(c.ApiKey))
-                        .GroupBy(c => c.Id).ToDictionary(g => g.Key, g => g.First().ApiKey)
+                        .GroupBy(c => c.Id).ToDictionary(g => g.Key, g => g.First().ApiKey),
+                    SonarrUrl     = config.SonarrUrl ?? "",
+                    SonarrApiKey  = config.SonarrApiKey ?? "",
+                    RadarrUrl     = config.RadarrUrl ?? "",
+                    RadarrApiKey  = config.RadarrApiKey ?? ""
                 };
                 file.Sections.Add("ApiKeys");
             }
@@ -4231,6 +4240,10 @@ public class HomeScreenCompanionService : IService
                     if (k.AiConnectionKeys != null)
                         foreach (var c in config.AiConnections ?? new List<AiConnection>())
                             if (c != null && c.Id != null && k.AiConnectionKeys.TryGetValue(c.Id, out var ck)) c.ApiKey = ck ?? "";
+                    if (k.SonarrUrl != null)    config.SonarrUrl    = k.SonarrUrl;
+                    if (k.SonarrApiKey != null) config.SonarrApiKey = k.SonarrApiKey;
+                    if (k.RadarrUrl != null)    config.RadarrUrl    = k.RadarrUrl;
+                    if (k.RadarrApiKey != null) config.RadarrApiKey = k.RadarrApiKey;
                     response.Applied.Add("API keys");
                 }
 

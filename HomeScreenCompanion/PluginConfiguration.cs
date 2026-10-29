@@ -20,6 +20,14 @@ namespace HomeScreenCompanion
         public string OllamaModel { get; set; } = "";
         // OpenAI-compatible AI services (Groq, OpenRouter, LM Studio …), any number of them.
         public List<AiConnection> AiConnections { get; set; } = new List<AiConnection>();
+        // Sonarr / Radarr (the Missing tab): status of the missing titles there, and Add.
+        public string SonarrUrl { get; set; } = "";
+        public string SonarrApiKey { get; set; } = "";
+        public string RadarrUrl { get; set; } = "";
+        public string RadarrApiKey { get; set; } = "";
+        // The root folder last chosen in the Add dialog, picked again next time.
+        public string SonarrLastRootFolderPath { get; set; } = "";
+        public string RadarrLastRootFolderPath { get; set; } = "";
         public string AiSystemPrompt { get; set; } =
             "You are a movie and TV show recommendation assistant. " +
             "Respond ONLY with a valid JSON array. No explanation, no markdown, no code fences. " +

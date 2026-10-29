@@ -1,4 +1,4 @@
-<div id="HomeScreenCompanionConfigPage" data-role="page" class="page type-interior pluginConfigurationPage hsc-no-copypaste hsc-no-import hsc-no-ranked hsc-no-missing"
+<div id="HomeScreenCompanionConfigPage" data-role="page" class="page type-interior pluginConfigurationPage hsc-no-copypaste hsc-no-import hsc-no-ranked hsc-no-missing hsc-no-arr"
      data-require="emby-input,emby-button,emby-checkbox,emby-textarea"
      data-controller="__plugin/HomeScreenCompanionJS">
 
@@ -1457,6 +1457,15 @@
         .mt-ep-num { width: 3.2em; flex-shrink: 0; color: var(--theme-text-secondary); font-variant-numeric: tabular-nums; }
         .mt-ep-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .mt-ep-date { color: var(--theme-text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+        /* Missing tab: Sonarr / Radarr status of a title, or its Add button */
+        .hsc-no-arr .mt-arr, .hsc-no-arr #mtArrError { display: none !important; }
+        .mt-arr { display: flex; flex-shrink: 0; }
+        .mt-arr:empty { display: none; }
+        .mt-arr .mt-pill.arr { background: var(--hsc-tint-2); color: var(--theme-text-secondary); }
+        .mt-arr .mt-pill.arr.mon { background: rgba(90,150,230,0.16); color: var(--theme-text-primary); }
+        .mt-arr .mt-pill.arr.done { background: rgba(82,181,75,0.15); color: var(--hsc-primary-text); }
+        .mt-arr-add { font-size: 0.75em; font-weight: 600; font-family: inherit; color: var(--theme-text-secondary); background: transparent; border: 1px solid var(--hsc-hairline-strong); border-radius: 9999px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
+        .mt-arr-add:hover { color: var(--theme-text-primary); background: var(--hsc-tint-2); }
         .hsc-no-ranked .ranked-only { display: none !important; }
 
         /* Settings level: Basic hides the power-user settings (.hsc-adv) that are not in use
@@ -2012,6 +2021,44 @@
                                 <label style="display:flex; align-items:center; gap:6px; cursor:pointer;"><input is="emby-checkbox" type="checkbox" id="chkMissingExportCsv" /><span>CSV (missing_movies.csv, missing_shows.csv)</span></label>
                             </div>
                             <div id="mtExportStatus" class="fieldDescription" style="margin-top:8px;"></div>
+                        </div>
+                    </div>
+                </div>
+                <div id="mtArrPanel" class="advanced-section settings-panel" style="margin:0 0 20px;">
+                    <div class="advanced-header settings-panel-toggle">
+                        <i class="md-icon hsc-panel-icon">cloud_download</i>
+                        <span class="hsc-title">Sonarr &amp; Radarr</span>
+                        <i class="md-icon settings-panel-chevron" style="margin-left: auto; transition: transform 0.2s;">expand_more</i>
+                    </div>
+                    <div class="advanced-body settings-panel-body" style="display:none;">
+                        <div class="hsc-eyebrow" style="margin-top: 4px; margin-bottom: 8px;">Sonarr</div>
+                        <div class="inputContainer">
+                            <input is="emby-input" type="text" id="txtSonarrUrl" label="Sonarr Server URL" placeholder="http://localhost:8989" autocomplete="off" spellcheck="false" />
+                        </div>
+                        <div class="inputContainer" style="margin-top: 12px;">
+                            <input is="emby-input" type="text" class="api-key-field" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore id="txtSonarrApiKey" label="Sonarr API Key" />
+                            <label style="display:inline-flex; align-items:center; gap:5px; font-size:0.85em; opacity:0.75; margin-top:4px; cursor:pointer;">
+                                <input type="checkbox" class="chkShowApiKey" data-target="txtSonarrApiKey" style="margin:0;" /> Show
+                            </label>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                            <button type="button" is="emby-button" class="raised btn-neutral btnTestArr" data-kind="sonarr"><i class="md-icon" style="margin-right:5px;">wifi_tethering</i><span>Test Connection</span></button>
+                            <span class="arr-test-result" data-kind="sonarr" style="font-size:0.85em;"></span>
+                        </div>
+
+                        <div class="hsc-eyebrow" style="margin-top: 24px; margin-bottom: 8px;">Radarr</div>
+                        <div class="inputContainer">
+                            <input is="emby-input" type="text" id="txtRadarrUrl" label="Radarr Server URL" placeholder="http://localhost:7878" autocomplete="off" spellcheck="false" />
+                        </div>
+                        <div class="inputContainer" style="margin-top: 12px;">
+                            <input is="emby-input" type="text" class="api-key-field" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore id="txtRadarrApiKey" label="Radarr API Key" />
+                            <label style="display:inline-flex; align-items:center; gap:5px; font-size:0.85em; opacity:0.75; margin-top:4px; cursor:pointer;">
+                                <input type="checkbox" class="chkShowApiKey" data-target="txtRadarrApiKey" style="margin:0;" /> Show
+                            </label>
+                        </div>
+                        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+                            <button type="button" is="emby-button" class="raised btn-neutral btnTestArr" data-kind="radarr"><i class="md-icon" style="margin-right:5px;">wifi_tethering</i><span>Test Connection</span></button>
+                            <span class="arr-test-result" data-kind="radarr" style="font-size:0.85em;"></span>
                         </div>
                     </div>
                 </div>
@@ -2945,6 +2992,10 @@
                 <div id="help-hide-libs" class="help-feature-row">
                     <i class="md-icon help-feat-icon">visibility_off</i>
                     <div><strong>Hide HSC libraries</strong> <span style="opacity:0.6;">(Features)</span> — On by default. Keeps the libraries HSC creates — those of top-lists and of ranked collections — out of every user's sidebar, "My Media" tiles and "Latest" rows; only their top-list rows and collections show them. TV show top-list libraries are always kept out of Latest, Continue Watching and Next Up, whatever this setting is.</div>
+                </div>
+                <div id="help-arr" class="help-feature-row">
+                    <i class="md-icon help-feat-icon">cloud_download</i>
+                    <div><strong>Sonarr &amp; Radarr</strong> <span style="opacity:0.6;">(Missing tab)</span> — With <em>Show missing titles</em> on, the Missing tab's <em>Sonarr &amp; Radarr</em> panel takes each server's URL and API key (in Sonarr / Radarr under Settings → General); <em>Test Connection</em> shows the version. Once they are saved, each missing movie shows whether it is in Radarr, monitored or not and downloaded or not, and each show whether it is in Sonarr, monitored or not and how many of its episodes are downloaded. A title that is not there gets <em>+ Radarr</em> / <em>+ Sonarr</em>: pick the root folder and quality profile (Radarr also minimum availability and Monitored) and it is added, monitored, with a search for it. Shows are added by their TVDb id (else IMDb id), movies by their IMDb id (else TMDb id). The plugin talks to Sonarr and Radarr itself, so they need not be reachable from the browser.</div>
                 </div>
 
                 <div id="help-sec-8b" class="hsc-eyebrow" style="margin:18px 0 8px;">Advanced Settings</div>
