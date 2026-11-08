@@ -29,7 +29,9 @@ namespace HomeScreenCompanion
     /// items stay as they are and sort after the ranked movies.
     ///
     /// Copies live outside the top-list folder on purpose: TopListCollectionMirror keeps top-list
-    /// copies out of collections, which would undo this.
+    /// copies out of collections, which would undo this. It never mirrors a ranked copy either,
+    /// and the sync takes any top-list copy out of a ranked collection: Emby shows merged versions
+    /// as one entry, which would otherwise be the rank-badged top-list copy.
     /// </summary>
     internal static class RankedCollections
     {
@@ -296,7 +298,7 @@ namespace HomeScreenCompanion
             GrantRestrictedUsers(lib, movies, libraryManager, userManager, log);
             // Every sync (not only on creation), so turning "Hide HSC libraries" on or off reaches
             // ranked libraries without a top-list sync (that one stops early when there are no top-lists).
-            var visChanged = TopListLibraryVisibility.Apply(config, userManager, libraryManager, m => log.Warn(m));
+            var visChanged = TopListLibraryVisibility.Apply(config, userManager, libraryManager, m => log.Warn(m), m => log.Info("    " + m));
             if (visChanged > 0)
                 log.Info($"    HSC libraries {(config.HideTopListLibraries ? "hidden from" : "shown again in")} My Media and Latest for {RunLog.Plural(visChanged, "user")}");
 

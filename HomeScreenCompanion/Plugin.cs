@@ -32,19 +32,6 @@ namespace HomeScreenCompanion
 
         public override void UpdateConfiguration(BasePluginConfiguration configuration)
         {
-            // First, before anything is queued or changed: a page of another version (one the
-            // browser kept from before an update) does not know the newer fields and would save
-            // them empty. Its save is refused; the page asks for a reload.
-            if (configuration is PluginConfiguration fromPage)
-            {
-                var pageVersion = fromPage.PageVersion;
-                fromPage.PageVersion = "";
-                if (!SameVersion(pageVersion, Version))
-                {
-                    PluginLog.Write("WRN", "Settings", $"Settings not saved: the settings page is out of date (page {(string.IsNullOrWhiteSpace(pageVersion) ? "of an older version" : "v" + pageVersion)}, plugin v{Version}) — reload the page");
-                    throw new ArgumentException(StalePageMessage);
-                }
-            }
             // Sources with Top-List on: their TopLists entries follow the source (first, so the
             // steps below see the lists as saved).
             SourceTopLists.Derive(Configuration, configuration as PluginConfiguration);
@@ -63,11 +50,11 @@ namespace HomeScreenCompanion
             {
                 incoming.HomeSyncAdditions = (current.HomeSyncAdditions ?? new List<HomeSyncAddition>())
                     .Select(a => new HomeSyncAddition { List = a.List, Key = a.Key, UserId = a.UserId, Picked = a.Picked, SectionId = a.SectionId }).ToList();
-                // The root folders last picked in the Missing tab's Add dialog (ArrService): the
-                // server's own record too.
-                incoming.SonarrLastRootFolderPath = current.SonarrLastRootFolderPath ?? "";
-                incoming.RadarrLastRootFolderPath = current.RadarrLastRootFolderPath ?? "";
                 HomeSectionSyncTask.KeepKeysOfRenamedSources(current, incoming);
+                // A Position that points at a rotating source's row follows when the source is renamed.
+                RowPlacement.FollowRenamedSources(incoming, RotatingRow.Renames(current, incoming));
+                // The page does not send it: once the tour has been shown it stays shown.
+                incoming.WelcomeTourSeen = incoming.WelcomeTourSeen || current.WelcomeTourSeen;
             }
             base.UpdateConfiguration(configuration);
             HomeScreenCompanionTask.RecordImportedCollections(Configuration);
@@ -77,17 +64,6 @@ namespace HomeScreenCompanion
             // The Missing tab's kept file follows its settings (turned on, another folder or format).
             if (Configuration.ShowMissingTitles && Configuration.MissingExportToFile)
                 MissingTitlesExport.Queue(TimeSpan.FromSeconds(5));
-        }
-
-        internal const string StalePageMessage = "HSC_PAGE_OUT_OF_DATE: this settings page is out of date. Reload the page and save again.";
-
-        // "4.4.2" and "4.4.2.0" are the same version.
-        private static bool SameVersion(string? page, Version plugin)
-        {
-            if (!System.Version.TryParse((page ?? "").Trim(), out var p)) return false;
-            int Part(int v) => v < 0 ? 0 : v;
-            return Part(p.Major) == Part(plugin.Major) && Part(p.Minor) == Part(plugin.Minor)
-                && Part(p.Build) == Part(plugin.Build) && Part(p.Revision) == Part(plugin.Revision);
         }
 
         // Every config save (the settings page and the server's own saves) can change which
@@ -105,6 +81,15 @@ namespace HomeScreenCompanion
         {
             base.SaveConfiguration();
             HomeScreenCompanionTask.RecordImportedCollections(Configuration);
+        }
+
+        // The welcome tour opened by itself: it does not open by itself again. Saved on its own, so
+        // the page's unsaved changes and Save's checks are not involved.
+        internal void MarkWelcomeTourSeen()
+        {
+            if (Configuration.WelcomeTourSeen) return;
+            Configuration.WelcomeTourSeen = true;
+            base.SaveConfiguration();
         }
 
         public IEnumerable<PluginPageInfo> GetPages()

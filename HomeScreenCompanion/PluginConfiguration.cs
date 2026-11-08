@@ -10,6 +10,13 @@ namespace HomeScreenCompanion
         public string TraktClientId { get; set; } = "";
         public string MdblistApiKey { get; set; } = "";
         public string TmdbApiKey { get; set; } = "";
+        // At most this many entries are read from one list / asked of the AI per source (0 = no limit,
+        // below 0 = the provider's default). Local sources have no such cap.
+        public int TraktMaxItems { get; set; } = ListFetcher.DefaultTraktMax;
+        public int MdblistMaxItems { get; set; } = ListFetcher.DefaultMdblistMax;
+        public int TmdbMaxItems { get; set; } = ListFetcher.DefaultTmdbMax;
+        public int JsonMaxItems { get; set; } = ListFetcher.DefaultJsonMax;
+        public int AiMaxItems { get; set; } = ListFetcher.DefaultAiMax;
         public string OpenAiApiKey { get; set; } = "";
         public string OpenAiModel { get; set; } = "gpt-4o-mini";
         public string GeminiApiKey { get; set; } = "";
@@ -20,14 +27,6 @@ namespace HomeScreenCompanion
         public string OllamaModel { get; set; } = "";
         // OpenAI-compatible AI services (Groq, OpenRouter, LM Studio …), any number of them.
         public List<AiConnection> AiConnections { get; set; } = new List<AiConnection>();
-        // Sonarr / Radarr (the Missing tab): status of the missing titles there, and Add.
-        public string SonarrUrl { get; set; } = "";
-        public string SonarrApiKey { get; set; } = "";
-        public string RadarrUrl { get; set; } = "";
-        public string RadarrApiKey { get; set; } = "";
-        // The root folder last chosen in the Add dialog, picked again next time.
-        public string SonarrLastRootFolderPath { get; set; } = "";
-        public string RadarrLastRootFolderPath { get; set; } = "";
         public string AiSystemPrompt { get; set; } =
             "You are a movie and TV show recommendation assistant. " +
             "Respond ONLY with a valid JSON array. No explanation, no markdown, no code fences. " +
@@ -70,9 +69,14 @@ namespace HomeScreenCompanion
         public string SettingsLevel { get; set; } = "";
         // Settings > Features: the "Advanced" badges in the Advanced level (Basic always shows them).
         public bool ShowAdvancedBadges { get; set; } = true;
+        // The welcome tour has been shown (it opens by itself once, then only from its Tour button).
+        // Set by WelcomeTour/Seen; a Save from the page never clears it (see Plugin.UpdateConfiguration).
+        public bool WelcomeTourSeen { get; set; } = false;
         public List<TagConfig> Tags { get; set; } = new List<TagConfig>();
         public List<TopListHomeSection> TopLists { get; set; } = new List<TopListHomeSection>();
         public List<SavedMediaInfoFilter> SavedFilters { get; set; } = new List<SavedMediaInfoFilter>();
+        // The folders of the settings page's source list, in their order (see TagConfig.ListFolder).
+        public List<string> SourceFolders { get; set; } = new List<string>();
 
         public bool HomeSyncEnabled { get; set; } = false;
         // Copy & Sync profiles: each copies one source user's home screen to its own target users.
@@ -120,11 +124,6 @@ namespace HomeScreenCompanion
 
         // Set once the old Top-Lists tab lists have been moved to their sources (SourceTopLists.Migrate).
         public bool TopListsMovedToSources { get; set; } = false;
-
-        // Sent by the settings page with every save: the plugin version its script was built for.
-        // A save from a page of another version is refused (Plugin.UpdateConfiguration). Never stored.
-        [System.Xml.Serialization.XmlIgnore]
-        public string PageVersion { get; set; } = "";
 
         // Legacy, for migration only: settings of the stoep-labs fork (4.2.0.x), read once by
         // LegacyForkCleanup and then cleared.
@@ -190,18 +189,19 @@ namespace HomeScreenCompanion
         public int Limit { get; set; } = 50;
 
         public string SourceType { get; set; } = "External";
+        // The folder this source is in on the settings page's list ("" = none). Only how the list
+        // looks: no sync reads it.
+        public string ListFolder { get; set; } = "";
         public string LocalSourceId { get; set; } = "";
         public List<string> LocalSources { get; set; } = new List<string>();
         // "Manual" source: Emby item ids (movies and series), in list order.
         public List<string> ManualItemIds { get; set; } = new List<string>();
-        // "Rotating collection" source (see RotatingRow): the pool — "Selected" (RotationCollections,
-        // by name), "Managed" (every collection HSC makes), "All" or "Tag" (collections with RotationTag) —
-        // how often the row moves on ("Day" / "Week") and in what order ("Shuffle" / "InOrder").
-        public string RotationPool { get; set; } = "Selected";
-        public List<string> RotationCollections { get; set; } = new List<string>();
-        public string RotationTag { get; set; } = "";
-        public string RotationEvery { get; set; } = "Day";
-        public string RotationOrder { get; set; } = "Shuffle";
+        // "Rotating from existing" source (see RotatingRow): its items, every how many days it moves
+        // on, the weekday it starts on ("" = the day it was saved) and its order ("List" or "Shuffle").
+        public List<RotationItem> RotationItems { get; set; } = new List<RotationItem>();
+        public int RotationEveryDays { get; set; } = 7;
+        public string RotationStartDay { get; set; } = "";
+        public string RotationOrder { get; set; } = "List";
         public List<string> MediaInfoConditions { get; set; } = new List<string>();
         public List<MediaInfoFilter> MediaInfoFilters { get; set; } = new List<MediaInfoFilter>();
 
@@ -223,8 +223,9 @@ namespace HomeScreenCompanion
         // row, tag art, top-list and priority override; these are just written and cleaned up with it.
         public List<string> ExtraTags { get; set; } = new List<string>();
 
-        // Tag followed by ExtraTags: trimmed, without empties or repeats.
-        public List<string> AllTags() => Distinct(new[] { Tag }.Concat(ExtraTags ?? new List<string>()));
+        // Tag followed by ExtraTags: trimmed, without empties or repeats. A rotating source tags
+        // nothing: its Tag is only a name, and a real tag of that name is not its to clean up.
+        public List<string> AllTags() => RotatingRow.Is(this) ? new List<string>() : Distinct(new[] { Tag }.Concat(ExtraTags ?? new List<string>()));
 
         private static List<string> Distinct(IEnumerable<string?> tags)
         {
@@ -368,6 +369,8 @@ namespace HomeScreenCompanion
         public string TopListBadgeStyle { get; set; } = "neutral";
         public string TopListBadgeOptions { get; set; } = "";
         public string TopListRealPoster { get; set; } = "";
+        // The libraries the top-list takes its titles from (empty = all, see TopListLibraries).
+        public List<string> TopListLibraryIds { get; set; } = new List<string>();
 
         public DateTime LastModified { get; set; } = DateTime.MinValue;
     }
@@ -391,6 +394,9 @@ namespace HomeScreenCompanion
         public string ContentType { get; set; } = "Movies";
         // Made by a source's Create as top-list (SourceTopLists): edited there, not in the Top-Lists tab.
         public bool FromSource { get; set; } = false;
+        // The libraries its titles come from (empty = all, see TopListLibraries). A source's list gets
+        // them from its source; a manual list keeps what its search is narrowed to.
+        public List<string> LibraryIds { get; set; } = new List<string>();
 
         // Legacy, for migration only (stoep-labs fork, see LegacyForkCleanup): the fork's tag-based
         // show lists.
@@ -410,6 +416,18 @@ namespace HomeScreenCompanion
     {
         public string UserId { get; set; } = "";
         public string SectionId { get; set; } = "";
+        // A rotating row (RotatingRow): the title and content it last got.
+        public string RowTitle { get; set; } = "";
+        public string RowShows { get; set; } = "";
+    }
+
+    // One item of a "Rotating from existing" source: a "Collection", "Tag" or "Playlist" (by name),
+    // and the name that goes in the row's title ("" = its own name).
+    public class RotationItem
+    {
+        public string Kind { get; set; } = "Collection";
+        public string Value { get; set; } = "";
+        public string Name { get; set; } = "";
     }
 
     // What groups deleted on the settings page left behind, waiting for the next full run to

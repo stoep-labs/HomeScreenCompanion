@@ -12,6 +12,8 @@ namespace HomeScreenCompanion
         // Missing titles tab (MissingTitles).
         public string? Type { get; set; }
         public int? Year { get; set; }
+        // Its place on the list it came from (1 = first), set when the Missing titles record it.
+        public int? Rank { get; set; }
     }
 
     public class MdbListItem
@@ -92,6 +94,8 @@ namespace HomeScreenCompanion
     public class HscUserSectionsResponse
     {
         public ContentSection[] Sections { get; set; } = System.Array.Empty<ContentSection>();
+        // The user's rotating rows: section id to the key a Position points at them with.
+        public System.Collections.Generic.Dictionary<string, string> RotatingKeys { get; set; } = new System.Collections.Generic.Dictionary<string, string>();
     }
 
     [MediaBrowser.Model.Services.Route("/HomeScreenCompanion/Hsc/UserSections", "POST")]
@@ -252,5 +256,43 @@ namespace HomeScreenCompanion
     public class TmdbExternalIds
     {
         public string? imdb_id { get; set; }
+    }
+
+    // One entry of a plain JSON list (any other http(s) URL): the usual field names, all read as
+    // text so a number or a string both work.
+    public class JsonListItem
+    {
+        public string? id { get; set; }
+        public string? imdb_id { get; set; }
+        public string? imdb { get; set; }
+        public string? imdbId { get; set; }
+        public string? tmdb_id { get; set; }
+        public string? tmdb { get; set; }
+        public string? tmdbId { get; set; }
+        public JsonListIds? ids { get; set; }
+        public string? title { get; set; }
+        public string? name { get; set; }
+        public string? year { get; set; }
+        public string? release_year { get; set; }
+        public string? release_date { get; set; }
+        public string? first_air_date { get; set; }
+        public string? type { get; set; }
+        public string? media_type { get; set; }
+    }
+
+    public class JsonListIds
+    {
+        public string? imdb { get; set; }
+        public string? tmdb { get; set; }
+    }
+
+    // A JSON object around the list: the first of these that has entries.
+    public class JsonListWrapper
+    {
+        public List<JsonListItem>? items { get; set; }
+        public List<JsonListItem>? results { get; set; }
+        public List<JsonListItem>? movies { get; set; }
+        public List<JsonListItem>? shows { get; set; }
+        public List<JsonListItem>? data { get; set; }
     }
 }

@@ -1,4 +1,4 @@
-<div id="HomeScreenCompanionConfigPage" data-role="page" class="page type-interior pluginConfigurationPage hsc-no-copypaste hsc-no-import hsc-no-ranked hsc-no-missing hsc-no-arr"
+<div id="HomeScreenCompanionConfigPage" data-role="page" class="page type-interior pluginConfigurationPage hsc-no-copypaste hsc-no-import hsc-no-ranked hsc-no-missing"
      data-require="emby-input,emby-button,emby-checkbox,emby-textarea"
      data-controller="__plugin/HomeScreenCompanionJS">
 
@@ -352,8 +352,8 @@
             }
         }
 
-        /* Top row: Help, Quick Start, Report bug, Logs are secondary buttons */
-        .btn-log-trigger, .btn-bug-trigger, .btn-help-trigger, .btn-quickstart-trigger {
+        /* Top row: Help, Quick Start, Tour, Report bug, Logs are secondary buttons */
+        .btn-log-trigger, .btn-bug-trigger, .btn-help-trigger, .btn-quickstart-trigger, .btn-tour-trigger, .btn-guides-trigger {
             background: var(--hsc-tint-1) !important;
             color: var(--theme-text-primary) !important;
             padding: 0 12px !important;
@@ -369,12 +369,59 @@
             box-shadow: none !important;
             transition: border-color 0.15s, background-color 0.15s, color 0.15s;
         }
-        .btn-log-trigger .md-icon, .btn-bug-trigger .md-icon, .btn-help-trigger .md-icon, .btn-quickstart-trigger .md-icon {
+        .btn-log-trigger .md-icon, .btn-bug-trigger .md-icon, .btn-help-trigger .md-icon, .btn-quickstart-trigger .md-icon, .btn-tour-trigger .md-icon, .btn-guides-trigger .md-icon {
             font-size: 1.15em;
             color: var(--theme-text-secondary);
         }
-        .btn-log-trigger:hover, .btn-bug-trigger:hover, .btn-help-trigger:hover, .btn-quickstart-trigger:hover {
+        .btn-log-trigger:hover, .btn-bug-trigger:hover, .btn-help-trigger:hover, .btn-quickstart-trigger:hover, .btn-tour-trigger:hover, .btn-guides-trigger:hover {
             background: var(--hsc-tint-2) !important;
+        }
+
+        /* Welcome tour: a click-blocking layer, a "hole" around the part explained (its huge
+           shadow dims the rest) and a card with the text. Built in configPage.js (startTour). */
+        .hsc-tour-block { position: fixed; inset: 0; z-index: 100000; background: transparent; }
+        .hsc-tour-hole {
+            position: fixed; z-index: 100001; pointer-events: none;
+            border-radius: 8px;
+            box-shadow: 0 0 0 2px var(--hsc-primary), 0 0 0 9999px rgba(0,0,0,0.6);
+            transition: top 0.25s ease, left 0.25s ease, width 0.25s ease, height 0.25s ease;
+        }
+        .hsc-tour-hole.centered { box-shadow: 0 0 0 9999px rgba(0,0,0,0.6); }
+        .hsc-tour-card {
+            position: fixed; z-index: 100002;
+            width: 380px; max-width: calc(100vw - 32px); box-sizing: border-box;
+            background: var(--plugin-popup-bg, #2a2a2a); color: var(--plugin-popup-color, #e8e8e8);
+            border: 1px solid var(--plugin-popup-border, rgba(255,255,255,0.15));
+            border-radius: 12px; box-shadow: var(--hsc-shadow-modal);
+            transition: top 0.25s ease, left 0.25s ease;
+        }
+        .hsc-tour-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 0; }
+        .hsc-tour-head .md-icon { color: var(--hsc-primary-text); font-size: 1.3em; }
+        .hsc-tour-title { flex: 1; min-width: 0; font-size: 1.05em; font-weight: 600; letter-spacing: -0.1px; }
+        .hsc-tour-close {
+            background: transparent; border: none; color: inherit; opacity: 0.7; cursor: pointer;
+            width: 30px; height: 30px; border-radius: 6px; display: flex; align-items: center; justify-content: center; padding: 0;
+        }
+        .hsc-tour-close:hover { opacity: 1; background: var(--plugin-popup-hover, var(--hsc-tint-2)); }
+        .hsc-tour-body { padding: 8px 16px 14px; font-size: 0.92em; line-height: 1.55; }
+        .hsc-tour-body p { margin: 0 0 8px; }
+        .hsc-tour-body p:last-child { margin-bottom: 0; }
+        .hsc-tour-body ul { margin: 4px 0 8px; padding-left: 18px; }
+        .hsc-tour-body li { margin-bottom: 2px; }
+        .hsc-tour-body .hsc-tour-tabnote {
+            display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 6px;
+            background: var(--hsc-tint-2); border: 1px solid var(--plugin-popup-border, var(--hsc-hairline));
+        }
+        .hsc-tour-tabnote .md-icon { font-size: 1.1em; color: var(--hsc-primary-text); }
+        .hsc-tour-foot {
+            display: flex; align-items: center; gap: 8px; padding: 10px 16px;
+            border-top: 1px solid var(--plugin-popup-border, var(--hsc-hairline));
+        }
+        .hsc-tour-count { margin-right: auto; font-size: 0.8em; color: var(--plugin-popup-muted, inherit); }
+        .hsc-tour-progress { height: 3px; background: var(--hsc-tint-2); }
+        .hsc-tour-progress > div { height: 100%; background: var(--hsc-primary); transition: width 0.25s ease; }
+        @media (prefers-reduced-motion: reduce) {
+            .hsc-tour-hole, .hsc-tour-card, .hsc-tour-progress > div { transition: none; }
         }
 
         /* The top row is as wide as the tab content (the form is max 900px). */
@@ -741,6 +788,9 @@
         }
 
         /* Setup Guide: search box above Contents */
+        /* Setup Guide: Quick Start and Tour, between the intro and the search box */
+        .help-start-row { display: flex; flex-wrap: wrap; gap: 10px; margin: 0 0 16px; }
+
         .help-search {
             display: flex;
             align-items: center;
@@ -837,6 +887,35 @@
         .homescreen-tab.tl-mode .hse-tl-hide { display: none !important; }
         .homescreen-tab .hse-st-single { display: none !important; }
         .homescreen-tab.hse-empty .hse-details > :not(.toplist-tab) { display: none !important; }
+        /* Source folders (Tag & Collection tab): a header in the list, with the rows under it. */
+        .src-folder-head {
+            display: flex; align-items: center; gap: 8px; padding: 8px 10px 8px 12px; margin: 14px 0 8px;
+            background: rgba(128,128,128,0.1); border: 1px solid var(--hsc-hairline); border-radius: 8px;
+            cursor: pointer; user-select: none;
+        }
+        .src-folder-head:hover { background: rgba(128,128,128,0.16); }
+        .src-folder-head .md-icon { font-size: 1.25em; color: var(--theme-text-secondary); }
+        .src-folder-chevron { transition: transform 0.15s ease; }
+        .src-folder-head.closed .src-folder-chevron { transform: rotate(-90deg); }
+        .src-folder-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .src-folder-count { font-size: 0.85em; color: var(--theme-text-secondary); flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .src-folder-head .src-folder-issue { color: var(--hsc-warning-text); }
+        .src-folder-actions { display: flex; gap: 2px; flex-shrink: 0; opacity: 0.55; }
+        .src-folder-head:hover .src-folder-actions, .src-folder-actions:focus-within { opacity: 1; }
+        .src-folder-actions button { border: none; background: transparent; color: inherit; cursor: pointer; padding: 2px 4px; border-radius: 4px; }
+        .src-folder-actions button:hover { background: rgba(128,128,128,0.2); }
+        .txtFolderName { font-weight: 600; font-size: 0.95em; padding: 3px 6px; min-width: 200px; box-sizing: border-box; }
+        .src-folder-none { display: flex; align-items: baseline; gap: 8px; padding: 6px 12px 6px; margin: 18px 0 8px; border-top: 1px solid var(--hsc-hairline); user-select: none; }
+        .src-folder-none-name { font-weight: 600; font-size: 0.9em; color: var(--theme-text-secondary); white-space: nowrap; }
+        .tag-row.hsc-in-folder { margin-left: 18px; }
+        #tagListContainer:not(.hsc-folder-filtering) > .tag-row.hsc-folder-hidden { display: none !important; }
+        /* Rotating from existing: it only makes its home row, of the type of what it rotates. */
+        .hsc-rot-only { display: none; }
+        .tag-row.hsc-rotating .hsc-rot-only { display: block; }
+        .tag-row.hsc-rotating .tag-tab[data-tab="tag"], .tag-row.hsc-rotating .tag-tab[data-tab="collection"],
+        .tag-row.hsc-rotating .tag-tab[data-tab="playlist"], .tag-row.hsc-rotating .tag-tab[data-tab="advanced"],
+        .tag-row.hsc-rotating .source-mediainfo-container, .tag-row.hsc-rotating .toplist-tab,
+        .tag-row.hsc-rotating .hse-st-field { display: none !important; }
         .hsc-callout.danger > .md-icon { color: var(--hsc-danger-text); }
         .hsc-callout.success { background: rgba(82,181,75,0.08); border-color: rgba(82,181,75,0.3); }
         .hsc-callout.success > .md-icon { color: var(--hsc-primary-text); }
@@ -1149,6 +1228,25 @@
             color: var(--plugin-popup-color, #e8e8e8) !important;
         }
 
+        /* The list limit under a URL's Max box (refreshLimitNotes): warning text + (i), tooltip above it. */
+        .url-limit-info {
+            gap: 4px;
+            cursor: help;
+            white-space: nowrap;
+            font-size: 0.85em;
+            font-weight: 600;
+            color: var(--hsc-warning-text);
+        }
+        .url-limit-info .md-icon { font-size: 1.15em; }
+        .url-limit-info .mi-op-info-icon { margin-left: 2px; font-weight: bold; }
+        .url-limit-info .mi-op-tooltip.url-limit-tip {
+            left: auto;
+            right: -40px;
+            transform: none;
+            width: 300px;
+            font-weight: normal;
+        }
+
         .mi-op-tooltip.mi-op-tooltip-wide p {
             margin: 0 0 6px 0;
         }
@@ -1457,15 +1555,6 @@
         .mt-ep-num { width: 3.2em; flex-shrink: 0; color: var(--theme-text-secondary); font-variant-numeric: tabular-nums; }
         .mt-ep-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .mt-ep-date { color: var(--theme-text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
-        /* Missing tab: Sonarr / Radarr status of a title, or its Add button */
-        .hsc-no-arr .mt-arr, .hsc-no-arr #mtArrError { display: none !important; }
-        .mt-arr { display: flex; flex-shrink: 0; }
-        .mt-arr:empty { display: none; }
-        .mt-arr .mt-pill.arr { background: var(--hsc-tint-2); color: var(--theme-text-secondary); }
-        .mt-arr .mt-pill.arr.mon { background: rgba(90,150,230,0.16); color: var(--theme-text-primary); }
-        .mt-arr .mt-pill.arr.done { background: rgba(82,181,75,0.15); color: var(--hsc-primary-text); }
-        .mt-arr-add { font-size: 0.75em; font-weight: 600; font-family: inherit; color: var(--theme-text-secondary); background: transparent; border: 1px solid var(--hsc-hairline-strong); border-radius: 9999px; padding: 2px 8px; cursor: pointer; white-space: nowrap; }
-        .mt-arr-add:hover { color: var(--theme-text-primary); background: var(--hsc-tint-2); }
         .hsc-no-ranked .ranked-only { display: none !important; }
 
         /* Settings level: Basic hides the power-user settings (.hsc-adv) that are not in use
@@ -1501,11 +1590,6 @@
                 <button type="button" is="emby-button" class="btn-help-trigger" id="btnOpenHelp" title="Open Setup Guide">
                     <i class="md-icon">help</i>
                     <span>Help</span>
-                </button>
-
-                <button type="button" is="emby-button" class="btn-quickstart-trigger" id="btnOpenQuickStart" title="Open Quick Start">
-                    <i class="md-icon">rocket_launch</i>
-                    <span>Quick Start</span>
                 </button>
 
                 <button type="button" is="emby-button" class="btn-bug-trigger" id="btnOpenBugReport" title="Report a Bug">
@@ -1584,6 +1668,11 @@
                                         Create app at <a href="https://trakt.tv/oauth/applications" target="_blank" class="help-link">Trakt.tv</a>.
                                     </div>
                                 </div>
+                                <div class="inputContainer" style="margin-top: 12px;">
+                                    <label class="selectLabel" for="numTraktMaxItems">Max entries per list</label>
+                                    <input is="emby-input" type="number" min="0" step="1" id="numTraktMaxItems" placeholder="0" />
+                                    <div class="fieldDescription">At most this many entries are read from one Trakt list, however high a source's Max is. Default 0 = no limit (the whole list).</div>
+                                </div>
                             </div>
                         </div>
 
@@ -1604,6 +1693,11 @@
                                         Get key at <a href="https://mdblist.com/preferences/" target="_blank" class="help-link">MDBList Preferences</a>.
                                     </div>
                                 </div>
+                                <div class="inputContainer" style="margin-top: 12px;">
+                                    <label class="selectLabel" for="numMdblistMaxItems">Max entries per list</label>
+                                    <input is="emby-input" type="number" min="0" step="1" id="numMdblistMaxItems" placeholder="0" />
+                                    <div class="fieldDescription">At most this many entries are read from one MDBList list, however high a source's Max is. Default 0 = no limit (the whole list). MDBList is read 1000 entries per request.</div>
+                                </div>
                             </div>
                         </div>
 
@@ -1623,6 +1717,27 @@
                                     <div class="fieldDescription">
                                         Required for TMDb lists. Get key at <a href="https://www.themoviedb.org/settings/api" target="_blank" class="help-link">TMDb Settings</a>.
                                     </div>
+                                </div>
+                                <div class="inputContainer" style="margin-top: 12px;">
+                                    <label class="selectLabel" for="numTmdbMaxItems">Max entries per list</label>
+                                    <input is="emby-input" type="number" min="0" step="1" id="numTmdbMaxItems" placeholder="1000" />
+                                    <div class="fieldDescription">At most this many entries are read from one TMDb list, however high a source's Max is. Default 1,000; 0 = no limit (the whole list). TMDb is read 20 entries per request, plus one request per title, so a high number makes a sync slow.</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- JSON lists -->
+                        <div class="advanced-section settings-panel" style="margin-bottom: 8px;">
+                            <div class="advanced-header settings-panel-toggle" style="padding: 10px 14px;">
+                                <i class="md-icon" style="margin-right: 8px; font-size: 1.1em; opacity: 0.65;">code</i>
+                                <span style="font-size: 0.95em; font-weight: 600;">JSON lists</span>
+                                <i class="md-icon settings-panel-chevron" style="margin-left: auto; transition: transform 0.2s; font-size: 1.1em; opacity: 0.65;">expand_more</i>
+                            </div>
+                            <div class="settings-panel-body" style="display:none; padding: 0 14px 14px;">
+                                <div class="inputContainer">
+                                    <label class="selectLabel" for="numJsonMaxItems">Max entries per list</label>
+                                    <input is="emby-input" type="number" min="0" step="1" id="numJsonMaxItems" placeholder="1000" />
+                                    <div class="fieldDescription">At most this many entries are read from one JSON list (any other site's URL), however high a source's Max is. Default 1,000; 0 = no limit (the whole list). An entry with a TMDb id only takes one TMDb request to find its IMDb id.</div>
                                 </div>
                             </div>
                         </div>
@@ -1766,13 +1881,31 @@
                             </div>
                         </div>
 
+                        <div class="hsc-eyebrow" style="margin-top: 18px; margin-bottom: 8px;">Limits</div>
+
+                        <!-- Max titles asked of the AI -->
+                        <div class="advanced-section settings-panel" style="margin-bottom: 8px;">
+                            <div class="advanced-header settings-panel-toggle" style="padding: 10px 14px;">
+                                <i class="md-icon" style="margin-right: 8px; font-size: 1.1em; opacity: 0.65;">format_list_numbered</i>
+                                <span style="font-size: 0.95em; font-weight: 600;">Max titles per AI list</span>
+                                <i class="md-icon settings-panel-chevron" style="margin-left: auto; transition: transform 0.2s; font-size: 1.1em; opacity: 0.65;">expand_more</i>
+                            </div>
+                            <div class="settings-panel-body" style="display:none; padding: 0 14px 14px;">
+                                <div class="inputContainer">
+                                    <input is="emby-input" type="number" min="0" step="1" id="numAiMaxItems" label="Max titles" placeholder="1000" />
+                                    <div class="fieldDescription">The AI is never asked for more titles than this, however high a source's Max is; with Max 0 it is asked for exactly this many. Default 1,000; 0 = no limit. Models often return fewer than they are asked for.</div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="hsc-adv" data-adv="group">
                         <div class="hsc-eyebrow" style="margin-top: 18px; margin-bottom: 8px;">Advanced AI Settings</div>
 
                         <!-- Edit system prompt -->
-                        <div class="advanced-section settings-panel" style="margin-bottom: 8px;">
+                        <div class="advanced-section settings-panel hsc-adv" data-adv="sysprompt" style="margin-bottom: 8px;">
                             <div class="advanced-header settings-panel-toggle" style="padding: 10px 14px;">
                                 <i class="md-icon" style="margin-right: 8px; font-size: 1.1em; opacity: 0.65;">tune</i>
-                                <span style="font-size: 0.95em; font-weight: 600;">Edit system prompt</span>
+                                <span style="font-size: 0.95em; font-weight: 600;">Edit system prompt<span class="hsc-adv-badge">Advanced</span></span>
                                 <i class="md-icon settings-panel-chevron" style="margin-left: auto; transition: transform 0.2s; font-size: 1.1em; opacity: 0.65;">expand_more</i>
                             </div>
                             <div class="settings-panel-body" style="display:none; padding: 0 14px 14px;">
@@ -1788,6 +1921,7 @@
                                     </button>
                                 </div>
                             </div>
+                        </div>
                         </div>
 
                     </div>
@@ -2024,44 +2158,6 @@
                         </div>
                     </div>
                 </div>
-                <div id="mtArrPanel" class="advanced-section settings-panel" style="margin:0 0 20px;">
-                    <div class="advanced-header settings-panel-toggle">
-                        <i class="md-icon hsc-panel-icon">cloud_download</i>
-                        <span class="hsc-title">Sonarr &amp; Radarr</span>
-                        <i class="md-icon settings-panel-chevron" style="margin-left: auto; transition: transform 0.2s;">expand_more</i>
-                    </div>
-                    <div class="advanced-body settings-panel-body" style="display:none;">
-                        <div class="hsc-eyebrow" style="margin-top: 4px; margin-bottom: 8px;">Sonarr</div>
-                        <div class="inputContainer">
-                            <input is="emby-input" type="text" id="txtSonarrUrl" label="Sonarr Server URL" placeholder="http://localhost:8989" autocomplete="off" spellcheck="false" />
-                        </div>
-                        <div class="inputContainer" style="margin-top: 12px;">
-                            <input is="emby-input" type="text" class="api-key-field" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore id="txtSonarrApiKey" label="Sonarr API Key" />
-                            <label style="display:inline-flex; align-items:center; gap:5px; font-size:0.85em; opacity:0.75; margin-top:4px; cursor:pointer;">
-                                <input type="checkbox" class="chkShowApiKey" data-target="txtSonarrApiKey" style="margin:0;" /> Show
-                            </label>
-                        </div>
-                        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-                            <button type="button" is="emby-button" class="raised btn-neutral btnTestArr" data-kind="sonarr"><i class="md-icon" style="margin-right:5px;">wifi_tethering</i><span>Test Connection</span></button>
-                            <span class="arr-test-result" data-kind="sonarr" style="font-size:0.85em;"></span>
-                        </div>
-
-                        <div class="hsc-eyebrow" style="margin-top: 24px; margin-bottom: 8px;">Radarr</div>
-                        <div class="inputContainer">
-                            <input is="emby-input" type="text" id="txtRadarrUrl" label="Radarr Server URL" placeholder="http://localhost:7878" autocomplete="off" spellcheck="false" />
-                        </div>
-                        <div class="inputContainer" style="margin-top: 12px;">
-                            <input is="emby-input" type="text" class="api-key-field" autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore id="txtRadarrApiKey" label="Radarr API Key" />
-                            <label style="display:inline-flex; align-items:center; gap:5px; font-size:0.85em; opacity:0.75; margin-top:4px; cursor:pointer;">
-                                <input type="checkbox" class="chkShowApiKey" data-target="txtRadarrApiKey" style="margin:0;" /> Show
-                            </label>
-                        </div>
-                        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-                            <button type="button" is="emby-button" class="raised btn-neutral btnTestArr" data-kind="radarr"><i class="md-icon" style="margin-right:5px;">wifi_tethering</i><span>Test Connection</span></button>
-                            <span class="arr-test-result" data-kind="radarr" style="font-size:0.85em;"></span>
-                        </div>
-                    </div>
-                </div>
                 </div>
                 <div id="mtContainer" style="max-width:900px;"></div>
             </div>
@@ -2249,13 +2345,29 @@
                 <!-- PLUGIN INTRO -->
                 <div class="info-box" style="margin:0 0 20px;padding:12px 16px;font-size:0.92em;line-height:1.6;">
                     <strong>What does this plugin do?</strong><br>
-                    Home Screen Companion keeps your Emby home screen up to date automatically. Each <strong>source</strong> is a list of movies and shows: from a site like Trakt, MDBList or TMDb, from your own collections and playlists, picked by hand, built by filters on your files, written by an AI, or worked out per user from what they watch (<em>Your Next Watch</em>).
+                    Home Screen Companion keeps your Emby home screen up to date automatically. Each <strong>source</strong> is a list of movies and shows: from a site like Trakt, MDBList or TMDb (or any JSON list), from your own collections and playlists, picked by hand, built by filters on your files, written by an AI, or worked out per user from what they watch (<em>Your Next Watch</em>).
                     <ul style="margin:6px 0 0;padding-left:18px;line-height:1.7;">
                         <li>The plugin finds those titles in your library and keeps them up to date as a <strong>tag</strong>, an Emby <strong>collection</strong> and/or a <strong>playlist</strong> per user.</li>
                         <li>Any of them can be a <strong>home screen row</strong> for the users you choose, like "Trending Now" or "Christmas Movies", shown all year or only on the dates you set.</li>
                         <li><strong>Top-lists</strong> show a list as a ranked row with numbered posters, like Netflix's Top 10.</li>
                         <li>Everything is refreshed on every sync: the daily scheduled task, or <strong>Run</strong> at the top of the page.</li>
                     </ul>
+                </div>
+
+                <!-- QUICK START + TOUR + GUIDES -->
+                <div class="help-start-row">
+                    <button type="button" is="emby-button" class="btn-quickstart-trigger" id="btnOpenQuickStart" title="Open Quick Start">
+                        <i class="md-icon">rocket_launch</i>
+                        <span>Quick Start</span>
+                    </button>
+                    <button type="button" is="emby-button" class="btn-tour-trigger" id="btnOpenTour" title="Take the tour of the plugin">
+                        <i class="md-icon">explore</i>
+                        <span>Tour</span>
+                    </button>
+                    <button type="button" is="emby-button" class="btn-guides-trigger" id="btnOpenGuides" title="Community guides on GitHub (opens in a new tab)">
+                        <i class="md-icon">menu_book</i>
+                        <span>Guides</span>
+                    </button>
                 </div>
 
                 <!-- SEARCH -->
@@ -2285,12 +2397,12 @@
                     </ol>
                 </nav>
 
-                <!-- 1. QUICK START (its own popup: Quick Start button at the top) -->
+                <!-- 1. QUICK START (its own popup: Quick Start button at the top of this guide) -->
                 <div id="help-sec-1" class="help-section" style="margin-top:0;">
                     <i class="md-icon help-section-icon">rocket_launch</i>
                     <span>Quick Start</span>
                 </div>
-                <p style="margin:0 0 10px; line-height:1.6;">The steps from a new source to a row on the home screen, a checklist for when nothing shows up, starter sources and how to get API keys are in <a href="javascript:void(0)" class="help-link hsc-open-quickstart">Quick Start</a> (the button next to Help).</p>
+                <p style="margin:0 0 10px; line-height:1.6;">The steps from a new source to a row on the home screen, a checklist for when nothing shows up, starter sources and how to get API keys are in <a href="javascript:void(0)" class="help-link hsc-open-quickstart">Quick Start</a> (the button at the top of this guide).</p>
 
                 <!-- 2. SOURCE TYPES -->
                 <div id="help-sec-2" class="help-section">
@@ -2324,33 +2436,38 @@
                         Personal recommendations, worked out on your server (no AI, no internet): every ticked user gets their own playlist of unwatched titles most like what they have been watching, refreshed on every sync. See <a href="javascript:void(0)" class="help-link" onclick="this.closest('.modal-body-scroll').querySelector('#help-sec-2b').scrollIntoView({behavior:'smooth'});return false;"><em>Your Next Watch</em> below</a> for how it picks and how to set it up.
                     </div>
                     <div class="src-card">
-                        <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:var(--plugin-popup-muted);">autorenew</i> Rotating collection</div>
-                        One home row that shows a different collection each day or week, picked from a pool of your collections — like a <em>Now Showing</em> row. <a href="javascript:void(0)" class="help-link" onclick="this.closest('.modal-body-scroll').querySelector('#help-more-rotating').scrollIntoView({behavior:'smooth'});return false;">More below</a>.
+                        <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:var(--plugin-popup-muted);">autorenew</i> Rotating from existing</div>
+                        One home row that shows one of your collections, tags or playlists, and the next one every few days, like a <em>Now Showing</em> row. <a href="javascript:void(0)" class="help-link" onclick="this.closest('.modal-body-scroll').querySelector('#help-more-rotating').scrollIntoView({behavior:'smooth'});return false;">More below</a>.
                     </div>
+                </div>
+                <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">folder</i>
+                    <div><strong>Folders</strong> — sort a long list of sources into folders that open and close. A folder only changes how the list looks; nothing a source does depends on it. <em>New folder</em> makes one at the top of the list, with the sources in no folder under <em>No folder</em>. A new source lands first under <em>No folder</em>. Drag a source past a folder's header to move it in, or down under <em>No folder</em> to take it out. On a folder's header you can move it, rename it, or remove it (its sources stay). Searching and filtering also look inside closed folders, and sorting by name sorts within each folder. Which folders are open is remembered in your browser. Click <strong>Save</strong> to keep your folders.</div>
                 </div>
                 <div class="hsc-eyebrow" style="margin:14px 0 8px;">More about the source types</div>
                 <div id="help-more-rotating" class="help-feature-row">
                     <i class="md-icon help-feat-icon">autorenew</i>
-                    <div><strong>Rotating collection</strong> — the source's home row (<em>Single Collection</em>) shows one collection of the <strong>Pool</strong>:
+                    <div><strong>Rotating from existing</strong> — makes one home row from things you already have. It only makes that row: it tags nothing and creates nothing, so the Tag, Collection, Playlist and Blacklist tabs are hidden.
                         <ul style="margin:4px 0 0;padding-left:18px;line-height:1.7;">
-                            <li><strong>Pool</strong> — <em>Chosen collections</em> (tick them in the list), <em>All collections HSC manages</em> (every collection a source makes), <em>All collections</em>, or <em>Collections with tag</em>.</li>
-                            <li><strong>Change every</strong> — <em>Day</em> or <em>Week</em> (weeks start on Monday). The row moves on at midnight, server time (within 15 minutes).</li>
-                            <li><strong>Order</strong> — <em>Shuffle</em>: a random order that shows every collection once before any comes back; <em>In order</em>: A–Z.</li>
-                            <li><strong>Title</strong> — the collection's name. A <em>Custom Title</em> on the Home Screen tab with <code>{name}</code> adds to it, e.g. <code>Now Showing: {name}</code>; one without <code>{name}</code> stays as it is.</li>
+                            <li><strong>The list</strong> — each line is a <em>Collection</em>, <em>Tag</em> or <em>Playlist</em> (they can be mixed), which one, and an optional <strong>name</strong>: what <code>{name}</code> becomes in the row's title (empty uses its own name). Add as many as you like, and use the arrows to set the order.</li>
+                            <li><strong>Rotate every (days)</strong> and <strong>Start on</strong> — with a day, the first change is on that weekday and it runs every X days from there: every 7 days from Friday gives something new before each weekend. With <em>No set day</em> it counts from the day you save. Changing either starts the count again. The row changes at midnight, server time (within 15 minutes).</li>
+                            <li><strong>Order</strong> — <em>In list order</em>, or <em>Shuffle</em>: a random order that shows every one once before any comes back. A changed list does not make it jump: it goes on from where it is.</li>
+                            <li><strong>Title</strong> — <em>Custom Title</em> on the Home Screen tab: <code>Now Showing: {name}</code> gives for example <em>Now Showing: Marvel</em>. Empty gives just the name.</li>
                         </ul>
-                        It is one row, the same collection for every user on a given day. The row stays in its place: only the collection it shows changes. A collection that is empty, or that one of the row's users cannot see, is skipped that day; with nothing to show, the row is hidden until there is. The Schedule tab works as for any source (e.g. only in December). Apply Tag, Create Collection and Create Playlist use the titles of the day's collection.</div>
+                        The row stays in its place; only what it shows changes. The Home Screen tab's <em>Media Type</em> and sorting apply when it shows a tag. <strong>Each user sees what they may see:</strong> one who may not see the one whose turn it is (or for whom it is empty) gets the next one they may see, so users can see different things on the same day and a child's account limits nobody else. With nothing to show, a user has no row until there is something, and it comes back in the same place. A playlist only counts for those it is shared with. The Schedule tab works as for any source.</div>
                 </div>
                 <div id="help-more-external" class="help-feature-row">
                     <i class="md-icon help-feat-icon">public</i>
-                    <div><strong>External</strong> — paste a list URL from <strong>Trakt</strong>, <strong>MDBList</strong> or <strong>TMDb</strong>. The plugin downloads the list and tags every matching title it finds in your library.
+                    <div><strong>External</strong> — paste a list URL from <strong>Trakt</strong>, <strong>MDBList</strong> or <strong>TMDb</strong>, or the URL of a <strong>JSON list</strong> on any other site. The plugin downloads the list and tags every matching title it finds in your library.
                         <ul style="margin:4px 0 0;padding-left:18px;line-height:1.7;">
                             <li><strong>Several URLs</strong> — <em>Add another URL</em> adds more lists to the same source; their titles are combined under the one tag, collection and playlist. Links next to <em>Source URLs</em> open each site's list pages, to find lists.</li>
-                            <li><strong>Max (0=All)</strong> — each URL has its own limit. It counts titles <strong>found in your library</strong> (not blacklisted and passing the source's filters), from the top of the list: <em>Max 10</em> on a top-100 list gives the 10 highest-ranked titles you have, even if titles 1–3 are missing. Up to 1,000 entries are read per URL.</li>
+                            <li><strong>Max (0=All)</strong> — each URL has its own limit. It counts titles <strong>found in your library</strong> (not blacklisted and passing the source's filters), from the top of the list: <em>Max 10</em> on a top-100 list gives the 10 highest-ranked titles you have, even if titles 1–3 are missing. With 0 (or a Max above it) a list is read up to its provider's limit in Settings → External list settings: the whole list for Trakt and MDBList, 1,000 entries for TMDb and JSON lists, unless you change it there (0 means the whole list).</li>
                             <li><strong>Matching</strong> — titles are matched by their <strong>IMDb id</strong>, so your library items need IMDb ids (Emby's metadata usually adds them). A title on the list without an IMDb id is skipped. TMDb entries are looked up to find their IMDb id.</li>
                             <li><strong>Trakt</strong> — needs a <strong>Trakt Client ID</strong> in the Settings tab. Public user lists work, and so do Trakt's own lists that its API offers, such as <code>trakt.tv/movies/trending</code> or <code>/shows/popular</code>.</li>
                             <li><strong>MDBList</strong> — public lists work without a key; private lists need the <strong>MDBList API Key</strong>. MDBList's official lists (<code>/lists/official/…</code>) are always read without the key.</li>
                             <li><strong>TMDb</strong>, two ways: <em>your own lists</em> — paste the URL of any public or private list you made on themoviedb.org; or <em>API endpoints</em> — paste a direct TMDb API URL (e.g. popular movies, top-rated, now-playing, or a specific collection). Both need a <strong>TMDb API Read Access Token</strong> in the Settings tab.</li>
-                            <li><strong>Test</strong> next to a URL checks that the list can be read; <em>Preview</em> shows which titles on the list are in your library and which are not.</li>
+                            <li><strong>JSON list</strong> — any other http(s) URL that returns JSON, such as a site's JSON export of a list. The JSON is a list, or an object with the list in <code>items</code>, <code>results</code>, <code>movies</code>, <code>shows</code> or <code>data</code>. Each entry needs an IMDb id (<code>imdb_id</code>, <code>imdb</code> or <code>imdbId</code>) or a TMDb id (<code>tmdb_id</code>, <code>tmdb</code>, <code>tmdbId</code> or <code>id</code>); <code>title</code>, <code>year</code> and <code>type</code> are read when there. No key is needed. Entries with a TMDb id only are looked up with the <strong>TMDb API Read Access Token</strong>; without a type they are taken as movies first.</li>
+                            <li><strong>Test</strong> next to a URL checks that the list can be read; <em>Preview</em> shows which titles on the list are in your library and which are not. Titles that are not in your library get their poster, year and type from TMDb (with the TMDb token in Settings) or else from Emby's own metadata search.</li>
                             <li>If a site cannot be reached, the run log says why. Turn on <em>Preserve tags and collections on empty result</em> (Settings) to keep the old titles when a list comes back empty.</li>
                         </ul></div>
                 </div>
@@ -2491,7 +2608,7 @@
                         <details class="help-more"><summary><i class="md-icon">expand_more</i><span class="help-more-closed">Show details</span><span class="help-more-open">Hide details</span></summary>
                         <ul style="margin:4px 0 0;padding-left:18px;line-height:1.7;">
                             <li>The popup lists every collection with a tick box (and a search box when the list is long); tick one or several and click <em>Import</em>. With a long list you can also sort by name or item count and show only collections of a certain size; ticks stay when a collection is hidden.</li>
-                            <li>Each becomes a <strong>Manual List</strong> source, added as a new card at the top, not saved yet — check it and click <strong>Save</strong>.</li>
+                            <li>Each becomes a <strong>Manual List</strong> source, added as a new card, not saved yet — check it and click <strong>Save</strong>.</li>
                             <li>It keeps the <strong>same collection</strong>, not a copy, so links, home rows and favourites keep working: the name, sort title and description stay as they are, the collection's current titles fill the Manual List, and the poster and background are set to <em>Keep current image</em>.</li>
                             <li>Nothing changes until the next sync, and nothing is deleted.</li>
                             <li>Cannot be ticked: collections a source already makes, and collections whose name another collection also has (HSC finds its collection by name — rename one in Emby first).</li>
@@ -2672,9 +2789,11 @@
                     <div><strong>Keep the list order — movies only (experimental)</strong> — shown when <em>Ranked collections</em> is switched on under <em>Advanced Settings</em> in the Settings tab (and saved). The collection then opens in the order of the list instead of Emby's own order.
                         <ul style="margin:4px 0 0;padding-left:18px;line-height:1.7;">
                             <li>For each movie HSC makes a hidden copy that carries its rank, linked to the real film as a version (so it appears once in search and shares its watched status).</li>
-                            <li>The copies sit in a hidden library "&lt;collection&gt; (ranked)" that is hidden from My Media and Latest like the top-list libraries (setting <em>Hide HSC libraries</em>). It is also always added to the excluded libraries of every user's other home rows (Continue Watching, library rows and so on, also rows made before it), so the copies never show twice; collection rows are left as they are.</li>
+                            <li>The copies sit in a hidden library "&lt;collection&gt; (ranked)" that is hidden from My Media and Latest like the top-list libraries (setting <em>Hide HSC libraries</em>). It is also always added to the excluded libraries of every user's other home rows (Continue Watching, library rows and so on, also rows made before it), so the copies never show twice; collection and playlist rows are left as they are.</li>
                             <li>When the list order changes, only the ranks of the copies change: a copy is added only for a new film and removed only when its film leaves the list, so nothing is rebuilt on a reorder.</li>
                             <li>Only movies are ranked: shows in the list keep their normal place after the ranked movies.</li>
+                            <li>The collection holds only its ranked copies, also with <em>Show collections on top-list items</em> on: a film that is also on a top-list keeps its normal poster here, never the rank-badge one.</li>
+                            <li>A copy that drops out of its collection or loses its link to the real film is put back about a minute after it (or its film) is played, marked played or changed, without waiting for the next sync.</li>
                             <li>Untick it (or switch the feature off) and the next sync puts the real films back and removes the copies and their library. This is experimental.</li>
                         </ul></div>
                 </div>
@@ -2818,7 +2937,7 @@
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">copy_all</i>
-                    <div><strong>Copy &amp; Sync</strong> — Copies the complete home screen layout from one user to one or more other users. Handy when you want all profiles to look the same. Every row is copied, in the same order — including source rows, whatever that row's own target users are. Two exceptions: a <strong>top-list row</strong> only goes to that list's own target users (a top-list has its own library, and only its users are given access to it) — add the users to the top-list in the Top-Lists tab to give them the row; and a per-user playlist row (such as <em>Your Next Watch</em>) is copied in the same place but shows each user's own playlist, and users without one from that source don't get the row. A <em>Rotating collection</em> row only goes to that source's own target users (with <em>Also add users to the sources and top-lists of copied rows</em>, every target user is put on it). Old copies pointing at someone else's playlist are re-pointed or removed, and old copies of a top-list row for users who are not its target users are removed. This runs separately from the tag and collection sync.
+                    <div><strong>Copy &amp; Sync</strong> — Copies the complete home screen layout from one user to one or more other users. Handy when you want all profiles to look the same. Every row is copied, in the same order — including source rows, whatever that row's own target users are. Two exceptions: a <strong>top-list row</strong> only goes to that list's own target users (a top-list has its own library, and only its users are given access to it) — add the users to the top-list in the Top-Lists tab to give them the row; and a per-user playlist row (such as <em>Your Next Watch</em>) is copied in the same place but shows each user's own playlist, and users without one from that source don't get the row. A <em>Rotating from existing</em> row only goes to that source's own target users, each with what they may see (with <em>Also add users to the sources and top-lists of copied rows</em>, every target user is put on the source). Old copies pointing at someone else's playlist are re-pointed or removed, and old copies of a top-list row for users who are not its target users are removed. This runs separately from the tag and collection sync.
                         <ul style="margin:4px 0 0;padding-left:18px;line-height:1.7;">
                             <li>Tick <em>Enable Home Screen sync</em>, pick the <strong>Source User</strong> whose layout is the model, and tick the users to copy to. Set the source user's home screen up in Emby first, then run it.</li>
                             <li>The target users' own rows are <strong>replaced</strong>, so changes they made themselves are lost on the next run.</li>
@@ -2860,13 +2979,17 @@
                     <div><strong>Content</strong> — in a source's <em>Create as top-list</em>, <em>Auto (based on the source)</em> makes a movie or TV show list from what the source returns (an episode counts as its show); <em>Movies</em> or <em>TV Shows</em> fixes it.</div>
                 </div>
                 <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">video_library</i>
+                    <div><strong>Libraries</strong> — a list from a source ranks only the titles in the libraries you choose (<em>All libraries</em> by default, which also takes in libraries added later). <em>Max titles for top-list</em> counts the chosen libraries, but <em>Max items</em> in the Source tab is counted first, across all libraries, so raise it if the list gets too short. In a manual list the choice narrows the search box; titles already added stay.</div>
+                </div>
+                <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">edit_note</i>
                     <div><strong>Manual top-list</strong> — Click <em>Create manual top-list</em> to hand-pick and order movies yourself, without needing an existing tag. Search your library, put the items in the order you want with the ▲ ▼ buttons, and save. Choose <em>TV Shows</em> in the <em>Create Top-List</em> dialog to rank shows instead.</div>
                 </div>
                 <div class="src-cards" style="grid-template-columns: repeat(3, 1fr);">
                     <div class="src-card">
-                        <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:var(--plugin-popup-muted);">palette</i> Badge style &amp; Max items</div>
-                        Pick how the rank number looks, for movie and show lists alike: a number badge in one of six colours (<em>Neutral</em>, <em>Slate grey</em>, <em>Emby green</em>, <em>Ocean blue</em>, <em>Soft red</em>, <em>Violet</em>), <em>No number</em>, or <em>Top 10 tile</em>. <em>Top 10 tile</em> draws a big outlined number beside the poster on a flat background in the colour of Emby's dark theme, so the row reads as one strip, like Netflix. On a lighter or black theme the tile edges show faintly. <strong>Max items</strong> limits how many titles the list shows (0 = all). <strong>Card size</strong> works as on the Home Screen tab: <em>Smaller</em> fits more tiles on screen.
+                        <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:var(--plugin-popup-muted);">palette</i> Badge style &amp; Max titles</div>
+                        Pick how the rank number looks, for movie and show lists alike: a number badge in one of six colours (<em>Neutral</em>, <em>Slate grey</em>, <em>Emby green</em>, <em>Ocean blue</em>, <em>Soft red</em>, <em>Violet</em>), <em>No number</em>, or <em>Top 10 tile</em>. <em>Top 10 tile</em> draws a big outlined number beside the poster on a flat background in the colour of Emby's dark theme, so the row reads as one strip, like Netflix. On a lighter or black theme the tile edges show faintly. <strong>Max titles for top-list</strong> limits how many titles the list shows (0 = all). <strong>Card size</strong> works as on the Home Screen tab: <em>Smaller</em> fits more tiles on screen.
                     </div>
                     <div class="src-card">
                         <div class="src-card-title"><i class="md-icon" style="font-size:1.1em;color:var(--plugin-popup-muted);">tune</i> Customise the Top 10 tile</div>
@@ -2906,7 +3029,7 @@
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">lock_open</i>
-                    <div><strong>Library access</strong> — every user a top-list is shown to gets access to its library. The list's titles can come from any library on the server, so those users can see and play them even from libraries they otherwise have no access to. Only pick users who may see everything the list can hold.</div>
+                    <div><strong>Library access</strong> — every user a top-list is shown to gets access to its library. The list's titles come from the libraries you choose, so those users can see and play them even if they otherwise have no access to those libraries. Only pick users who may see everything the list can hold.</div>
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">block</i>
@@ -2943,6 +3066,10 @@
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">movie</i>
                     <div><strong>TMDb API Read Access Token</strong> — Needed for every TMDb source: your own lists (public or private) and TMDb API endpoints (e.g. popular movies, top-rated, now-playing). Get your token at <a href="https://www.themoviedb.org/settings/api" target="_blank" class="help-link">themoviedb.org/settings/api</a> — scroll to <em>API Read Access Token</em> and copy the long token (not the short API Key).</div>
+                </div>
+                <div class="help-feature-row">
+                    <i class="md-icon help-feat-icon">code</i>
+                    <div><strong>JSON lists</strong> — <em>Max entries per list</em> for JSON list URLs from other sites. They need no key; the TMDb token is used for entries that give a TMDb id only.</div>
                 </div>
                 <div class="hsc-eyebrow" style="margin:14px 0 8px;">AI Settings</div>
                 <div class="step-text" style="margin-bottom:10px;font-size:0.92em;">Fill in only the AI you use in your <a href="javascript:void(0)" class="help-link" onclick="this.closest('.modal-body-scroll').querySelector('#help-more-ai').scrollIntoView({behavior:'smooth'});return false;">AI sources</a>. Each has a <strong>Model</strong> field (which model to ask) with a link to that provider's current models. A cloud AI is paid per call; a cheaper, fast model is usually enough for lists.</div>
@@ -2993,10 +3120,6 @@
                     <i class="md-icon help-feat-icon">visibility_off</i>
                     <div><strong>Hide HSC libraries</strong> <span style="opacity:0.6;">(Features)</span> — On by default. Keeps the libraries HSC creates — those of top-lists and of ranked collections — out of every user's sidebar, "My Media" tiles and "Latest" rows; only their top-list rows and collections show them. TV show top-list libraries are always kept out of Latest, Continue Watching and Next Up, and ranked-collection libraries out of every other home row, whatever this setting is.</div>
                 </div>
-                <div id="help-arr" class="help-feature-row">
-                    <i class="md-icon help-feat-icon">cloud_download</i>
-                    <div><strong>Sonarr &amp; Radarr</strong> <span style="opacity:0.6;">(Missing tab)</span> — With <em>Show missing titles</em> on, the Missing tab's <em>Sonarr &amp; Radarr</em> panel takes each server's URL and API key (in Sonarr / Radarr under Settings → General); <em>Test Connection</em> shows the version. Once they are saved, each missing movie shows whether it is in Radarr, monitored or not and downloaded or not, and each show whether it is in Sonarr, monitored or not and how many of its episodes are downloaded. A title that is not there gets <em>+ Radarr</em> / <em>+ Sonarr</em>: pick the root folder and quality profile (Radarr also minimum availability and Monitored) and it is added, monitored, with a search for it. Shows are added by their TVDb id (else IMDb id), movies by their IMDb id (else TMDb id). The plugin talks to Sonarr and Radarr itself, so they need not be reachable from the browser.</div>
-                </div>
 
                 <div id="help-sec-8b" class="hsc-eyebrow" style="margin:18px 0 8px;">Advanced Settings</div>
                 <div class="step-text" style="margin-bottom:10px;font-size:0.92em;">Optional settings for troubleshooting and extra features, in four groups under <em>Advanced Settings</em> in the <strong>Settings</strong> tab. They are shown in both <em>Basic</em> and <em>Advanced</em>. Tick one and click <strong>Save Settings</strong>.</div>
@@ -3014,7 +3137,7 @@
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">collections_bookmark</i>
-                    <div><strong>Show collections on top-list items</strong> <span style="opacity:0.6;">(Top-lists)</span> — Adds each top-list movie to the same collections as the original, so "Included in &lt;collection&gt;" also shows when a movie is opened from a top-list. Depending on the collection's sort order, it may then show the top-list version with its rank-badge poster.</div>
+                    <div><strong>Show collections on top-list items</strong> <span style="opacity:0.6;">(Top-lists)</span> — Adds each top-list movie to the same collections as the original, so "Included in &lt;collection&gt;" also shows when a movie is opened from a top-list. Depending on the collection's sort order, it may then show the top-list version with its rank-badge poster. A ranked collection (<em>Keep the list order</em>) is left out: it keeps its own copies.</div>
                 </div>
                 <div class="help-feature-row">
                     <i class="md-icon help-feat-icon">share</i>
@@ -3321,7 +3444,7 @@
 
                 <div class="help-section"><i class="md-icon help-section-icon">local_movies</i>Content</div>
                 <div class="help-feature-row"><i class="md-icon help-feat-icon">check_circle</i><div><span class="mi-help-prop">Media Type</span> — Movie, Series, or Episode. When <b>Episode</b> is selected, all filters evaluate against individual episodes and tags are applied directly to each matching episode.</div></div>
-                <div class="help-feature-row"><i class="md-icon help-feat-icon">check_circle</i><div><span class="mi-help-prop">Tag</span> — matches items that already have a specific Emby tag applied. One per line: <i>4K</i> / <i>HDR</i> matches items tagged with either.</div></div>
+                <div class="help-feature-row"><i class="md-icon help-feat-icon">check_circle</i><div><span class="mi-help-prop">Tag</span> — matches items that already have a specific Emby tag applied. Pick tags from the list to add them to the box, or type them yourself. One per line: <i>4K</i> / <i>HDR</i> matches items tagged with either.</div></div>
                 <div class="help-feature-row"><i class="md-icon help-feat-icon">check_circle</i><div><span class="mi-help-prop">Title</span> — matches the movie or series name. When Media Type = Episode, matches the parent series name. One per line: <i>Batman</i> / <i>Dark Knight</i> matches either title.</div></div>
                 <div class="help-feature-row"><i class="md-icon help-feat-icon">check_circle</i><div><span class="mi-help-prop">Title (Episode)</span> — matches the episode's own title. Use together with Media Type = Episode. One value per line for multiple episode titles.</div></div>
                 <div class="help-feature-row"><i class="md-icon help-feat-icon">check_circle</i><div><span class="mi-help-prop">Overview</span> — searches the plot description/summary for keywords or phrases. One per line: <i>Christmas</i> / <i>heist</i> matches if <em>either</em> word appears in the overview.</div></div>

@@ -5,7 +5,8 @@
 # Windows only (Emby DLLs from %AppData%, powershell version stamp). This workflow works
 # around both without touching HSC's files, so pulling upstream changes never conflicts.
 #
-# Version = HSC's <Version> major.minor.build + the run number, e.g. 4.2.0.12. Nothing is
+# Version = HSC's <Version> major.minor.build + 900 + the run number, e.g. 4.7.0.954, so a
+# fork build is always above the catalog release of the same version. Nothing is
 # committed back to main.
 name: Build and release
 
@@ -67,7 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           BASE=$(grep -oP '(?<=<Version>)[0-9]+\.[0-9]+\.[0-9]+' "$PROJECT")
-          VER="${BASE}.${GITHUB_RUN_NUMBER}"
+          VER="${BASE}.$((900 + GITHUB_RUN_NUMBER))"
           echo "VER=${VER}" >> "$GITHUB_ENV"
           echo "TAG=v${VER}" >> "$GITHUB_ENV"
           echo "Version ${VER}"

@@ -532,9 +532,11 @@ namespace HomeScreenCompanion
 
                 // Process OverrideWhenActive entries first so they can remove themselves from
                 // activeTagOverrides before non-override entries for the same tag are evaluated.
+                // A rotating source reads and writes no titles: ManageHomeSections does its row.
                 var orderedTags = config.Tags
                     .Where(t => t.OverrideWhenActive)
                     .Concat(config.Tags.Where(t => !t.OverrideWhenActive))
+                    .Where(t => !RotatingRow.Is(t))
                     .ToList();
 
                 // A group with several URLs is stored as one flat entry per URL. Its fetch lines wait
@@ -697,7 +699,7 @@ namespace HomeScreenCompanion
                     var groupTimer = System.Diagnostics.Stopwatch.StartNew();
                     try
                     {
-                        int effectiveLimit = tagConfig.Limit <= 0 ? 10000 : tagConfig.Limit;
+                        int effectiveLimit = tagConfig.Limit <= 0 ? NoLimit : tagConfig.Limit;
                         _log.Section($"[{gs.GroupIndex}/{gs.GroupTotal}] {displayName}");
                         _log.Debug("  " + DescribeSourceDetail(tagConfig, effectiveLimit));
                         var blacklist = new HashSet<string>(tagConfig.Blacklist ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
@@ -744,7 +746,7 @@ namespace HomeScreenCompanion
                                 (ListFetcher.IsFailure(fetchError) ? gs.Errors : gs.Warnings).Add(StandInMessage(tagConfig.Url!, fetchError, _lastGood.Value.SavedUtc));
                             }
                             gs.ListCount = items.Count;
-                            missingRun?.Record(tagConfig, items.Where(i => string.IsNullOrEmpty(i.Imdb) || !blacklist.Contains(i.Imdb)));
+                            missingRun?.Record(tagConfig, items, i => string.IsNullOrEmpty(i.Imdb) || !blacklist.Contains(i.Imdb));
                             int _extBlacklisted = 0, _extNoImdb = 0;
 
                             if (items.Count > 0)
@@ -867,13 +869,9 @@ namespace HomeScreenCompanion
                                     gs.Warnings.Add($"{DescribeSource(tagConfig)} '{tagConfig.LocalSourceId}' was not found in the library");
                                 }
 
-                                if (effectiveLimit < 10000 && matchedLocalItems.Count > effectiveLimit)
+                                if (effectiveLimit < NoLimit && matchedLocalItems.Count > effectiveLimit)
                                     matchedLocalItems = matchedLocalItems.Take(effectiveLimit).ToList();
                             }
-                        }
-                        else if (RotatingRow.Is(tagConfig))
-                        {
-                            matchedLocalItems = RotatingItems(tagConfig, config, blacklist, effectiveLimit, gs, passesFilters);
                         }
                         else if (tagConfig.SourceType == "Manual")
                         {
@@ -898,7 +896,7 @@ namespace HomeScreenCompanion
                         // MediaInfo post-filter for list sources (External, AI). Local collections /
                         // playlists and Manual lists were already filtered while they were read.
                         bool _filteredWhileRead = passesFilters != null
-                            && (tagConfig.SourceType == "LocalCollection" || tagConfig.SourceType == "LocalPlaylist" || tagConfig.SourceType == "Manual" || RotatingRow.Is(tagConfig));
+                            && (tagConfig.SourceType == "LocalCollection" || tagConfig.SourceType == "LocalPlaylist" || tagConfig.SourceType == "Manual");
                         if (tagConfig.SourceType != "MediaInfo" && !_filteredWhileRead && matchedLocalItems.Count > 0
                             && (tagConfig.MediaInfoFilters?.Count > 0 || tagConfig.MediaInfoConditions?.Count > 0))
                         {
@@ -940,7 +938,7 @@ namespace HomeScreenCompanion
                                 if (ItemMatchesMediaInfo(item, tagConfig, debug, seriesEpisodeCache, personCache, userDataCache, ci, preloadedUsers, seriesLastPlayedCache, collectionMembershipCache, seriesEpisodeNamesCache))
                                 {
                                     matchedLocalItems.Add(item);
-                                    if (PopularRuleDays(tagConfig) == null && effectiveLimit < 10000 && matchedLocalItems.Count >= effectiveLimit) break;
+                                    if (PopularRuleDays(tagConfig) == null && effectiveLimit < NoLimit && matchedLocalItems.Count >= effectiveLimit) break;
                                 }
                             }
                             OrderByPopularity(tagConfig, matchedLocalItems, effectiveLimit);
@@ -1012,7 +1010,7 @@ namespace HomeScreenCompanion
                                 config.AiConnections,
                                 config.AiSystemPrompt,
                                 recentlyWatchedContext,
-                                AiAskCount(effectiveLimit),
+                                AiAskCount(effectiveLimit, config),
                                 cancellationToken);
                             fetchTimer.Stop();
 
@@ -1023,7 +1021,7 @@ namespace HomeScreenCompanion
                             foreach (var aiItem in aiItems)
                             {
                                 // Asked for more than the limit (see AiAskCount): the first hits fill it.
-                                if (effectiveLimit < 10000 && TitleCount(matchedLocalItems) >= effectiveLimit) break;
+                                if (effectiveLimit < NoLimit && TitleCount(matchedLocalItems) >= effectiveLimit) break;
                                 _aiSeen++;
                                 if (string.IsNullOrWhiteSpace(aiItem.title)) continue;
                                 string _aiLabel = aiItem.year.HasValue ? $"{aiItem.title} ({aiItem.year})" : aiItem.title;
@@ -1086,8 +1084,8 @@ namespace HomeScreenCompanion
                             }
 
                             // Only the titles the AI's answer was read up to (the limit was filled after them).
-                            missingRun?.Record(tagConfig, aiItems.Take(_aiSeen).Where(a => !string.IsNullOrWhiteSpace(a.title)
-                                && (string.IsNullOrEmpty(a.imdb_id) || !blacklist.Contains(a.imdb_id!.Trim()))).Select(MissingTitles.FromAi));
+                            missingRun?.Record(tagConfig, aiItems.Take(_aiSeen).Select(MissingTitles.FromAi),
+                                i => string.IsNullOrEmpty(i.Imdb) || !blacklist.Contains(i.Imdb));
                             _log.Debug($"  AI ({AiConnection.Label(tagConfig.AiProvider)}) returned {gs.ListCount} items in {fetchTimer.ElapsedMilliseconds} ms  ·  {matchedLocalItems.Count} matched ({_aiTitleMatched} by title only)  ·  {gs.MissingItems.Count} not in library  ·  {_aiBlacklisted} blacklisted");
                             if (tagConfig.AiRefreshIntervalDays > 0 && aiItems.Count > 0)
                             {
@@ -1568,8 +1566,9 @@ namespace HomeScreenCompanion
                         }
                         else
                         {
-                            // Top-list copies are managed by TopListCollectionMirror — never remove them here.
-                            var currentMembers = _libraryManager.GetItemList(new InternalItemsQuery { CollectionIds = new[] { existingColl.InternalId }, Recursive = true, IsVirtualItem = false }).Where(i => !TopListCollectionMirror.IsTopListItem(i)).Select(i => i.InternalId).ToHashSet();
+                            // Top-list copies are managed by TopListCollectionMirror — never remove them here,
+                            // except from a ranked collection: it holds only its own copies.
+                            var currentMembers = _libraryManager.GetItemList(new InternalItemsQuery { CollectionIds = new[] { existingColl.InternalId }, Recursive = true, IsVirtualItem = false }).Where(i => _ranked || !TopListCollectionMirror.IsTopListItem(i)).Select(i => i.InternalId).ToHashSet();
                             var toAdd = desiredIds.Where(id => !currentMembers.Contains(id)).ToList();
                             var toRemove = currentMembers.Where(id => !desiredIds.Contains(id)).ToList();
                             if (toAdd.Count > 0 && !dryRun)
@@ -2062,6 +2061,16 @@ namespace HomeScreenCompanion
             bool logMissing = config.LogMissingItems;
             var startTime = DateTime.Now;
             _log = _preview != null ? new RunLog(new List<string>(), null, "", false) : new RunLog(ExecutionLog, _logger, "", config.ExtendedConsoleOutput, Progress);
+            if (_preview == null && RotatingRow.Is(tagConfig))
+            {
+                _log.Rule();
+                _log.Info($"Home Screen Companion v{Plugin.Instance?.Version}  ·  {startTime:yyyy-MM-dd HH:mm}  ·  Single group: {_displayName}");
+                if (dryRun) _log.Skip("Dry run: the rotating row is not changed");
+                else ManageHomeSections(config, cancellationToken, debug, null, tagConfig.Tag.Trim());
+                _log.Rule();
+                LastRunStatus = $"Completed ({DateTime.Now:HH:mm})";
+                return (true, "Rotating row synced");
+            }
             if (_preview == null && tagConfig.SourceType == "AI" && tagConfig.AiRefreshIntervalDays > 0 &&
                 tagConfig.Active && IsScheduleActive(tagConfig.ActiveIntervals) &&
                 tagConfig.AiLastRunDate > DateTime.MinValue &&
@@ -2356,7 +2365,7 @@ namespace HomeScreenCompanion
             RecordImportedCollections(Plugin.Instance?.Configuration);
             string tagName = tagConfig.Tag.Trim();
             string cName = string.IsNullOrWhiteSpace(tagConfig.CollectionName) ? tagName : tagConfig.CollectionName.Trim();
-            int effectiveLimit = tagConfig.Limit <= 0 ? 10000 : tagConfig.Limit;
+            int effectiveLimit = tagConfig.Limit <= 0 ? NoLimit : tagConfig.Limit;
             var blacklist = new HashSet<string>(tagConfig.Blacklist ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
             var passesFilters = FilterConditionsCheck(tagConfig, seriesEpisodeCache, personCache, userDataCache, mediaInfoCache,
                 preloadedUsers, seriesLastPlayedCache, collectionMembershipCache, seriesEpisodeNamesCache);
@@ -2412,7 +2421,7 @@ namespace HomeScreenCompanion
                     foreach (var src in groupEntries)
                     {
                         if (string.IsNullOrWhiteSpace(src.Url)) continue;
-                        int srcLimit = src.Limit <= 0 ? 10000 : src.Limit;
+                        int srcLimit = src.Limit <= 0 ? NoLimit : src.Limit;
                         var fetchTimer = System.Diagnostics.Stopwatch.StartNew();
                         var items = await fetcher.FetchItems(src.Url, srcLimit, config.TraktClientId, config.MdblistApiKey, config.TmdbApiKey, cancellationToken,
                             CountsTowardLimit(imdbLookup, blacklist, passesFilters));
@@ -2425,7 +2434,7 @@ namespace HomeScreenCompanion
                             (ListFetcher.IsFailure(fetcher.LastError) ? gs.Errors : gs.Warnings).Add(StandInMessage(src.Url, fetcher.LastError, _lastGood.Value.SavedUtc));
                         }
                         _listCount += items.Count;
-                        missingRun?.Record(src, items.Where(i => string.IsNullOrEmpty(i.Imdb) || !blacklist.Contains(i.Imdb)));
+                        missingRun?.Record(src, items, i => string.IsNullOrEmpty(i.Imdb) || !blacklist.Contains(i.Imdb));
                         // One URL of several that does not exist (404): left out, as in the full sync.
                         if (items.Count == 0 && groupEntries.Count > 1 && ListFetcher.IsGone(fetcher.LastError))
                         {
@@ -2468,7 +2477,7 @@ namespace HomeScreenCompanion
                     foreach (var src in groupEntries)
                     {
                         if (string.IsNullOrEmpty(src.LocalSourceId)) continue;
-                        int srcLimit = src.Limit <= 0 ? 10000 : src.Limit;
+                        int srcLimit = src.Limit <= 0 ? NoLimit : src.Limit;
                         var localSourceFolder = allFolders.FirstOrDefault(i => string.Equals(i.Name, src.LocalSourceId, StringComparison.OrdinalIgnoreCase));
                         if (localSourceFolder == null)
                         {
@@ -2495,7 +2504,7 @@ namespace HomeScreenCompanion
                             if (passesFilters != null && !passesFilters(itemToTag)) continue;
                             if (!srcMatched.Contains(itemToTag)) srcMatched.Add(itemToTag);
                         }
-                        if (srcLimit < 10000 && srcMatched.Count > srcLimit)
+                        if (srcLimit < NoLimit && srcMatched.Count > srcLimit)
                             srcMatched = srcMatched.Take(srcLimit).ToList();
                         foreach (var m in srcMatched)
                             if (!matchedLocalItems.Contains(m)) matchedLocalItems.Add(m);
@@ -2514,14 +2523,9 @@ namespace HomeScreenCompanion
                         return (false, $"Source '{string.Join("', '", missingSources)}' not found");
                     }
                 }
-                else if (RotatingRow.Is(tagConfig))
-                {
-                    matchedLocalItems = RotatingItems(tagConfig, config, blacklist, tagConfig.Limit <= 0 ? 10000 : tagConfig.Limit, gs, passesFilters);
-                    _listCount = gs.ListCount;
-                }
                 else if (tagConfig.SourceType == "Manual")
                 {
-                    matchedLocalItems = ManualItems(tagConfig, blacklist, tagConfig.Limit <= 0 ? 10000 : tagConfig.Limit, gs, passesFilters);
+                    matchedLocalItems = ManualItems(tagConfig, blacklist, tagConfig.Limit <= 0 ? NoLimit : tagConfig.Limit, gs, passesFilters);
                     _listCount = tagConfig.ManualItemIds?.Count ?? 0;
                     _log.Debug($"  {matchedLocalItems.Count} of {_listCount} hand-picked items found");
                 }
@@ -2569,7 +2573,7 @@ namespace HomeScreenCompanion
                         if (ItemMatchesMediaInfo(item, tagConfig, debug, seriesEpisodeCache, personCache, userDataCache, ci, preloadedUsers, seriesLastPlayedCache, collectionMembershipCache, seriesEpisodeNamesCache))
                         {
                             matchedLocalItems.Add(item);
-                            if (PopularRuleDays(tagConfig) == null && effectiveLimit < 10000 && matchedLocalItems.Count >= effectiveLimit) break;
+                            if (PopularRuleDays(tagConfig) == null && effectiveLimit < NoLimit && matchedLocalItems.Count >= effectiveLimit) break;
                         }
                     }
                     OrderByPopularity(tagConfig, matchedLocalItems, effectiveLimit);
@@ -2640,7 +2644,7 @@ namespace HomeScreenCompanion
                         config.AiConnections,
                         config.AiSystemPrompt,
                         recentlyWatchedContext,
-                        AiAskCount(effectiveLimit),
+                        AiAskCount(effectiveLimit, config),
                         cancellationToken);
                     fetchTimer.Stop();
 
@@ -2652,7 +2656,7 @@ namespace HomeScreenCompanion
                     foreach (var aiItem in aiItems)
                     {
                         // Asked for more than the limit (see AiAskCount): the first hits fill it.
-                        if (effectiveLimit < 10000 && TitleCount(matchedLocalItems) >= effectiveLimit) break;
+                        if (effectiveLimit < NoLimit && TitleCount(matchedLocalItems) >= effectiveLimit) break;
                         _aiSeen++;
                         if (string.IsNullOrWhiteSpace(aiItem.title)) continue;
                         string _aiLabel = aiItem.year.HasValue ? $"{aiItem.title} ({aiItem.year})" : aiItem.title;
@@ -2695,8 +2699,8 @@ namespace HomeScreenCompanion
                             }
                         }
                     }
-                    missingRun?.Record(tagConfig, aiItems.Take(_aiSeen).Where(a => !string.IsNullOrWhiteSpace(a.title)
-                        && (string.IsNullOrEmpty(a.imdb_id) || !blacklist.Contains(a.imdb_id!.Trim()))).Select(MissingTitles.FromAi));
+                    missingRun?.Record(tagConfig, aiItems.Take(_aiSeen).Select(MissingTitles.FromAi),
+                        i => string.IsNullOrEmpty(i.Imdb) || !blacklist.Contains(i.Imdb));
                     _log.Debug($"  AI ({AiConnection.Label(tagConfig.AiProvider)}) returned {_listCount} items in {fetchTimer.ElapsedMilliseconds} ms  ·  {matchedLocalItems.Count} matched ({_aiTitleMatched} by title only)  ·  {gs.MissingItems.Count} not in library  ·  {_aiBlacklisted} blacklisted");
 
                     if (_preview != null)
@@ -2755,7 +2759,7 @@ namespace HomeScreenCompanion
             // MediaInfo post-filter for list sources (External, AI). Local collections / playlists and
             // Manual lists were already filtered while they were read (passesFilters).
             bool _filteredWhileRead = passesFilters != null
-                && (tagConfig.SourceType == "LocalCollection" || tagConfig.SourceType == "LocalPlaylist" || tagConfig.SourceType == "Manual" || RotatingRow.Is(tagConfig));
+                && (tagConfig.SourceType == "LocalCollection" || tagConfig.SourceType == "LocalPlaylist" || tagConfig.SourceType == "Manual");
             if (tagConfig.SourceType != "MediaInfo" && !_filteredWhileRead && matchedLocalItems.Count > 0
                 && (tagConfig.MediaInfoFilters?.Count > 0 || tagConfig.MediaInfoConditions?.Count > 0))
             {
@@ -3160,8 +3164,9 @@ namespace HomeScreenCompanion
                     }
                     else
                     {
-                        // Top-list copies are managed by TopListCollectionMirror — never remove them here.
-                        var currentMembers = _libraryManager.GetItemList(new InternalItemsQuery { CollectionIds = new[] { existingColl.InternalId }, Recursive = true, IsVirtualItem = false }).Where(i => !TopListCollectionMirror.IsTopListItem(i)).Select(i => i.InternalId).ToHashSet();
+                        // Top-list copies are managed by TopListCollectionMirror — never remove them here,
+                        // except from a ranked collection: it holds only its own copies.
+                        var currentMembers = _libraryManager.GetItemList(new InternalItemsQuery { CollectionIds = new[] { existingColl.InternalId }, Recursive = true, IsVirtualItem = false }).Where(i => _ranked || !TopListCollectionMirror.IsTopListItem(i)).Select(i => i.InternalId).ToHashSet();
                         var toAdd = desiredIds.Where(id => !currentMembers.Contains(id)).ToList();
                         var toRemove = currentMembers.Where(id => !desiredIds.Contains(id)).ToList();
                         if (toAdd.Count > 0) await _collectionManager.AddToCollection(existingColl.InternalId, toAdd.ToArray());
@@ -3455,13 +3460,11 @@ namespace HomeScreenCompanion
         internal static bool HasNoSourceYet(TagConfig t) =>
             (string.IsNullOrEmpty(t.SourceType) || t.SourceType == "External") ? string.IsNullOrWhiteSpace(t.Url)
             : t.SourceType == "MediaInfo" ? !HasFilterConditions(t)
-            : RotatingRow.Is(t) ? RotatingRow.NoPoolYet(t)
             : (t.SourceType == "LocalCollection" || t.SourceType == "LocalPlaylist") && string.IsNullOrWhiteSpace(t.LocalSourceId);
 
         private static string NoSourceYetReason(TagConfig t) =>
             (string.IsNullOrEmpty(t.SourceType) || t.SourceType == "External") ? "no URL yet"
             : t.SourceType == "MediaInfo" ? "no filter rules yet"
-            : RotatingRow.Is(t) ? (string.Equals(t.RotationPool, "Tag", StringComparison.OrdinalIgnoreCase) ? "no tag picked yet" : "no collections picked yet")
             : t.SourceType == "LocalPlaylist" ? "no playlist picked yet" : "no collection picked yet";
 
         private static string GroupKey(TagConfig t) => GroupIssues.Key(t.Name, t.Tag);
@@ -3526,6 +3529,7 @@ namespace HomeScreenCompanion
                 var newKeys = new HashSet<string>(newConfig.Tags.Select(GroupKey), StringComparer.OrdinalIgnoreCase);
                 var deleted = oldConfig.Tags.Where(t => !newKeys.Contains(GroupKey(t))).ToList();
                 if (deleted.Count == 0) return;
+                RotatingRow.Forget(deleted);
 
                 var newTags = new HashSet<string>(newConfig.Tags.Where(t => !string.IsNullOrWhiteSpace(t.Tag)).SelectMany(t => t.AllTags()), StringComparer.OrdinalIgnoreCase);
                 var newCollections = new HashSet<string>(newConfig.Tags.Where(t => t.EnableCollection).Select(CollectionNameOf), StringComparer.OrdinalIgnoreCase);
@@ -3577,8 +3581,9 @@ namespace HomeScreenCompanion
                                 UserId = r.UserId,
                                 SectionId = r.SectionId,
                                 SectionMarker = SectionMarker(t),
-                                HomeSectionSettings = t.HomeSectionSettings ?? "{}",
-                                DefaultTitle = DefaultRowTitle(t)
+                                // A rotating row goes by its id only: a row of the user's own can have its title.
+                                HomeSectionSettings = RotatingRow.Is(t) ? "{}" : t.HomeSectionSettings ?? "{}",
+                                DefaultTitle = RotatingRow.Is(t) ? "" : DefaultRowTitle(t)
                             });
                             queueChanged = true;
                         }
@@ -3985,14 +3990,6 @@ namespace HomeScreenCompanion
         internal static string DefaultRowTitle(TagConfig tc)
             => (!string.IsNullOrWhiteSpace(tc.Name) ? tc.Name : tc.Tag ?? "").Trim();
 
-        // Every title a rotating source's row can have (null for other sources), to find it by title.
-        private HashSet<string>? RotatingTitles(TagConfig tc, PluginConfiguration config)
-        {
-            if (!RotatingRow.Is(tc)) return null;
-            try { return RotatingRow.PoolTitles(tc, RotatingRow.CustomTitle(tc, _jsonSerializer), RotatingRow.Pool(tc, config, _libraryManager), config, _jsonSerializer); }
-            catch (Exception swallowed) { PluginLog.Swallowed(swallowed); return null; }
-        }
-
         // A "playlist" home row (SectionType "playlist", any source with Create Playlist) shows the
         // user's own playlist from the source: the playlist's items (no item-type or library filter;
         // ParentId is set per user). The row keeps the source's own Sort By / Sort Order like any other row:
@@ -4144,7 +4141,7 @@ namespace HomeScreenCompanion
                 .ThenBy(i => i.SortName, StringComparer.OrdinalIgnoreCase)
                 .GroupBy(PopularityCounter.FilmKeys(_popularityScope))
                 .ToList();
-            if (limit < 10000 && films.Count > limit) films = films.Take(limit).ToList();
+            if (limit < NoLimit && films.Count > limit) films = films.Take(limit).ToList();
             matched.Clear();
             matched.AddRange(films.SelectMany(f => f));
             _log.Info($"  Most viewed first ({(days.Value > 0 ? $"last {days.Value} days" : "all time")}): {films.Count} kept"
@@ -4169,7 +4166,7 @@ namespace HomeScreenCompanion
                     .ThenBy(i => i.SortName, StringComparer.OrdinalIgnoreCase)
                     .GroupBy(PopularityCounter.FilmKeys(_popularityScope))
                     .ToList();
-                if (limit < 10000 && films.Count > limit) films = films.Take(limit).ToList();
+                if (limit < NoLimit && films.Count > limit) films = films.Take(limit).ToList();
                 var keys = films.SelectMany(f => f).Select(RankKey).Where(k => !string.IsNullOrEmpty(k)).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                 if (!_weekAgoByTag.TryGetValue(tagName, out var list)) _weekAgoByTag[tagName] = keys;
                 else list.AddRange(keys.Where(k => !list.Contains(k, StringComparer.OrdinalIgnoreCase)));
@@ -4538,12 +4535,21 @@ namespace HomeScreenCompanion
             var anchoredTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             // A source's row is never looked up among the top-lists' rows (see the title fallback below).
             var topListLibraries = TopListSyncTask.TopListLibraryIds(config, _libraryManager);
+            // Ranked-collection libraries are in every row's excluded folders (TopListLibraryVisibility.Apply).
+            var rankedLibIds = RankedCollections.LibraryIds(_libraryManager);
+            var allLibIds = TopListLibraryVisibility.AllLibraryIds(_libraryManager);
 
             foreach (var tc in config.Tags)
             {
                 // When running single-entry, only process the specific tag
                 if (filterTagName != null && !string.Equals(tc.Tag?.Trim(), filterTagName, StringComparison.OrdinalIgnoreCase))
                     continue;
+
+                if (RotatingRow.Is(tc))
+                {
+                    if (processedHsKeys.Add(GroupKey(tc)) && SyncRotatingRow(tc, config, statsList, cancellationToken)) configChanged = true;
+                    continue;
+                }
 
                 bool isActive = tc.Active && IsScheduleActive(tc.ActiveIntervals);
                 if (NormalizeNextWatch(tc)) configChanged = true;
@@ -4591,7 +4597,7 @@ namespace HomeScreenCompanion
                                     // Switched off by its schedule (or made inactive): remember where the row
                                     // was, so it comes back at the same place when it switches on again.
                                     if (plainRow) RememberRowPosition(hsKey, tracking.UserId, uid, tracking.SectionId, cancellationToken);
-                                    if (DeleteSectionForUser(uid, tracking.UserId, tracking.SectionId, sectionMarker, tc.HomeSectionSettings, cancellationToken, DefaultRowTitle(tc), RotatingTitles(tc, config))) _removedHs++;
+                                    if (DeleteSectionForUser(uid, tracking.UserId, tracking.SectionId, sectionMarker, tc.HomeSectionSettings, cancellationToken, DefaultRowTitle(tc))) _removedHs++;
                                 }
                                 catch (Exception ex)
                                 {
@@ -4645,66 +4651,13 @@ namespace HomeScreenCompanion
 
                 settingsDict.TryGetValue("SectionType", out var sectionType);
 
-                // For items-type sections, dynamically ensure all top-list libraries are excluded
-                if (sectionType == "items")
-                {
-                    var topListLibIds = (config.TopLists ?? new System.Collections.Generic.List<TopListHomeSection>())
-                        .Where(t => !string.IsNullOrEmpty(t.HomeSectionLibraryId) && t.HomeSectionLibraryId != "auto")
-                        .Select(t => t.HomeSectionLibraryId)
-                        .ToList();
-                    if (topListLibIds.Count > 0)
-                    {
-                        var current = (settingsDict.TryGetValue("_queryExcludeViewIds", out var ev) ? ev : "")
-                            .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
-                            .Select(s => s.Trim())
-                            .ToList();
-                        bool excChanged = false;
-                        foreach (var id in topListLibIds)
-                            if (!current.Contains(id, StringComparer.OrdinalIgnoreCase))
-                            { current.Add(id); excChanged = true; }
-                        if (excChanged)
-                        {
-                            var excStr = string.Join(",", current);
-                            settingsDict["_queryExcludeViewIds"] = excStr;
-                            settingsDict["ExcludedFolders"] = excStr;
-                        }
-                    }
-                }
+                if (sectionType == "items") AddTopListExclusions(settingsDict, config);
+
+                // Never saved: only the row gets the ranked-collection libraries.
+                TopListLibraryVisibility.AddRankedExclusions(settingsDict, tc.HomeSectionLibraryId, rankedLibIds, allLibIds, _jsonSerializer);
 
                 string? resolvedLibraryId = null;
-                // A rotating row (RotatingRow): today's collection of the pool, the same for all its
-                // users; its ParentId and title are updated in place, so the row keeps its place.
-                HashSet<string>? rotTitles = null;
-                if (sectionType == "boxset" && RotatingRow.Is(tc))
-                {
-                    var rot = RotatingRow.Resolve(tc, config, _libraryManager, _userManager);
-                    var rotCustom = RotatingRow.CustomTitle(tc, _jsonSerializer);
-                    rotTitles = RotatingRow.PoolTitles(tc, rotCustom, rot.Pool, config, _jsonSerializer);
-                    if (rot.Pick == null)
-                    {
-                        // Nothing to show: the row goes (its place is remembered) until the pool has a collection again.
-                        int _rotRemoved = 0;
-                        foreach (var tracking in tc.HomeSectionTracked)
-                        {
-                            try
-                            {
-                                var uid = _userManager.GetInternalId(tracking.UserId);
-                                RememberRowPosition(hsKey, tracking.UserId, uid, tracking.SectionId, cancellationToken);
-                                if (DeleteSectionForUser(uid, tracking.UserId, tracking.SectionId, sectionMarker, tc.HomeSectionSettings, cancellationToken, DefaultRowTitle(tc), rotTitles)) _rotRemoved++;
-                            }
-                            catch (Exception ex) { _log.Warn($"{_hsDisplayName}: home section could not be removed: {ex.Message}"); }
-                        }
-                        if (tc.HomeSectionTracked.Count > 0) { tc.HomeSectionTracked.Clear(); configChanged = true; }
-                        HsWarn(statsList, _hsTagName, _hsDisplayName, (rot.Pool.Count == 0 ? "rotating row hidden — the pool has no collections" : "rotating row hidden — no collection in the pool has titles every user of the row can see")
-                            + (_rotRemoved > 0 ? $" (removed for {RunLog.Plural(_rotRemoved, "user")})" : ""));
-                        continue;
-                    }
-                    resolvedLibraryId = rot.Pick.InternalId.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                    settingsDict["CustomName"] = RotatingRow.Title(rotCustom, rot.Pick.Name);
-                    _log.Ok($"Rotating row '{(string.IsNullOrWhiteSpace(tc.Name) ? _hsTagName : tc.Name.Trim())}': today's collection '{rot.Pick.Name}'"
-                        + (rot.Skipped.Count > 0 ? $" (skipped: {string.Join(", ", rot.Skipped)})" : ""));
-                }
-                else if (sectionType == "boxset")
+                if (sectionType == "boxset")
                 {
                     if (tc.HomeSectionLibraryId == "auto")
                     {
@@ -4762,7 +4715,7 @@ namespace HomeScreenCompanion
                     try
                     {
                         var uid = _userManager.GetInternalId(t.UserId);
-                        DeleteSectionForUser(uid, t.UserId, t.SectionId, sectionMarker, tc.HomeSectionSettings, cancellationToken, DefaultRowTitle(tc), RotatingTitles(tc, config));
+                        DeleteSectionForUser(uid, t.UserId, t.SectionId, sectionMarker, tc.HomeSectionSettings, cancellationToken, DefaultRowTitle(tc));
                     }
                     catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
                     tc.HomeSectionTracked.Remove(t);
@@ -4814,14 +4767,8 @@ namespace HomeScreenCompanion
                         // with the same Custom Title for one user would otherwise share (and keep
                         // overwriting) one row. Nor any row on a top-list's library, tracked or not: it
                         // would turn the top-list's row into this source's row.
-                        if (ownedSection == null && rotTitles == null && settingsDict.TryGetValue("CustomName", out var _hsFallbackName) && !string.IsNullOrEmpty(_hsFallbackName))
+                        if (ownedSection == null && settingsDict.TryGetValue("CustomName", out var _hsFallbackName) && !string.IsNullOrEmpty(_hsFallbackName))
                             ownedSection = allCurrentSections.FirstOrDefault(s => SameTitle(s.CustomName, _hsFallbackName)
-                                && !SectionOwnedElsewhere(config, hsKey, userId, s.Id)
-                                && !TopListSyncTask.IsTopListRow(s, topListLibraries));
-                        // A rotating row: by any title of its pool (a copy made before the switch has an
-                        // earlier collection's title), never by one of another source's or top-list's rows.
-                        if (ownedSection == null && rotTitles != null)
-                            ownedSection = allCurrentSections.FirstOrDefault(s => RotatingRow.IsRowTitle(s, rotTitles)
                                 && !SectionOwnedElsewhere(config, hsKey, userId, s.Id)
                                 && !TopListSyncTask.IsTopListRow(s, topListLibraries));
 
@@ -4918,7 +4865,170 @@ namespace HomeScreenCompanion
                 TagAnchor.Prune(_libraryManager, _jsonSerializer, anchoredTags, m => _log.Warn(m));
 
             if (configChanged)
+            {
+                RotatingRow.CarryTracking(config);
                 Plugin.Instance.SaveConfiguration();
+            }
+        }
+
+        // For items-type sections: every top-list library is excluded.
+        internal static void AddTopListExclusions(Dictionary<string, string> settings, PluginConfiguration config)
+        {
+            var topListLibIds = (config.TopLists ?? new System.Collections.Generic.List<TopListHomeSection>())
+                .Where(t => !string.IsNullOrEmpty(t.HomeSectionLibraryId) && t.HomeSectionLibraryId != "auto")
+                .Select(t => t.HomeSectionLibraryId)
+                .ToList();
+            if (topListLibIds.Count == 0) return;
+            var current = (settings.TryGetValue("_queryExcludeViewIds", out var ev) ? ev : "")
+                .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
+                .Select(s => s.Trim())
+                .ToList();
+            bool excChanged = false;
+            foreach (var id in topListLibIds)
+                if (!current.Contains(id, StringComparer.OrdinalIgnoreCase))
+                { current.Add(id); excChanged = true; }
+            if (excChanged)
+            {
+                var excStr = string.Join(",", current);
+                settings["_queryExcludeViewIds"] = excStr;
+                settings["ExcludedFolders"] = excStr;
+            }
+        }
+
+        // A rotating source's row for each of its users (see RotatingRow): updated in place with what
+        // that user may see from the turn on; no row while there is nothing, back at the same place
+        // after. Only rows tracked for the source are touched. True when the tracking changed.
+        private bool SyncRotatingRow(TagConfig tc, PluginConfiguration config, List<GroupRunStats>? statsList, CancellationToken cancellationToken)
+        {
+            bool changed = false;
+            tc.HomeSectionTracked ??= new List<HomeSectionTracking>();
+            tc.HomeSectionUserIds ??= new List<string>();
+            var hsKey = GroupKey(tc);
+            string tagName = (tc.Tag ?? "").Trim();
+            string display = !string.IsNullOrWhiteSpace(tc.Name) ? tc.Name.Trim() : tagName;
+            _log.Step($"Home sections — {display}");
+
+            // Removes the user's row. remember: it comes back at the same place.
+            bool RemoveRow(HomeSectionTracking t, bool remember)
+            {
+                var uid = _userManager.GetInternalId(t.UserId);
+                var row = RotatingRow.FindRow(_userManager.GetHomeSections(uid, cancellationToken)?.Sections ?? Array.Empty<ContentSection>(), t);
+                if (row == null) return false;
+                if (remember) RememberRowPosition(hsKey, t.UserId, uid, row.Id, cancellationToken);
+                _userManager.DeleteHomeSections(uid, new[] { row.Id }, cancellationToken);
+                return true;
+            }
+
+            bool inSchedule = tc.Active && IsScheduleActive(tc.ActiveIntervals);
+            var items = RotatingRow.Items(tc);
+            if (!inSchedule || !tc.EnableHomeSection || items.Count == 0)
+            {
+                int removed = 0;
+                foreach (var t in tc.HomeSectionTracked.ToList())
+                {
+                    if (SkipDisabled(t.UserId)) continue;
+                    try { if (RemoveRow(t, tc.EnableHomeSection)) removed++; }
+                    catch (Exception ex) { _log.Warn($"{display}: home section could not be removed: {ex.Message}"); continue; }
+                    tc.HomeSectionTracked.Remove(t);
+                    changed = true;
+                }
+                if (removed > 0) _log.Skip($"{display}: home section removed for {RunLog.Plural(removed, "user")} ({(items.Count == 0 ? "no items in its list" : tc.EnableHomeSection ? "inactive or not in schedule" : "no longer set to show a home section")})");
+                else if (items.Count == 0 && inSchedule && tc.EnableHomeSection) _log.Skip($"{display}: skipped — no items in its list yet");
+                return changed;
+            }
+            if (!StillWanted(tc))
+            {
+                _log.Skip($"{display}: home section not synced — the group was deleted or switched off while this run was busy");
+                return changed;
+            }
+
+            // Users taken off the source.
+            foreach (var t in tc.HomeSectionTracked.Where(t => !tc.HomeSectionUserIds.Any(u => HomeSectionSyncTask.NormId(u) == HomeSectionSyncTask.NormId(t.UserId))).ToList())
+            {
+                try { RemoveRow(t, false); }
+                catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
+                tc.HomeSectionTracked.Remove(t);
+                changed = true;
+            }
+
+            if (tc.HomeSectionUserIds.Count == 0)
+            {
+                HsWarn(statsList, tagName, display, "home section enabled but no users are selected");
+                return changed;
+            }
+
+            var sequence = RotatingRow.Turn(tc, _userManager, _libraryManager, _jsonSerializer);
+            var settingsNow = RowPlacement.PositionIn(tc.HomeSectionSettings);
+            var posKey = RowPlacement.SourceKey(tc);
+            bool posMove = RowPlacement.ShouldMove(posKey, settingsNow, false);
+            int synced = 0, hidden = 0;
+            var shown = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            _log.Section($"Home section: {display}");
+            foreach (var userId in tc.HomeSectionUserIds)
+            {
+                if (SkipDisabled(userId)) { _log.Debug($"  {UserName(userId)}: skipped — disabled in Emby (the row is kept)"); continue; }
+                try
+                {
+                    var uid = _userManager.GetInternalId(userId);
+                    var tracked = tc.HomeSectionTracked.FirstOrDefault(t => HomeSectionSyncTask.NormId(t.UserId) == HomeSectionSyncTask.NormId(userId));
+                    var pick = RotatingRow.PickFor(tc, userId, sequence, _userManager, _libraryManager, _jsonSerializer);
+                    if (pick == null)
+                    {
+                        if (tracked != null)
+                        {
+                            RemoveRow(tracked, true);
+                            tc.HomeSectionTracked.Remove(tracked);
+                            changed = true;
+                        }
+                        hidden++;
+                        _log.Debug($"  {UserName(userId)}: no row — nothing in the list they may see");
+                        continue;
+                    }
+                    var sections = _userManager.GetHomeSections(uid, cancellationToken)?.Sections ?? Array.Empty<ContentSection>();
+                    var owned = RotatingRow.FindRow(sections, tracked);
+                    if (owned != null && SectionOwnedElsewhere(config, hsKey, userId, owned.Id)) owned = null;
+                    ContentSection written;
+                    string sectionId;
+                    if (owned != null)
+                    {
+                        written = RotatingRow.Build(tc, pick, config, _libraryManager, _jsonSerializer, owned);
+                        typeof(ContentSection).GetProperty("Id")?.SetValue(written, owned.Id);
+                        _userManager.UpdateHomeSection(uid, written, cancellationToken);
+                        sectionId = owned.Id;
+                        if (posMove) MoveToPosition(_userManager, uid, sectionId, settingsNow, cancellationToken, tc.HomeSectionUserIds.Where(u => u != userId), written.CustomName);
+                    }
+                    else
+                    {
+                        written = RotatingRow.Build(tc, pick, config, _libraryManager, _jsonSerializer, null);
+                        _userManager.AddHomeSection(uid, written, cancellationToken);
+                        sectionId = (_userManager.GetHomeSections(uid, cancellationToken)?.Sections ?? Array.Empty<ContentSection>())
+                            .Where(s => !string.IsNullOrEmpty(s.Id) && !sections.Any(b => b.Id == s.Id)).Select(s => s.Id).FirstOrDefault() ?? "";
+                        if (sectionId.Length > 0 && !RestoreRowPosition(hsKey, userId, uid, sectionId, cancellationToken))
+                            PlaceNewRow(_userManager, uid, sectionId, settingsNow, cancellationToken, tc.HomeSectionUserIds.Where(u => u != userId), written.CustomName);
+                    }
+                    if (sectionId.Length > 0)
+                    {
+                        RotatingRow.Track(tc, userId, sectionId, written);
+                        changed = true;
+                    }
+                    synced++;
+                    shown[pick.Name] = shown.TryGetValue(pick.Name, out var n) ? n + 1 : 1;
+                    _log.Debug($"  {UserName(userId)}: '{written.CustomName}' (section id {sectionId})");
+                }
+                catch (Exception ex)
+                {
+                    HsWarn(statsList, tagName, display, $"home section failed for {UserName(userId)}: {ex.Message}");
+                }
+            }
+            if (posMove) RowPlacement.MarkApplied(posKey, settingsNow);
+            if (synced > 0)
+            {
+                var gs = statsList?.FirstOrDefault(s => s.TagName != null && string.Equals(s.TagName, tagName, StringComparison.OrdinalIgnoreCase));
+                if (gs != null) { gs.HomeSectionSynced = true; gs.HomeSectionUserCount = synced; }
+                _log.Ok($"{display}: home section synced for {RunLog.Plural(synced, "user")}  ·  now showing {string.Join(", ", shown.Select(kv => shown.Count > 1 ? $"{kv.Key} ({kv.Value})" : kv.Key))}");
+            }
+            if (hidden > 0) _log.Skip($"{display}: no row for {RunLog.Plural(hidden, "user")} — nothing in the list they may see");
+            return changed;
         }
 
         // Is the group still in the saved settings, switched on? A run works on the settings object it
@@ -5051,9 +5161,17 @@ namespace HomeScreenCompanion
             => !string.IsNullOrWhiteSpace(s.CustomName) ? "name:" + StripInactive(s.CustomName).Trim().ToLowerInvariant()
                 : "type:" + (s.SectionType ?? "").ToLowerInvariant() + "|" + (s.ParentId ?? "");
 
+        // The key a Position knows this user's rows by: a rotating source's row by its source (see
+        // RotatingRow.PositionKeys), any other row by its SectionKey.
+        internal static Func<ContentSection, string> PositionKeysOf(IUserManager userManager, long userInternalId, IEnumerable<ContentSection> sections)
+        {
+            var rotating = RotatingRow.PositionKeys(userManager, userInternalId, sections);
+            return s => !string.IsNullOrEmpty(s.Id) && rotating.TryGetValue(s.Id, out var key) ? key : SectionKey(s);
+        }
+
         // Where a new row goes (HomeSectionSettings "_position"): "" or "bottom" = where Emby puts it
-        // (the bottom), "top", "before:<SectionKey>" = right above that row, or "after:<SectionKey>" =
-        // right below it. When this user's home screen does not have that row: next to the nearest
+        // (the bottom), "top", "before:<key>" = right above that row, or "after:<key>" = right below
+        // it (key: see PositionKeysOf). When this user's home screen does not have that row: next to the nearest
         // row around it (in the order of another of the users who has it) that this user does have —
         // below the nearest one above it for "after" (else at the top), above the nearest one below it
         // for "before" (else at the bottom); at the bottom when none of them has the row.
@@ -5064,7 +5182,7 @@ namespace HomeScreenCompanion
             try
             {
                 var sections = userManager.GetHomeSections(userInternalId, cancellationToken)?.Sections ?? Array.Empty<ContentSection>();
-                var target = TargetIndex(userManager, sections, sectionId, position, referenceUserIds, ownTitle, cancellationToken);
+                var target = TargetIndex(userManager, userInternalId, sections, sectionId, position, referenceUserIds, ownTitle, cancellationToken);
                 if (target.HasValue) MoveRow(userManager, userInternalId, sectionId, target.Value, sections.Length, cancellationToken);
             }
             catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
@@ -5081,7 +5199,7 @@ namespace HomeScreenCompanion
                 int current = Array.FindIndex(sections, s => s.Id == sectionId);
                 if (current < 0) return false;
                 int? target = string.IsNullOrEmpty(position) || position == "bottom" ? sections.Length - 1
-                    : TargetIndex(userManager, sections, sectionId, position, referenceUserIds, ownTitle, cancellationToken);
+                    : TargetIndex(userManager, userInternalId, sections, sectionId, position, referenceUserIds, ownTitle, cancellationToken);
                 if (!target.HasValue || target.Value == current) return false;
                 userManager.MoveHomeSections(userInternalId, new[] { sectionId }, target.Value, cancellationToken);
                 return true;
@@ -5098,12 +5216,20 @@ namespace HomeScreenCompanion
             if (!before && !position.StartsWith("after:", StringComparison.Ordinal)) return position;
             var key = position.Substring(before ? "before:".Length : "after:".Length);
             var row = key.StartsWith("name:", StringComparison.Ordinal) ? "'" + key.Substring(5) + "'"
-                : key.StartsWith("type:", StringComparison.Ordinal) ? key.Substring(5).Split('|')[0] + " row" : key;
+                : key.StartsWith("type:", StringComparison.Ordinal) ? key.Substring(5).Split('|')[0] + " row"
+                : key.StartsWith(HomeSectionSyncTask.SrcPrefix, StringComparison.Ordinal) ? "rotating source '" + RotatingSourceName(key) + "'" : key;
             return (before ? "before " : "after ") + row;
         }
 
+        // The name in a rotating source's key ("src:<name>/<tag>", each URI-escaped).
+        private static string RotatingSourceName(string key)
+        {
+            var parts = key.Substring(HomeSectionSyncTask.SrcPrefix.Length).Split('/');
+            return Uri.UnescapeDataString(parts[0].Length > 0 || parts.Length < 2 ? parts[0] : parts[1]);
+        }
+
         // The index the row gets among the other rows (its final index); null: leave it where it is.
-        private static int? TargetIndex(IUserManager userManager, ContentSection[] sections, string sectionId, string position,
+        private static int? TargetIndex(IUserManager userManager, long userInternalId, ContentSection[] sections, string sectionId, string position,
             IEnumerable<string>? referenceUserIds, string? ownTitle, CancellationToken cancellationToken)
         {
             if (position == "top") return 0;
@@ -5111,13 +5237,14 @@ namespace HomeScreenCompanion
             if (!before && !position.StartsWith("after:", StringComparison.Ordinal)) return null;
             var anchor = position.Substring(before ? "before:".Length : "after:".Length);
             var others = sections.Where(s => s.Id != sectionId).ToList();
-            int at = others.FindIndex(s => SectionKey(s) == anchor);
+            var keyOf = PositionKeysOf(userManager, userInternalId, sections);
+            int at = others.FindIndex(s => keyOf(s) == anchor);
             if (at >= 0) return before ? at : at + 1;
             var near = RowKeysNear(userManager, anchor, before, referenceUserIds, ownTitle, cancellationToken);
             if (near == null) return null;
             foreach (var key in near)
             {
-                int found = others.FindIndex(s => SectionKey(s) == key);
+                int found = others.FindIndex(s => keyOf(s) == key);
                 if (found >= 0) return before ? found : found + 1;
             }
             // None of the rows around it: "after" goes to the top, "before" to the bottom.
@@ -5135,8 +5262,9 @@ namespace HomeScreenCompanion
             {
                 try
                 {
-                    var keys = (userManager.GetHomeSections(userManager.GetInternalId(userId), cancellationToken)?.Sections ?? Array.Empty<ContentSection>())
-                        .Select(SectionKey).Where(k => k != ownKey).ToList();
+                    var uid = userManager.GetInternalId(userId);
+                    var sections = userManager.GetHomeSections(uid, cancellationToken)?.Sections ?? Array.Empty<ContentSection>();
+                    var keys = sections.Select(PositionKeysOf(userManager, uid, sections)).Where(k => k != ownKey).ToList();
                     int at = keys.IndexOf(anchor);
                     if (at < 0) continue;
                     if (below) return keys.Skip(at + 1).ToList();
@@ -5158,8 +5286,7 @@ namespace HomeScreenCompanion
 
         // The row type a source's home section uses when none is saved.
         internal static string DefaultSectionType(TagConfig tc)
-            => RotatingRow.Is(tc) ? "boxset"
-                : (tc.EnableCollection && !string.IsNullOrEmpty(tc.CollectionName)) ? "boxset"
+            => (tc.EnableCollection && !string.IsNullOrEmpty(tc.CollectionName)) ? "boxset"
                 : !tc.EnableTag && tc.EnablePlaylist ? "playlist" : "items";
 
         // A home row that shows the source's tag (Dynamic Media), not its collection or playlist.
@@ -5207,7 +5334,7 @@ namespace HomeScreenCompanion
         // re-created the user's rows with new ids) by its marker, else by its title. True when a row
         // was removed. Never a top-list's row: not one a top-list tracks, and by marker or title never
         // a row on a top-list's library either — a source and a top-list can have the same title.
-        private bool DeleteSectionForUser(long userInternalId, string userId, string sectionId, string sectionMarker, string settingsJson, CancellationToken cancellationToken, string? defaultTitle = null, IEnumerable<string>? alsoTitles = null)
+        private bool DeleteSectionForUser(long userInternalId, string userId, string sectionId, string sectionMarker, string settingsJson, CancellationToken cancellationToken, string? defaultTitle = null)
         {
             ContentSection[]? allSections = null;
             try { allSections = _userManager.GetHomeSections(userInternalId, cancellationToken)?.Sections ?? Array.Empty<ContentSection>(); }
@@ -5254,14 +5381,13 @@ namespace HomeScreenCompanion
                 var cn = hint != null && hint.TryGetValue("CustomName", out var savedName) ? savedName : "";
                 // An empty saved title: the row was written with the default one (FillDefaultCustomName).
                 if (string.IsNullOrWhiteSpace(cn)) cn = defaultTitle ?? "";
-                if (!string.IsNullOrEmpty(cn) || alsoTitles != null)
+                if (!string.IsNullOrEmpty(cn))
                 {
                     // Never a row another group or top-list tracks (same title, different source).
                     var trackedIds = new HashSet<string>(
                         (cfg?.Tags ?? new List<TagConfig>()).SelectMany(t => t.HomeSectionTracked ?? new List<HomeSectionTracking>())
                             .Select(t => t.SectionId).Where(id => !string.IsNullOrEmpty(id)));
-                    var sameTitle = allSections.Where(s => (SameTitle(s.CustomName, cn) || (alsoTitles != null && alsoTitles.Any(a => SameTitle(s.CustomName, a))))
-                        && !string.IsNullOrEmpty(s.Id)).ToList();
+                    var sameTitle = allSections.Where(s => SameTitle(s.CustomName, cn) && !string.IsNullOrEmpty(s.Id)).ToList();
                     foreach (var s in sameTitle.Where(IsTopListRow))
                         _log.Debug($"  {UserName(userId)}: '{s.CustomName}' ({s.Id}) kept — a top-list's row with the same title");
                     var fallbackIds = sameTitle
@@ -5851,33 +5977,6 @@ namespace HomeScreenCompanion
             return result;
         }
 
-        // A "Rotating collection" source: the titles of today's collection (see RotatingRow), read
-        // like a Local Collection. Sets gs.ListCount to the collection's item count.
-        private List<BaseItem> RotatingItems(TagConfig tagConfig, PluginConfiguration config, HashSet<string> blacklist, int limit, GroupRunStats gs, Func<BaseItem, bool>? passesFilters)
-        {
-            var matched = new List<BaseItem>();
-            var rot = RotatingRow.Resolve(tagConfig, config, _libraryManager, _userManager);
-            if (rot.Pick == null)
-            {
-                gs.Warnings.Add(rot.Pool.Count == 0 ? "the pool has no collections" : "no collection in the pool has titles every user of the row can see");
-                return matched;
-            }
-            var children = _libraryManager.GetItemList(new InternalItemsQuery { CollectionIds = new[] { rot.Pick.InternalId }, IsVirtualItem = false }).ToList();
-            gs.ListCount = children.Count;
-            foreach (var child in children)
-            {
-                BaseItem item = child;
-                if (item.GetType().Name.Contains("Episode")) { try { var series = ((dynamic)item).Series; if (series != null) item = series; } catch { } }
-                if (!IsTaggableTopLevelItem(item)) continue;
-                var imdb = item.GetProviderId("Imdb");
-                if (!string.IsNullOrEmpty(imdb) && blacklist.Contains(imdb)) continue;
-                if (passesFilters != null && !passesFilters(item)) continue;
-                if (!matched.Contains(item)) matched.Add(item);
-            }
-            _log.Debug($"  Today's collection '{rot.Pick.Name}' ({rot.Pool.Count} in the pool{(rot.Skipped.Count > 0 ? ", skipped: " + string.Join(", ", rot.Skipped) : "")})  →  {children.Count} items, {matched.Count} usable movies/series");
-            return limit < 10000 && matched.Count > limit ? matched.Take(limit).ToList() : matched;
-        }
-
         // External and AI sources: their titles go into the real-time tag cache (keyed by IMDb id).
         internal static bool IsListSource(TagConfig t) =>
             string.IsNullOrEmpty(t.SourceType) || t.SourceType == "External" || t.SourceType == "AI";
@@ -5925,8 +6024,18 @@ namespace HomeScreenCompanion
                     && imdbLookup.TryGetValue(e.Imdb, out var local) && (passesFilters == null || local.Any(passesFilters));
 
         // How many titles an AI source is asked for: more than its Limit, since some are not in the
-        // library; the first hits fill the Limit.
-        private static int AiAskCount(int limit) => limit >= 10000 ? limit : Math.Min(limit * 2, limit + 50);
+        // library; the first hits fill the Limit. Never more than the AI cap in Settings (AiMaxItems),
+        // and the cap itself when the source has no Limit. With no cap (AiMaxItems 0) and no Limit the
+        // AI is asked for 10000, a number it can read as "as many as you like".
+        private static int AiAskCount(int limit, PluginConfiguration config)
+        {
+            int cap = ListFetcher.Cap(config.AiMaxItems, ListFetcher.DefaultAiMax);
+            if (limit >= NoLimit) return cap == ListFetcher.NoCap ? 10000 : cap;
+            return (int)Math.Min(cap, Math.Min(limit * 2L, limit + 50L));
+        }
+
+        // Max items 0 on a source: no limit. A URL or AI source is still held to its provider's cap.
+        private const int NoLimit = int.MaxValue;
 
         // A "MovingDate" window: the anchor date (e.g. last Monday of May, or Easter Sunday) of last
         // year, this year and next year, each widened by DaysBefore/DaysAfter (0–60), so a window
@@ -6324,7 +6433,12 @@ namespace HomeScreenCompanion
             bool userDataRule = parts.Length == 4 && UserDataRuleProps.Contains(parts[0]);
             bool numericRule = parts.Length == 3 && double.TryParse(parts[2], System.Globalization.NumberStyles.Any,
                 System.Globalization.CultureInfo.InvariantCulture, out _);
-            if (parts.Length > 2 && !userDataRule && !numericRule) parts = SplitTextCriterion(c);
+            bool calendarDateRule = parts.Length == 3 &&
+                (parts[0] == "DateAdded" || parts[0] == "DateModified") &&
+                DateTime.TryParseExact(parts[2], "yyyy-MM-dd",
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.None, out _);
+            if (parts.Length > 2 && !userDataRule && !numericRule && !calendarDateRule) parts = SplitTextCriterion(c);
             if (parts.Length == 2)
             {
                 var prop = parts[0]; var val = parts[1].Trim();
@@ -6496,6 +6610,21 @@ namespace HomeScreenCompanion
                     _ => false
                 };
             }
+            if (parts.Length == 3 &&
+                (parts[0] == "DateAdded" || parts[0] == "DateModified") &&
+                DateTime.TryParseExact(parts[2], "yyyy-MM-dd",
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.None, out var calendarDate))
+            {
+                // A calendar date (Date mode) is a day in server time, like the date rules in Schedule.
+                // Date modified comes from the same cached "days ago" as the Days-ago rule.
+                DateTime? itemUtc = parts[0] == "DateAdded"
+                    ? item.DateCreated.UtcDateTime
+                    : (cachedDateModifiedDays ?? TryGetDateModified(item)) is double modifiedDays
+                        ? DateTime.UtcNow.AddDays(-modifiedDays) : (DateTime?)null;
+                if (!itemUtc.HasValue) return false;
+                return ApplyDateOp(itemUtc.Value.ToLocalTime().Date, parts[1], calendarDate.Date);
+            }
             if (parts.Length == 3 && double.TryParse(parts[2],
                 System.Globalization.NumberStyles.Any,
                 System.Globalization.CultureInfo.InvariantCulture, out var num))
@@ -6601,9 +6730,10 @@ namespace HomeScreenCompanion
         // Criteria that read a file's video/audio details (ExtractMediaInfo): the bare flags
         // ("4K", "HEVC", "Atmos", "5.1", …) and these properties. Reading the details costs a
         // lookup per title (and per show), so it is skipped when no criterion needs them.
+        // DateModified is not one: it is a plain item field, read from the item (a show's own date).
         private static readonly HashSet<string> MediaDetailProperties = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "AudioLanguage", "DateModified", "FileSize", "BitRate", "SampleRate", "BitsPerSample", "TrackNumber", "DiscNumber"
+            "AudioLanguage", "FileSize", "BitRate", "SampleRate", "BitsPerSample", "TrackNumber", "DiscNumber"
         };
 
         private static bool NeedsMediaDetails(TagConfig tagConfig)
@@ -6897,9 +7027,27 @@ namespace HomeScreenCompanion
             _ => false
         };
 
+        private static bool ApplyDateOp(DateTime date, string op, DateTime target) => op switch
+        {
+            ">"  => date > target,
+            ">=" => date >= target,
+            "<"  => date < target,
+            "<=" => date <= target,
+            "="  => date == target,
+            _ => false
+        };
+
         private static double? TryGetDateModified(BaseItem item)
         {
-            try { dynamic d = item; DateTime dt = d.DateModified; return (DateTime.UtcNow - dt).TotalDays; }
+            // Emby's DateModified is a DateTimeOffset (a DateTime on older servers); reading it as a
+            // DateTime threw, so Date Modified rules matched nothing.
+            try
+            {
+                dynamic d = item;
+                object value = d.DateModified;
+                DateTime? utc = value is DateTimeOffset o ? o.UtcDateTime : value is DateTime t ? t.ToUniversalTime() : (DateTime?)null;
+                return utc.HasValue && utc.Value.Year > 1 ? (DateTime.UtcNow - utc.Value).TotalDays : (double?)null;
+            }
             catch { return null; }
         }
 
@@ -6922,14 +7070,17 @@ namespace HomeScreenCompanion
                 case "LocalPlaylist":   return "Local playlist";
                 case "Manual":          return "Manual list";
                 case "NextWatch":       return "Your Next Watch";
-                case RotatingRow.Type:  return "Rotating collection";
                 case "AI":              return "AI · " + (string.IsNullOrWhiteSpace(tc.AiProvider) ? "unknown provider" : AiConnection.Label(tc.AiProvider));
                 default:
                     var url = tc.Url ?? "";
-                    if (url.IndexOf("mdblist.com", StringComparison.OrdinalIgnoreCase) >= 0) return "MDBList";
-                    if (url.IndexOf("themoviedb.org", StringComparison.OrdinalIgnoreCase) >= 0) return "TMDb";
-                    if (url.IndexOf("trakt", StringComparison.OrdinalIgnoreCase) >= 0) return "Trakt";
-                    return "External list";
+                    if (string.IsNullOrWhiteSpace(url)) return "External list";
+                    switch (ListFetcher.ListProvider(url))
+                    {
+                        case "Mdblist": return "MDBList";
+                        case "Tmdb": return "TMDb";
+                        case "Trakt": return "Trakt";
+                        default: return "JSON list";
+                    }
             }
         }
 
@@ -6952,9 +7103,6 @@ namespace HomeScreenCompanion
                 case "NextWatch":
                     parts.Add($"{NextWatchUserIds(tc).Count} user(s), {(tc.Limit > 0 ? tc.Limit : NextWatchRecommender.DefaultLimit)} picks each");
                     break;
-                case RotatingRow.Type:
-                    parts.Add($"pool: {tc.RotationPool}, every {(RotatingRow.Weekly(tc) ? "week" : "day")}, {(RotatingRow.Shuffled(tc) ? "shuffled" : "in order")}");
-                    break;
                 case "AI":
                     parts.Add($"prompt {tc.AiPrompt?.Length ?? 0} chars" + (tc.AiIncludeRecentlyWatched ? ", includes watch history" : ""));
                     break;
@@ -6964,7 +7112,7 @@ namespace HomeScreenCompanion
             }
             if (tc.SourceType != "MediaInfo" && (tc.MediaInfoFilters?.Count > 0 || tc.MediaInfoConditions?.Count > 0))
                 parts.Add($"{GetAllCriteria(tc).Count()} extra filter conditions");
-            parts.Add(effectiveLimit >= 10000 ? "no limit" : $"limit {effectiveLimit}");
+            parts.Add(effectiveLimit >= NoLimit ? "no limit" : $"limit {effectiveLimit}");
             if ((tc.Blacklist?.Count ?? 0) > 0) parts.Add($"{tc.Blacklist!.Count} blacklisted");
             var features = new List<string>();
             if (tc.EnableTag && !tc.OnlyCollection) features.Add("tag");
@@ -7012,7 +7160,7 @@ namespace HomeScreenCompanion
             if (gs.BoxSetHse) return gs.BoxSetTaggedCount > 0 ? $"{RunLog.Plural(gs.BoxSetTaggedCount, "collection")} tagged" : "collection not found";
             if (gs.SourceType == "MediaInfo") return $"scanned {gs.ListCount:N0} items, {gs.MatchCount} matched";
             if (gs.SourceType == "NextWatch") return $"{RunLog.Plural(gs.ListCount, "user")}, {gs.MatchCount} picks";
-            if (gs.SourceType == "LocalCollection" || gs.SourceType == "LocalPlaylist" || gs.SourceType == "Manual" || gs.SourceType == RotatingRow.Type) return $"{gs.ListCount} in source, {gs.MatchCount} matched";
+            if (gs.SourceType == "LocalCollection" || gs.SourceType == "LocalPlaylist" || gs.SourceType == "Manual") return $"{gs.ListCount} in source, {gs.MatchCount} matched";
             return $"{gs.ListCount} in list, {gs.MatchCount} in your library";
         }
 
@@ -7049,7 +7197,7 @@ namespace HomeScreenCompanion
                 _log.Ok($"Scanned {gs.ListCount:N0} items  ·  {gs.MatchCount} matched your conditions");
             else if (gs.SourceType == "NextWatch")
                 _log.Ok($"Your Next Watch: {RunLog.Plural(gs.ListCount, "user")}  ·  {gs.MatchCount} picks in total");
-            else if (gs.SourceType == "LocalCollection" || gs.SourceType == "LocalPlaylist" || gs.SourceType == RotatingRow.Type)
+            else if (gs.SourceType == "LocalCollection" || gs.SourceType == "LocalPlaylist")
             {
                 if (gs.ListCount > 0) _log.Ok($"Source: {gs.ListCount} items  ·  {gs.MatchCount} matched");
             }
@@ -7837,6 +7985,17 @@ namespace HomeScreenCompanion
                 // PrepareTopListFolderRequest handler.
                 var (items, fromList) = TopListMembers.MoviesFor(tl.TagName, _libraryManager, _jsonSerializer, topListsFolder);
 
+                // Its chosen libraries, before Max items. None of them left: it keeps what it has.
+                var libraries = TopListLibraries.ForRun(tl, _libraryManager);
+                if (libraries.Gone)
+                {
+                    _log.Warn($"Top-list '{tl.TagName}': none of its chosen libraries exists any more — it keeps its titles until you choose others in its source");
+                    continue;
+                }
+                bool hadItems = items.Count > 0;
+                items = items.Where(libraries.Contains).ToList();
+                if (hadItems && items.Count == 0) _log.Skip($"Top-list '{tl.TagName}': none of the source's titles are in its chosen libraries");
+
                 var rankFile = Path.Combine(dataPath, "tag_ranks", sanitized + ".json");
                 if (!fromList && File.Exists(rankFile))
                 {
@@ -8024,8 +8183,23 @@ namespace HomeScreenCompanion
             }
 
             // A source's new top-list gets its library now that its files are there.
-            if (SourceTopLists.EnsureLibraries(config, _libraryManager, _userManager, _providerManager, _fileSystem, _log, onlyTag))
+            var newLibIds = SourceTopLists.EnsureLibraries(config, _libraryManager, _userManager, _providerManager, _fileSystem, _log, onlyTag);
+            if (newLibIds.Count > 0)
+            {
+                // Kept out of every other row and out of sight right away (Run Group syncs only the
+                // list's own rows, and a show list's run none), else the new list's titles show in
+                // Latest, the sources' rows and the other top-lists until the next full sync.
+                int keptOut = TopListSyncTask.KeepOutOfOtherRows(config, newLibIds, _libraryManager, _userManager, _jsonSerializer, CancellationToken.None);
+                if (keptOut > 0) _log.Info($"    New top-list {(newLibIds.Count == 1 ? "library" : "libraries")} kept out of {RunLog.Plural(keptOut, "other home row")}");
+                if (SourceTopLists.LibraryAdded)
+                {
+                    SourceTopLists.LibraryAdded = false;
+                    var hiddenFor = TopListSyncTask.HideLibraries(config, _userManager, _libraryManager, _logger, m => _log.Warn(m));
+                    if (hiddenFor > 0)
+                        _log.Info($"    HSC libraries {(config.HideTopListLibraries ? "hidden from" : "shown again in")} My Media and Latest for {RunLog.Plural(hiddenFor, "user")}");
+                }
                 Plugin.Instance.SaveConfiguration();
+            }
         }
 
         // Show top-lists are rebuilt on every sync, manual ones too: their series get new episodes,
@@ -8053,7 +8227,19 @@ namespace HomeScreenCompanion
 
                     List<BaseItem> series;
                     if (managedTagNames.Contains(tl.TagName))
+                    {
+                        // Its chosen libraries, before Max items. None of them left: it keeps what it has.
+                        var libraries = TopListLibraries.ForRun(tl, _libraryManager);
+                        if (libraries.Gone)
+                        {
+                            _log.Warn($"Top-list '{tl.TagName}': none of its chosen libraries exists any more — it keeps its titles until you choose others in its source");
+                            continue;
+                        }
                         series = ShowTopList.SeriesForTag(_libraryManager, _jsonSerializer, tl.TagName);
+                        bool hadSeries = series.Count > 0;
+                        series = series.Where(libraries.Contains).ToList();
+                        if (hadSeries && series.Count == 0) _log.Skip($"Top-list '{tl.TagName}': none of the source's titles are in its chosen libraries");
+                    }
                     else
                     {
                         // Manual list: its series are the ones in the folder's manifest.

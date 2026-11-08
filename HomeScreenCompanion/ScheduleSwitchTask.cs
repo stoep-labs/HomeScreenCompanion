@@ -1,4 +1,5 @@
 using MediaBrowser.Model.Logging;
+using MediaBrowser.Model.Serialization;
 using MediaBrowser.Model.Tasks;
 using System;
 using System.Collections.Generic;
@@ -13,17 +14,19 @@ namespace HomeScreenCompanion
     /// Runs the Tag &amp; Collection Sync when a scheduled source starts or stops being active, so
     /// time-of-day schedules (e.g. a 20:00 Spotlight) switch on time instead of at the 04:00 sync.
     /// It only checks the schedules; the sync itself does the switching (overrides, cleanup).
-    /// A rotating row (RotatingRow) moving on to its next collection (at midnight, server time)
-    /// runs the sync the same way.
+    /// A rotating row (RotatingRow) that is due runs its own Run Group, also when that failed
+    /// or was missed before: being due is not lost.
     /// </summary>
     public class ScheduleSwitchTask : IScheduledTask, IConfigurableScheduledTask
     {
         private readonly ITaskManager _taskManager;
         private readonly PluginLogger _logger;
+        private readonly IJsonSerializer _json;
 
-        public ScheduleSwitchTask(ITaskManager taskManager, ILogManager logManager)
+        public ScheduleSwitchTask(ITaskManager taskManager, ILogManager logManager, IJsonSerializer json)
         {
             _taskManager = taskManager;
+            _json = json;
             _logger = PluginLog.Wrap(logManager.GetLogger("HomeScreenCompanion_Schedule"), "Schedule");
         }
 
@@ -56,8 +59,8 @@ namespace HomeScreenCompanion
             try { if (File.Exists(statePath)) previous = File.ReadAllText(statePath); } catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
 
             // First run: remember the state; the daily sync already matches it.
-            if (previous == null) { Save(statePath, state); return Task.CompletedTask; }
-            if (previous == state) return Task.CompletedTask;
+            if (previous == null) { Save(statePath, state); RunDueRotations(config); return Task.CompletedTask; }
+            if (previous == state) { RunDueRotations(config); return Task.CompletedTask; }
 
             // Try again on the next check rather than lose the switch.
             if (HomeScreenCompanionTask.IsRunning) return Task.CompletedTask;
@@ -65,52 +68,47 @@ namespace HomeScreenCompanion
             var was = ParseState(previous);
             var now = ParseState(state);
             var changed = now.Where(kv => !was.TryGetValue(kv.Key, out var w) || w != kv.Value)
-                .Select(kv => kv.Key.StartsWith(RotationKey, StringComparison.Ordinal)
-                    ? $"{kv.Key.Substring(RotationKey.Length)}: next collection"
-                    : $"{kv.Key} {(kv.Value == "1" ? "started" : "ended")}")
-                .Concat(was.Keys.Where(k => !now.ContainsKey(k)).Select(k => k.StartsWith(RotationKey, StringComparison.Ordinal) ? $"{k.Substring(RotationKey.Length)}: rotation stopped" : $"{k} removed")).ToList();
-            // Only rotating rows moved on: just those groups run (Run Group), not the full sync.
-            var rotated = now.Where(kv => kv.Key.StartsWith(RotationKey, StringComparison.Ordinal) && (!was.TryGetValue(kv.Key, out var w) || w != kv.Value))
-                .Select(kv => kv.Key.Substring(RotationKey.Length)).ToList();
-            bool onlyRotation = rotated.Count > 0 && rotated.Count == changed.Count && HomeScreenCompanionTask.Instance != null;
-            _logger.Info("Schedule changed ({0}); running {1}", string.Join(", ", changed),
-                onlyRotation ? string.Join(", ", rotated.Select(n => $"Run Group '{n}'")) : "the Tag & Collection Sync");
+                .Select(kv => $"{kv.Key} {(kv.Value ? "started" : "ended")}")
+                .Concat(was.Keys.Where(k => !now.ContainsKey(k)).Select(k => $"{k} removed")).ToList();
+            _logger.Info("Schedule changed ({0}); running the Tag & Collection Sync", string.Join(", ", changed));
             Save(statePath, state);
-            if (onlyRotation)
-            {
-                var task = HomeScreenCompanionTask.Instance!;
-                foreach (var name in rotated)
-                    _ = Task.Run(() => task.RunSingleEntryAsync(name, CancellationToken.None));
-            }
-            else _taskManager.QueueScheduledTask<HomeScreenCompanionTask>();
+            _taskManager.QueueScheduledTask<HomeScreenCompanionTask>();
             return Task.CompletedTask;
         }
 
-        private const string RotationKey = "rotation\u001F";
+        // Rotating rows on their way to the next item, or new or changed: only their Run Groups run.
+        private void RunDueRotations(PluginConfiguration config)
+        {
+            var task = HomeScreenCompanionTask.Instance;
+            if (task == null || config.DryRunMode || HomeScreenCompanionTask.IsRunning) return;
+            var due = config.Tags.Where(t => RotatingRow.Is(t) && t.Active && t.EnableHomeSection && !string.IsNullOrWhiteSpace(t.Tag)
+                    && (t.HomeSectionUserIds?.Count ?? 0) > 0 && RotatingRow.Items(t).Count > 0
+                    && HomeScreenCompanionTask.IsScheduleActive(t.ActiveIntervals, DateTime.Now) && RotatingRow.Due(t, _json))
+                .Select(t => string.IsNullOrWhiteSpace(t.Name) ? t.Tag : t.Name).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            if (due.Count == 0) return;
+            _logger.Info("Rotating row due; running {0}", string.Join(", ", due.Select(n => $"Run Group '{n}'")));
+            foreach (var name in due)
+                _ = Task.Run(() => task.RunSingleEntryAsync(name, CancellationToken.None));
+        }
 
-        // One line per scheduled source: "<name>\t1" when in schedule, "\t0" when not; and one per
-        // rotating source in schedule: "rotation\u001F<name>\t<period number>" (see RotatingRow).
+        // One line per scheduled source: "<name>\t1" when in schedule, "\t0" when not.
         internal static string CurrentState(PluginConfiguration config, DateTime now)
         {
-            var today = RotatingRow.Today();
             var lines = config.Tags
                 .Where(t => t.Active && t.ActiveIntervals != null && t.ActiveIntervals.Count > 0 && !string.IsNullOrWhiteSpace(t.Tag))
                 .Select(t => $"{(string.IsNullOrWhiteSpace(t.Name) ? t.Tag.Trim() : t.Name.Trim())}\t{(HomeScreenCompanionTask.IsScheduleActive(t.ActiveIntervals, now) ? 1 : 0)}")
-                .Concat(config.Tags
-                    .Where(t => t.Active && RotatingRow.Is(t) && !string.IsNullOrWhiteSpace(t.Tag) && HomeScreenCompanionTask.IsScheduleActive(t.ActiveIntervals, now))
-                    .Select(t => $"{RotationKey}{(string.IsNullOrWhiteSpace(t.Name) ? t.Tag.Trim() : t.Name.Trim())}\t{RotatingRow.Period(t, today)}"))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .OrderBy(l => l, StringComparer.OrdinalIgnoreCase);
             return string.Join("\n", lines);
         }
 
-        private static Dictionary<string, string> ParseState(string state)
+        private static Dictionary<string, bool> ParseState(string state)
         {
-            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var result = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
             foreach (var line in state.Split('\n'))
             {
                 var parts = line.Split('\t');
-                if (parts.Length == 2) result[parts[0]] = parts[1];
+                if (parts.Length == 2) result[parts[0]] = parts[1] == "1";
             }
             return result;
         }

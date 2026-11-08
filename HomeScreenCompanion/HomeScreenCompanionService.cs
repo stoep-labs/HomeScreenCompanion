@@ -123,6 +123,18 @@ namespace HomeScreenCompanion
         public string LibraryName { get; set; } = "";
         public int? LibraryYear { get; set; }
         public string ItemType { get; set; } = "";
+        // From the list, for the poster of a title not in the library (MissingPosters).
+        public string Tmdb { get; set; } = "";
+        public string ListType { get; set; } = "";   // "movie", "show" or "" (the list does not say)
+    }
+
+    // Posters (and year / type) of list titles not in the library, for the source test popup.
+    // Asked of TMDb with the TMDb key in Settings, else of Emby's metadata search; the key stays here.
+    [Route("/HomeScreenCompanion/MissingPosters", "POST")]
+    [Authenticated(Roles = "Admin")]
+    public class MissingPostersRequest : IReturn<List<MissingPosters.Result>>
+    {
+        public List<MissingPosters.Title> Titles { get; set; } = new List<MissingPosters.Title>();
     }
 
     public class StatusResponse
@@ -412,6 +424,11 @@ namespace HomeScreenCompanion
         public string Id { get; set; } = "";
     }
 
+    // The welcome tour opened by itself once (PluginConfiguration.WelcomeTourSeen).
+    [Route("/HomeScreenCompanion/WelcomeTour/Seen", "POST")]
+    [Authenticated(Roles = "Admin")]
+    public class WelcomeTourSeenRequest : IReturn<RunEntryResponse> { }
+
     // Every playlist on the server (Cleanup tab), with its owner and the users it is shared with.
     [Route("/HomeScreenCompanion/Manage/Playlists", "GET")]
     [Authenticated(Roles = "Admin")]
@@ -543,6 +560,7 @@ namespace HomeScreenCompanion
         public string? RealPosterBadge { get; set; }
         public List<string> UserIds { get; set; } = new List<string>();
         public string ContentType { get; set; } = "Movies";
+        public List<string> LibraryIds { get; set; } = new List<string>();
         public string Message { get; set; } = "";
     }
 
@@ -615,7 +633,11 @@ namespace HomeScreenCompanion
 
     [Route("/HomeScreenCompanion/TopList/AllMovies", "GET")]
     [Authenticated(Roles = "Admin")]
-    public class GetAllMoviesRequest : IReturn<GetAllMoviesResponse> { }
+    public class GetAllMoviesRequest : IReturn<GetAllMoviesResponse>
+    {
+        // Comma-separated library ids to search in ("" = all).
+        public string LibraryIds { get; set; } = "";
+    }
     public class MovieItem
     {
         public string Name   { get; set; } = "";
@@ -631,7 +653,26 @@ namespace HomeScreenCompanion
     // Series for the manual show top-list picker (same shape as AllMovies).
     [Route("/HomeScreenCompanion/TopList/AllSeries", "GET")]
     [Authenticated(Roles = "Admin")]
-    public class GetAllSeriesRequest : IReturn<GetAllMoviesResponse> { }
+    public class GetAllSeriesRequest : IReturn<GetAllMoviesResponse>
+    {
+        // Comma-separated library ids to search in ("" = all).
+        public string LibraryIds { get; set; } = "";
+    }
+
+    // The libraries a top-list can take its titles from: movies, TV shows and mixed, without HSC's own.
+    [Route("/HomeScreenCompanion/TopList/Libraries", "GET")]
+    [Authenticated(Roles = "Admin")]
+    public class GetTopListLibrariesRequest : IReturn<GetTopListLibrariesResponse> { }
+    public class TopListLibraryItem
+    {
+        public string Id { get; set; } = "";
+        public string Name { get; set; } = "";
+        public string CollectionType { get; set; } = "";
+    }
+    public class GetTopListLibrariesResponse
+    {
+        public List<TopListLibraryItem> Libraries { get; set; } = new List<TopListLibraryItem>();
+    }
 
     [Route("/HomeScreenCompanion/TopList/GrantLibraryAccess", "POST")]
     [Authenticated(Roles = "Admin")]
@@ -745,8 +786,15 @@ namespace HomeScreenCompanion
         // Null in backups made before the settings level: the current level is kept.
         public string? SettingsLevel { get; set; }
         public bool? ShowAdvancedBadges { get; set; }
+        public List<string>? SourceFolders { get; set; }
         // Null in backups made before it was backed up: the current setting is kept.
         public bool? HideTopListLibraries { get; set; }
+        // Null in backups made before the per-provider caps: the current caps are kept.
+        public int? TraktMaxItems { get; set; }
+        public int? MdblistMaxItems { get; set; }
+        public int? TmdbMaxItems { get; set; }
+        public int? JsonMaxItems { get; set; }
+        public int? AiMaxItems { get; set; }
     }
 
     public class BackupApiKeys
@@ -759,11 +807,6 @@ namespace HomeScreenCompanion
         public string ClaudeApiKey { get; set; } = "";
         // OpenAI-compatible connection keys, by connection id.
         public Dictionary<string, string>? AiConnectionKeys { get; set; }
-        // Null in backups from before Sonarr / Radarr: the current settings are kept.
-        public string? SonarrUrl { get; set; }
-        public string? SonarrApiKey { get; set; }
-        public string? RadarrUrl { get; set; }
-        public string? RadarrApiKey { get; set; }
     }
 
     public class BackupHomeSync
@@ -941,6 +984,8 @@ namespace HomeScreenCompanion
         public List<SourceItemRef> Items { get; set; } = new List<SourceItemRef>();
         // user id on the exporting server → name
         public Dictionary<string, string> Users { get; set; } = new Dictionary<string, string>();
+        // Manual lists: the names of the libraries its search is narrowed to (none in older copies).
+        public List<string>? LibraryNames { get; set; }
         // Export only (not part of the pasted text).
         public List<string> Notices { get; set; } = new List<string>();
     }
@@ -975,6 +1020,7 @@ namespace HomeScreenCompanion
         public List<string> UserIds { get; set; } = new List<string>();
         // Same shape as the create dialog's own picks (movies: Guid ItemId; shows: internal id).
         public List<MovieItem> Items { get; set; } = new List<MovieItem>();
+        public List<string> LibraryIds { get; set; } = new List<string>();
         public List<string> Notices { get; set; } = new List<string>();
     }
 
@@ -1218,6 +1264,13 @@ public class HomeScreenCompanionService : IService
             }
         }
 
+        public async Task<object> Post(MissingPostersRequest request)
+        {
+            var key = (Plugin.Instance?.Configuration?.TmdbApiKey ?? "").Trim();
+            return await MissingPosters.LookUpAsync(request.Titles ?? new List<MissingPosters.Title>(), key,
+                _providerManager, _httpClient, _jsonSerializer, CancellationToken.None).ConfigureAwait(false);
+        }
+
         public async Task<object> Get(TestUrlRequest request)
         {
             var config = Plugin.Instance?.Configuration;
@@ -1236,7 +1289,13 @@ public class HomeScreenCompanionService : IService
                 }
 
                 var library = BuildTestLibraryIndex();
-                var results = items.Select(i => MatchTestItem(library, i.Name, null, i.Imdb, false)).ToList();
+                var results = items.Select(i =>
+                {
+                    var r = MatchTestItem(library, i.Name, i.Year, i.Imdb, false);
+                    r.Tmdb = i.Tmdb ?? "";
+                    r.ListType = i.Type ?? "";
+                    return r;
+                }).ToList();
                 int inLibrary = results.Count(r => r.InLibrary);
 
                 return new TestUrlResponse
@@ -1260,7 +1319,7 @@ public class HomeScreenCompanionService : IService
             public List<BaseItem> Items = new List<BaseItem>();
         }
 
-        // Same matching rules as the sync task: IMDb id first, top-list .strm copies excluded,
+        // Same matching rules as the sync task: IMDb id first, top-list and ranked .strm copies excluded,
         // and title+year as a fallback for AI sources only.
         private TestLibraryIndex BuildTestLibraryIndex()
         {
@@ -1277,6 +1336,7 @@ public class HomeScreenCompanionService : IService
                 if (!string.IsNullOrEmpty(item.Path) &&
                     item.Path.StartsWith(topListsFolder, StringComparison.OrdinalIgnoreCase))
                     continue;
+                if (RankedCollections.IsRankedPath(item.Path)) continue;
                 index.Items.Add(item);
                 if (item.LocationType != LocationType.FileSystem) continue;
                 var imdb = item.GetProviderId("Imdb");
@@ -1821,7 +1881,13 @@ public class HomeScreenCompanionService : IService
 
                 var library = BuildTestLibraryIndex();
                 var results = aiItems.Where(i => !string.IsNullOrWhiteSpace(i.title))
-                    .Select(i => MatchTestItem(library, i.title, i.year, i.imdb_id, true)).ToList();
+                    .Select(i =>
+                    {
+                        var r = MatchTestItem(library, i.title, i.year, i.imdb_id, true);
+                        var t = (i.type ?? "").Trim().ToLowerInvariant();
+                        r.ListType = t == "movie" ? "movie" : t == "show" || t == "series" || t == "tv" ? "show" : "";
+                        return r;
+                    }).ToList();
                 int inLibrary = results.Count(r => r.InLibrary);
 
                 return new TestAiSourceResponse
@@ -1881,9 +1947,11 @@ public class HomeScreenCompanionService : IService
 
                 var internalId = _userManager.GetInternalId(request.UserId);
                 var result = _userManager.GetHomeSections(internalId, CancellationToken.None);
+                var sections = result?.Sections ?? Array.Empty<ContentSection>();
                 return new HscUserSectionsResponse
                 {
-                    Sections = result?.Sections ?? Array.Empty<ContentSection>()
+                    Sections = sections,
+                    RotatingKeys = RotatingRow.PositionKeys(_userManager, internalId, sections)
                 };
             }
             catch (Exception ex)
@@ -2017,6 +2085,17 @@ public class HomeScreenCompanionService : IService
                 if (!SourceTopLists.PlainRow(tc))
                     return new HscApplyTagHomeSectionsResponse { Success = true, Message = "Home section not enabled for this tag." };
 
+                // A rotating row is written per user from its turn: its own Run Group does that (it
+                // waits if another run is busy), and makes the rows of a new source right away.
+                if (RotatingRow.Is(tc))
+                {
+                    var rotTask = HomeScreenCompanionTask.Instance;
+                    if (rotTask == null || config.DryRunMode || !RotatingRow.Due(tc, _jsonSerializer)) return new HscApplyTagHomeSectionsResponse { Success = true, Message = "Nothing to apply now." };
+                    var rotName = !string.IsNullOrWhiteSpace(tc.Name) ? tc.Name : tc.Tag;
+                    _ = System.Threading.Tasks.Task.Run(() => rotTask.RunSingleEntryAsync(rotName, CancellationToken.None));
+                    return new HscApplyTagHomeSectionsResponse { Success = true, Message = "Rotating row: Run Group started." };
+                }
+
                 var realTracked = (tc.HomeSectionTracked ?? new System.Collections.Generic.List<HomeSectionTracking>())
                     .Where(t => !string.IsNullOrEmpty(t.SectionId) && !t.SectionId.StartsWith("hsc__"))
                     .ToList();
@@ -2044,19 +2123,7 @@ public class HomeScreenCompanionService : IService
 
                 // Resolve library ID
                 string? resolvedLibraryId = null;
-                // A rotating row: today's collection and its title (see RotatingRow).
-                HashSet<string>? rotTitles = null;
-                if (sectionType == "boxset" && RotatingRow.Is(tc))
-                {
-                    var rot = RotatingRow.Resolve(tc, config, _libraryManager, _userManager);
-                    if (rot.Pick == null)
-                        return new HscApplyTagHomeSectionsResponse { Success = true, Message = "No collection to show today — the next sync hides the row." };
-                    var rotCustom = RotatingRow.CustomTitle(tc, _jsonSerializer);
-                    rotTitles = RotatingRow.PoolTitles(tc, rotCustom, rot.Pool, config, _jsonSerializer);
-                    resolvedLibraryId = rot.Pick.InternalId.ToString(System.Globalization.CultureInfo.InvariantCulture);
-                    settingsDict["CustomName"] = RotatingRow.Title(rotCustom, rot.Pick.Name);
-                }
-                else if (sectionType == "boxset")
+                if (sectionType == "boxset")
                 {
                     if (tc.HomeSectionLibraryId == "auto")
                     {
@@ -2098,6 +2165,7 @@ public class HomeScreenCompanionService : IService
                 int updated = 0;
                 var topListLibraries = TopListSyncTask.TopListLibraryIds(config, _libraryManager);
                 var userStatus = UserStatus.Read(_userManager);
+                var rowSettings = TopListLibraryVisibility.WithRankedExclusions(settingsDict, tc.HomeSectionLibraryId, _libraryManager, _jsonSerializer);
                 foreach (var userId in (tc.HomeSectionUserIds ?? new System.Collections.Generic.List<string>()))
                 {
                     var tracking = realTracked.FirstOrDefault(t => t.UserId == userId);
@@ -2113,18 +2181,14 @@ public class HomeScreenCompanionService : IService
                         // By title only a row no other source or top-list owns, and never a row on a
                         // top-list's library (a top-list can have the same title).
                         ContentSection ownedSection = allSections.FirstOrDefault(s => s.Id == tracking.SectionId);
-                        if (ownedSection == null && rotTitles == null && settingsDict.TryGetValue("CustomName", out var _applyFallbackName) && !string.IsNullOrEmpty(_applyFallbackName))
+                        if (ownedSection == null && settingsDict.TryGetValue("CustomName", out var _applyFallbackName) && !string.IsNullOrEmpty(_applyFallbackName))
                             ownedSection = allSections.FirstOrDefault(s => HomeScreenCompanionTask.SameTitle(s.CustomName, _applyFallbackName)
-                                && !HomeScreenCompanionTask.SectionOwnedElsewhere(config, tc, userId, s.Id)
-                                && !TopListSyncTask.IsTopListRow(s, topListLibraries));
-                        if (ownedSection == null && rotTitles != null)
-                            ownedSection = allSections.FirstOrDefault(s => RotatingRow.IsRowTitle(s, rotTitles)
                                 && !HomeScreenCompanionTask.SectionOwnedElsewhere(config, tc, userId, s.Id)
                                 && !TopListSyncTask.IsTopListRow(s, topListLibraries));
 
                         if (ownedSection == null) continue;
 
-                        var updatedSection = HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, settingsDict, resolvedLibraryId, ownedSection);
+                        var updatedSection = HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, rowSettings, resolvedLibraryId, ownedSection);
                         typeof(ContentSection).GetProperty("Id")?.SetValue(updatedSection, ownedSection.Id);
                         _userManager.UpdateHomeSection(userInternalId, updatedSection, CancellationToken.None);
                         updated++;
@@ -2375,6 +2439,12 @@ public class HomeScreenCompanionService : IService
         public object Post(IncludeOriginalPosterRequest request)
         {
             OriginalPosters.Include(request.Id, _jsonSerializer);
+            return new RunEntryResponse { Success = true };
+        }
+
+        public object Post(WelcomeTourSeenRequest request)
+        {
+            Plugin.Instance?.MarkWelcomeTourSeen();
             return new RunEntryResponse { Success = true };
         }
 
@@ -2778,9 +2848,16 @@ public class HomeScreenCompanionService : IService
                 var folderPath = Path.Combine(dataPath, "toplists", sanitized);
                 Directory.CreateDirectory(folderPath);
 
+                // A source's list: only its chosen libraries (as the runs do), before Max items.
+                var chosen = (Plugin.Instance.Configuration.TopLists ?? new List<TopListHomeSection>())
+                    .FirstOrDefault(t => string.Equals((t.TagName ?? "").Trim(), (request.TagName ?? "").Trim(), StringComparison.OrdinalIgnoreCase));
+                var libraries = TopListLibraries.For(chosen != null && chosen.FromSource ? chosen.LibraryIds : null, _libraryManager);
+                if (libraries.Gone)
+                    return new PrepareTopListFolderResponse { Success = false, Message = "None of the libraries chosen for this top-list exists any more. Choose others in its source." };
+
                 if (ShowTopList.IsShows(request.ContentType))
                 {
-                    var series = ShowTopList.SeriesForTag(_libraryManager, _jsonSerializer, request.TagName);
+                    var series = ShowTopList.SeriesForTag(_libraryManager, _jsonSerializer, request.TagName).Where(libraries.Contains).ToList();
                     if (request.MaxItems > 0) series = series.Take(request.MaxItems).ToList();
                     var written = WriteShowFolder(request.TagName, folderPath, series, BadgeLook.Combine(request.BadgeStyle, request.BadgeOptions));
                     return new PrepareTopListFolderResponse { Success = true, FolderPath = folderPath, FilesCreated = written };
@@ -2800,6 +2877,7 @@ public class HomeScreenCompanionService : IService
                 // one carrying the tag would otherwise become a .strm pointing at a .strm.
                 var topListsFolder = Path.Combine(dataPath, "toplists") + Path.DirectorySeparatorChar;
                 var (items, fromList) = TopListMembers.MoviesFor(request.TagName, _libraryManager, _jsonSerializer, topListsFolder);
+                items = items.Where(libraries.Contains).ToList();
 
                 // Without a saved list: sort by saved rank order from the last task run (preserves external list order)
                 var rankFile = Path.Combine(Plugin.Instance.DataFolderPath, "tag_ranks", sanitized + ".json");
@@ -2883,13 +2961,15 @@ public class HomeScreenCompanionService : IService
                     IsVirtualItem = false
                 });
                 var toplistsFolder = Path.Combine(Plugin.Instance.DataFolderPath, "toplists");
+                var libraries = SearchLibraries(request.LibraryIds);
 
                 // Deduplicate: movies with multiple versions (1080p + 4K) appear as separate
                 // library items but share the same IMDB ID — keep only one per unique title.
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var movies = items
                     .Where(i => !string.IsNullOrEmpty(i.Path)
-                             && !i.Path.StartsWith(toplistsFolder, StringComparison.OrdinalIgnoreCase))
+                             && !i.Path.StartsWith(toplistsFolder, StringComparison.OrdinalIgnoreCase)
+                             && libraries.Contains(i))
                     .OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
                     .ThenBy(i => i.ProductionYear)
                     .Select(i => new MovieItem
@@ -2918,7 +2998,9 @@ public class HomeScreenCompanionService : IService
             try
             {
                 var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var libraries = SearchLibraries(request.LibraryIds);
                 var series = ShowTopList.AllSeries(_libraryManager)
+                    .Where(libraries.Contains)
                     .OrderBy(i => i.Name, StringComparer.OrdinalIgnoreCase)
                     .ThenBy(i => i.ProductionYear)
                     .Select(i => new MovieItem
@@ -2934,6 +3016,32 @@ public class HomeScreenCompanionService : IService
                 return new GetAllMoviesResponse { Movies = series };
             }
             catch { return new GetAllMoviesResponse { Movies = new List<MovieItem>() }; }
+        }
+
+        // A manual list's search. Its chosen libraries all gone: everything can be searched.
+        private TopListLibraries SearchLibraries(string? csv)
+        {
+            var libraries = TopListLibraries.For(SplitIds(csv), _libraryManager);
+            return libraries.Gone ? TopListLibraries.For(null, _libraryManager) : libraries;
+        }
+
+        public object Get(GetTopListLibrariesRequest request)
+        {
+            var response = new GetTopListLibrariesResponse();
+            try
+            {
+                var topListsFolder = ShowTopList.TopListsFolder ?? "";
+                var kinds = new[] { "", "movies", "tvshows", "mixed" };
+                foreach (var f in _libraryManager.GetVirtualFolders().OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase))
+                {
+                    if (string.IsNullOrEmpty(f.ItemId) || !kinds.Contains((f.CollectionType ?? "").ToLowerInvariant())) continue;
+                    if ((f.Locations ?? Array.Empty<string>()).Any(l => !string.IsNullOrEmpty(l)
+                        && ((topListsFolder.Length > 0 && l.StartsWith(topListsFolder, StringComparison.OrdinalIgnoreCase)) || RankedCollections.IsRankedPath(l)))) continue;
+                    response.Libraries.Add(new TopListLibraryItem { Id = f.ItemId, Name = f.Name ?? "", CollectionType = f.CollectionType ?? "" });
+                }
+            }
+            catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
+            return response;
         }
 
         // Writes a show list's folder and updates the copies Emby has already indexed.
@@ -3654,6 +3762,7 @@ public class HomeScreenCompanionService : IService
                 {
                     Success     = true,
                     Movies      = movies,
+                    LibraryIds  = tlConfig?.LibraryIds ?? new List<string>(),
                     CustomName  = customName,
                     DisplayMode = displayMode,
                     ImageType   = imageType,
@@ -3811,7 +3920,7 @@ public class HomeScreenCompanionService : IService
                         string trackId;
                         if (ownedSection != null)
                         {
-                            var updatedSection = HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, settingsDict, resolvedLibraryId, ownedSection);
+                            var updatedSection = HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, TopListLibraryVisibility.WithRankedExclusions(settingsDict, resolvedLibraryId, _libraryManager, _jsonSerializer), resolvedLibraryId, ownedSection);
                             typeof(ContentSection).GetProperty("Id")?.SetValue(updatedSection, ownedSection.Id);
                             _userManager.UpdateHomeSection(userInternalId, updatedSection, CancellationToken.None);
                             trackId = ownedSection.Id ?? sectionMarker;
@@ -3822,7 +3931,7 @@ public class HomeScreenCompanionService : IService
                             var beforeIds = new HashSet<string>(
                                 allSections.Where(s => !string.IsNullOrEmpty(s.Id)).Select(s => s.Id));
                             _userManager.AddHomeSection(userInternalId,
-                                HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, settingsDict, resolvedLibraryId),
+                                HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, TopListLibraryVisibility.WithRankedExclusions(settingsDict, resolvedLibraryId, _libraryManager, _jsonSerializer), resolvedLibraryId),
                                 CancellationToken.None);
                             var afterSections = _userManager.GetHomeSections(userInternalId, CancellationToken.None);
                             var newId = (afterSections?.Sections ?? Array.Empty<ContentSection>())
@@ -3852,136 +3961,8 @@ public class HomeScreenCompanionService : IService
                     }
                 }
 
-                // Inject the new top-list library into _queryExcludeViewIds of every existing
-                // TAG & COLLECT items-type section and apply immediately (no task run needed).
-                var resolvedLibraryIdLower = resolvedLibraryId.Trim().ToLowerInvariant();
-                if (!string.IsNullOrEmpty(resolvedLibraryId))
-                {
-                    foreach (var tc in (config.Tags ?? new System.Collections.Generic.List<TagConfig>()))
-                    {
-                        if (!SourceTopLists.PlainRow(tc)) continue;
-
-                        var tcSettings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                        try
-                        {
-                            if (!string.IsNullOrEmpty(tc.HomeSectionSettings) && tc.HomeSectionSettings != "{}")
-                                tcSettings = _jsonSerializer.DeserializeFromString<Dictionary<string, string>>(tc.HomeSectionSettings) ?? tcSettings;
-                        }
-                        catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
-
-                        tcSettings.TryGetValue("SectionType", out var tcSt);
-                        // Only items rows get the top-list exclusion (boxset and playlist rows show one item list).
-                        if (tcSt == "boxset" || tcSt == "playlist") continue;
-
-                        var existingExcluded = (tcSettings.TryGetValue("_queryExcludeViewIds", out var ev) ? ev : "")
-                            .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
-                            .Select(s => s.Trim()).ToList();
-
-                        if (existingExcluded.Contains(resolvedLibraryIdLower, StringComparer.OrdinalIgnoreCase)) continue;
-
-                        existingExcluded.Add(resolvedLibraryIdLower);
-                        var tcExcStr = string.Join(",", existingExcluded);
-                        tcSettings["_queryExcludeViewIds"] = tcExcStr;
-                        tcSettings["ExcludedFolders"] = tcExcStr;
-                        tc.HomeSectionSettings = _jsonSerializer.SerializeToString(tcSettings);
-                        HomeScreenCompanionTask.ApplyRowTitle(tcSettings, tc, _jsonSerializer);
-
-                        // Resolve tag ID for items-type query
-                        if (!string.IsNullOrEmpty(tc.Tag))
-                        {
-                            var tagItem = _libraryManager.GetItemList(new MediaBrowser.Controller.Entities.InternalItemsQuery
-                            {
-                                IncludeItemTypes = new[] { "Tag" },
-                                Name = tc.Tag,
-                                Recursive = true
-                            }).FirstOrDefault();
-                            if (tagItem != null) tcSettings["_queryTagId"] = tagItem.InternalId.ToString();
-                        }
-
-                        var tcSafeTag = new string((tc.Name ?? tc.Tag ?? "").Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray());
-                        var tcMarker = "hsc__" + tcSafeTag;
-
-                        var realTracked = (tc.HomeSectionTracked ?? new System.Collections.Generic.List<HomeSectionTracking>())
-                            .Where(t => !string.IsNullOrEmpty(t.SectionId) && !t.SectionId.StartsWith("hsc__"))
-                            .ToList();
-
-                        foreach (var tracking in realTracked)
-                        {
-                            try
-                            {
-                                var uid = _userManager.GetInternalId(tracking.UserId);
-                                var secs = _userManager.GetHomeSections(uid, CancellationToken.None)?.Sections ?? Array.Empty<ContentSection>();
-                                var owned = secs.FirstOrDefault(s => s.Id == tracking.SectionId)
-                                    ?? secs.FirstOrDefault(s => s.Subtitle == tcMarker);
-                                if (owned == null) continue;
-                                var updatedSec = HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, tcSettings, null, owned);
-                                typeof(ContentSection).GetProperty("Id")?.SetValue(updatedSec, owned.Id);
-                                _userManager.UpdateHomeSection(uid, updatedSec, CancellationToken.None);
-                            }
-                            catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
-                        }
-                    }
-                }
-
-                // Also inject the new top-list library into other existing top-list sections.
-                if (!string.IsNullOrEmpty(resolvedLibraryId))
-                {
-                    foreach (var otherTl in (config.TopLists ?? new System.Collections.Generic.List<TopListHomeSection>()))
-                    {
-                        if (otherTl == tl) continue;
-                        if (string.IsNullOrEmpty(otherTl.HomeSectionLibraryId) || otherTl.HomeSectionLibraryId == "auto") continue;
-
-                        var otherSettings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                        try
-                        {
-                            if (!string.IsNullOrEmpty(otherTl.HomeSectionSettings) && otherTl.HomeSectionSettings != "{}")
-                                otherSettings = _jsonSerializer.DeserializeFromString<Dictionary<string, string>>(otherTl.HomeSectionSettings) ?? otherSettings;
-                        }
-                        catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
-
-                        var otherExisting = (otherSettings.TryGetValue("_queryExcludeViewIds", out var otherEv) ? otherEv : "")
-                            .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries)
-                            .Select(s => s.Trim()).ToList();
-
-                        if (otherExisting.Contains(resolvedLibraryIdLower, StringComparer.OrdinalIgnoreCase)) continue;
-
-                        otherExisting.Add(resolvedLibraryIdLower);
-                        var otherExcStr = string.Join(",", otherExisting);
-                        otherSettings["_queryExcludeViewIds"] = otherExcStr;
-                        otherSettings["ExcludedFolders"] = otherExcStr;
-                        otherTl.HomeSectionSettings = _jsonSerializer.SerializeToString(otherSettings);
-
-                        var otherSafeTag = new string((otherTl.TagName ?? "").Select(c => char.IsLetterOrDigit(c) ? c : '_').ToArray());
-                        var otherMarker = "hsc__tl__" + otherSafeTag;
-
-                        var otherTracked = (otherTl.HomeSectionTracked ?? new System.Collections.Generic.List<HomeSectionTracking>())
-                            .Where(t => !string.IsNullOrEmpty(t.SectionId) && !t.SectionId.StartsWith("hsc__"))
-                            .ToList();
-
-                        foreach (var tracking in otherTracked)
-                        {
-                            try
-                            {
-                                var uid = _userManager.GetInternalId(tracking.UserId);
-                                var secs = _userManager.GetHomeSections(uid, CancellationToken.None)?.Sections ?? Array.Empty<ContentSection>();
-                                var owned = secs.FirstOrDefault(s => s.Id == tracking.SectionId)
-                                    ?? secs.FirstOrDefault(s => s.Subtitle == otherMarker);
-                                if (owned == null) continue;
-                                var updatedSec = HomeScreenCompanionTask.BuildContentSection(_jsonSerializer, otherSettings, otherTl.HomeSectionLibraryId, owned);
-                                typeof(ContentSection).GetProperty("Id")?.SetValue(updatedSec, owned.Id);
-                                _userManager.UpdateHomeSection(uid, updatedSec, CancellationToken.None);
-                            }
-                            catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
-                        }
-                    }
-                }
-
-                // Aggressive: exclude the new top-list library from ALL untracked, non-library-scoped sections
-                // so top-list content never bleeds into manually created or native Emby sections.
-                HomeScreenCompanionTask.UpdateUntrackedSections(
-                    _jsonSerializer, _userManager, config,
-                    new[] { resolvedLibraryIdLower },
-                    CancellationToken.None);
+                // The list's library out of every other row (sources, other top-lists, untracked) now.
+                TopListSyncTask.KeepOutOfOtherRows(config, new List<string> { resolvedLibraryId }, _libraryManager, _userManager, _jsonSerializer, CancellationToken.None);
 
                 EnforceTopListLibraryPermissions(resolvedLibraryId, tl.HomeSectionUserIds);
 
@@ -4068,7 +4049,13 @@ public class HomeScreenCompanionService : IService
                     MissingExportCsv          = config.MissingExportCsv,
                     SettingsLevel             = config.SettingsLevel ?? "",
                     ShowAdvancedBadges        = config.ShowAdvancedBadges,
-                    HideTopListLibraries      = config.HideTopListLibraries
+                    SourceFolders              = config.SourceFolders,
+                    HideTopListLibraries      = config.HideTopListLibraries,
+                    TraktMaxItems             = config.TraktMaxItems,
+                    MdblistMaxItems           = config.MdblistMaxItems,
+                    TmdbMaxItems              = config.TmdbMaxItems,
+                    JsonMaxItems              = config.JsonMaxItems,
+                    AiMaxItems                = config.AiMaxItems
                 };
                 file.Sections.Add("Settings");
             }
@@ -4085,11 +4072,7 @@ public class HomeScreenCompanionService : IService
                     ClaudeApiKey  = config.ClaudeApiKey ?? "",
                     AiConnectionKeys = (config.AiConnections ?? new List<AiConnection>())
                         .Where(c => c != null && !string.IsNullOrEmpty(c.Id) && !string.IsNullOrEmpty(c.ApiKey))
-                        .GroupBy(c => c.Id).ToDictionary(g => g.Key, g => g.First().ApiKey),
-                    SonarrUrl     = config.SonarrUrl ?? "",
-                    SonarrApiKey  = config.SonarrApiKey ?? "",
-                    RadarrUrl     = config.RadarrUrl ?? "",
-                    RadarrApiKey  = config.RadarrApiKey ?? ""
+                        .GroupBy(c => c.Id).ToDictionary(g => g.Key, g => g.First().ApiKey)
                 };
                 file.Sections.Add("ApiKeys");
             }
@@ -4218,7 +4201,13 @@ public class HomeScreenCompanionService : IService
                     config.RankedCollectionsEnabled  = s.RankedCollectionsEnabled;
                     if (s.SettingsLevel != null) config.SettingsLevel = s.SettingsLevel;
                     if (s.ShowAdvancedBadges != null) config.ShowAdvancedBadges = s.ShowAdvancedBadges.Value;
+                    if (s.SourceFolders != null) config.SourceFolders = s.SourceFolders;
                     if (s.HideTopListLibraries != null) config.HideTopListLibraries = s.HideTopListLibraries.Value;
+                    if (s.TraktMaxItems != null) config.TraktMaxItems = s.TraktMaxItems.Value;
+                    if (s.MdblistMaxItems != null) config.MdblistMaxItems = s.MdblistMaxItems.Value;
+                    if (s.TmdbMaxItems != null) config.TmdbMaxItems = s.TmdbMaxItems.Value;
+                    if (s.JsonMaxItems != null) config.JsonMaxItems = s.JsonMaxItems.Value;
+                    if (s.AiMaxItems != null) config.AiMaxItems = s.AiMaxItems.Value;
                     if (s.ShowMissingTitles != null) config.ShowMissingTitles = s.ShowMissingTitles.Value;
                     if (s.MissingIncludeGaps != null) config.MissingIncludeGaps = s.MissingIncludeGaps.Value;
                     if (s.MissingExportToFile != null) config.MissingExportToFile = s.MissingExportToFile.Value;
@@ -4240,10 +4229,6 @@ public class HomeScreenCompanionService : IService
                     if (k.AiConnectionKeys != null)
                         foreach (var c in config.AiConnections ?? new List<AiConnection>())
                             if (c != null && c.Id != null && k.AiConnectionKeys.TryGetValue(c.Id, out var ck)) c.ApiKey = ck ?? "";
-                    if (k.SonarrUrl != null)    config.SonarrUrl    = k.SonarrUrl;
-                    if (k.SonarrApiKey != null) config.SonarrApiKey = k.SonarrApiKey;
-                    if (k.RadarrUrl != null)    config.RadarrUrl    = k.RadarrUrl;
-                    if (k.RadarrApiKey != null) config.RadarrApiKey = k.RadarrApiKey;
                     response.Applied.Add("API keys");
                 }
 
@@ -4564,6 +4549,7 @@ public class HomeScreenCompanionService : IService
             t.Name                ??= "";
             t.Tag                 ??= "";
             t.ExtraTags           ??= new List<string>();
+            t.TopListLibraryIds   ??= new List<string>();
             t.CollectionTag       ??= "";
             t.PlaylistTag         ??= "";
             t.CollectionExtraTags ??= new List<string>();
@@ -4578,6 +4564,10 @@ public class HomeScreenCompanionService : IService
             t.ActiveIntervals     ??= new List<DateInterval>();
             t.HomeSectionUserIds  ??= new List<string>();
             t.HomeSectionTracked  ??= new List<HomeSectionTracking>();
+            t.RotationItems       ??= new List<RotationItem>();
+            t.ListFolder           ??= "";
+            t.RotationStartDay    ??= "";
+            t.RotationOrder       ??= "List";
             t.PlaylistUserIds     ??= new List<string>();
             t.PlaylistMappings    ??= new List<PlaylistMapping>();
             t.CollectionPosterStyle     ??= "";
@@ -4863,6 +4853,7 @@ public class HomeScreenCompanionService : IService
                     foreach (var c in f.Criteria) AddUser(CriterionUserId(c));
 
                 AddLibrary(t.HomeSectionLibraryId);
+                foreach (var id in t.TopListLibraryIds) AddLibrary(id);
                 var settings = ParseSectionSettings(t.HomeSectionSettings);
                 foreach (var key in ExcludedLibraryKeys)
                     if (settings.TryGetValue(key, out var csv))
@@ -5021,6 +5012,14 @@ public class HomeScreenCompanionService : IService
                         if (local == null) droppedLibraries.Add(Label(libId, file.Libraries) + " (home section library, now auto)");
                         t.HomeSectionLibraryId = local ?? "auto";
                     }
+                    var mappedTopListLibraries = new List<string>();
+                    foreach (var id in t.TopListLibraryIds.Where(x => !string.IsNullOrWhiteSpace(x)))
+                    {
+                        var local = MapLibrary(id);
+                        if (local == null) droppedLibraries.Add(Label(id, file.Libraries) + " (top-list library)");
+                        else if (!mappedTopListLibraries.Contains(local)) mappedTopListLibraries.Add(local);
+                    }
+                    t.TopListLibraryIds = mappedTopListLibraries;
                     var settings = ParseSectionSettings(t.HomeSectionSettings);
                     bool settingsChanged = false;
                     foreach (var key in ExcludedLibraryKeys)
@@ -5226,6 +5225,10 @@ public class HomeScreenCompanionService : IService
                 }
                 if (file.Items.Count == 0)
                     file.Notices.Add("This manual list has no titles in its library folder – the copy has an empty list.");
+                if ((tl.LibraryIds?.Count ?? 0) > 0)
+                    file.LibraryNames = _libraryManager.GetVirtualFolders()
+                        .Where(f => tl.LibraryIds!.Contains(f.ItemId, StringComparer.OrdinalIgnoreCase) && !string.IsNullOrEmpty(f.Name))
+                        .Select(f => f.Name).ToList();
             }
             return file;
         }
@@ -5325,6 +5328,22 @@ public class HomeScreenCompanionService : IService
                         Notice($"{missing.Count} title(s) not in this server's library, left out: {string.Join(", ", missing)}.");
                     if (response.Items.Count == 0)
                         Notice($"None of the list's {(isShows ? "shows" : "movies")} are on this server – add some before you create it.");
+
+                    // Libraries for its search: by name, case-insensitive (as for sources).
+                    var libraryNames = (file.LibraryNames ?? new List<string>()).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
+                    if (libraryNames.Count > 0)
+                    {
+                        var localLibraries = _libraryManager.GetVirtualFolders();
+                        var droppedLibraries = new List<string>();
+                        foreach (var n in libraryNames)
+                        {
+                            var hit = localLibraries.FirstOrDefault(f => string.Equals(f.Name, n, StringComparison.OrdinalIgnoreCase));
+                            if (hit == null || string.IsNullOrEmpty(hit.ItemId)) droppedLibraries.Add(n);
+                            else if (!response.LibraryIds.Contains(hit.ItemId)) response.LibraryIds.Add(hit.ItemId);
+                        }
+                        if (droppedLibraries.Count > 0)
+                            Notice($"Libraries not on this server, left out of the search: {string.Join(", ", droppedLibraries)}.");
+                    }
                 }
 
                 response.Success = true;

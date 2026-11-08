@@ -47,8 +47,8 @@ namespace HomeScreenCompanion
         /// <summary>The source has its own plain home row (not when its row is a top-list).</summary>
         internal static bool PlainRow(TagConfig tc) => tc.EnableHomeSection && !IsOn(tc);
 
-        /// <summary>Create as top-list is on (never for Your Next Watch: its row is each user's own playlist).</summary>
-        internal static bool IsOn(TagConfig tc) => tc.EnableTopList && !string.Equals(tc.SourceType, "NextWatch", StringComparison.OrdinalIgnoreCase);
+        /// <summary>Create as top-list is on (never for Your Next Watch: its row is each user's own playlist; nor for a rotating source: it only makes its row).</summary>
+        internal static bool IsOn(TagConfig tc) => tc.EnableTopList && !string.Equals(tc.SourceType, "NextWatch", StringComparison.OrdinalIgnoreCase) && !RotatingRow.Is(tc);
 
         /// <summary>Content is Auto (also anything that is not Movies or TV Shows).</summary>
         internal static bool IsAuto(TagConfig tc) =>
@@ -228,6 +228,7 @@ namespace HomeScreenCompanion
                 ? (src.HomeSectionUserIds ?? new List<string>()).Where(u => !string.IsNullOrWhiteSpace(u)).ToList()
                 : new List<string>();
             tl.MaxItems = max;
+            tl.LibraryIds = (src.TopListLibraryIds ?? new List<string>()).ToList();
             tl.ContentType = shows ? Shows : Movies;
             tl.FromSource = true;
             tl.HomeSectionTracked ??= new List<HomeSectionTracking>();
@@ -524,6 +525,9 @@ namespace HomeScreenCompanion
                 if (!owners.TryGetValue(tag, out var owner) || !IsAuto(owner)) continue;
                 var ids = TopListMembers.LoadIds(tag, Json);
                 if (ids == null || ids.Count == 0) continue;
+                // Only what the list can hold counts: the titles in its chosen libraries.
+                var libraries = TopListLibraries.ForRun(tl, libraryManager);
+                if (libraries.Gone) continue;
 
                 int movies = 0;
                 var shows = new HashSet<long>();
@@ -531,10 +535,10 @@ namespace HomeScreenCompanion
                 {
                     if (!Guid.TryParse(id, out var g)) continue;
                     var item = libraryManager.GetItemById(g);
-                    if (item is MediaBrowser.Controller.Entities.Movies.Movie) movies++;
+                    if (item is MediaBrowser.Controller.Entities.Movies.Movie) { if (libraries.Contains(item)) movies++; }
                     else if ((item as MediaBrowser.Controller.Entities.TV.Series
                         ?? (item as MediaBrowser.Controller.Entities.TV.Season)?.Series
-                        ?? (item as MediaBrowser.Controller.Entities.TV.Episode)?.Series) is BaseItem series) shows.Add(series.InternalId);
+                        ?? (item as MediaBrowser.Controller.Entities.TV.Episode)?.Series) is BaseItem series && libraries.Contains(series)) shows.Add(series.InternalId);
                 }
                 if (movies == 0 && shows.Count == 0) continue;
 
@@ -570,13 +574,13 @@ namespace HomeScreenCompanion
         /// Run, after SyncTopListFolders wrote the files: a source's list without a library gets
         /// one (made like the Top-Lists tab makes it: Emby may switch every user to "all libraries"
         /// when a library is added, so each user's access is put back) and the library is scanned.
-        /// Rows and access then come from TopListSyncTask as for every list. True when a library id
-        /// was set (the config needs saving).
+        /// Rows and access then come from TopListSyncTask as for every list. Returns the library ids
+        /// that were set (not empty: the config needs saving).
         /// </summary>
-        internal static bool EnsureLibraries(PluginConfiguration config, ILibraryManager libraryManager, IUserManager userManager,
+        internal static List<string> EnsureLibraries(PluginConfiguration config, ILibraryManager libraryManager, IUserManager userManager,
             IProviderManager providerManager, IFileSystem fileSystem, RunLog log, string? onlyTag = null)
         {
-            bool changed = false;
+            var setIds = new List<string>();
             var root = Path.Combine(Plugin.Instance!.DataFolderPath, "toplists");
             foreach (var tl in (config.TopLists ?? new List<TopListHomeSection>()).Where(t => t.FromSource))
             {
@@ -602,7 +606,7 @@ namespace HomeScreenCompanion
                     LibraryAdded = true;
                 }
                 tl.HomeSectionLibraryId = lib.ItemId;
-                changed = true;
+                setIds.Add(lib.ItemId);
                 if (created && long.TryParse(lib.ItemId, out var libInternalId))
                 {
                     // Only this library (never a full scan): the files were written before it existed.
@@ -618,7 +622,7 @@ namespace HomeScreenCompanion
                     catch (Exception ex) { log.Warn($"Top-list library '{lib.Name}' could not be scanned: {ex.Message}"); }
                 }
             }
-            return changed;
+            return setIds;
         }
 
         private static string TitleOf(TopListHomeSection tl)
