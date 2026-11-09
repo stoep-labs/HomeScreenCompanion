@@ -8150,6 +8150,9 @@ namespace HomeScreenCompanion
                 // Only files that changed are written (and the ones no longer in the list removed):
                 // each changed file is work for Emby's refresh of the library.
                 var pendingNew = new List<(string BaseName, string FilePath, BaseItem Item)>();
+                // An nfo or .strm changed: Emby has to read the folder again (badge images alone
+                // are applied to the copies directly).
+                bool metaChanged = false;
                 var changedBases = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var wantedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var tempDir = Path.Combine(Path.GetTempPath(), "hsc_" + Guid.NewGuid().ToString("N"));
@@ -8169,8 +8172,11 @@ namespace HomeScreenCompanion
                     {
                         count++;
                         var sortPrefix = count.ToString().PadLeft(digits, '0');
+                        // No rank in the nfo when the run owns the folder: the rank is set as the
+                        // copy's SortName (TopListCopies.Prepare), so a reorder rewrites no nfo.
                         bool changed = ShowTopList.WriteIfChanged(Path.Combine(folderPath, entry.BaseName + ".nfo"),
-                            HomeScreenCompanionService.BuildTopListNfo(entry.Item, sortPrefix));
+                            HomeScreenCompanionService.BuildTopListNfo(entry.Item, own ? null : sortPrefix));
+                        if (changed) metaChanged = true;
                         var rx = rankExtras.TryGetValue(entry.Item.Id, out var _rx) ? _rx : null;
                         var sig = RenderSignature(entry.Item, count, badgeStyle, rx);
                         newSigs[entry.BaseName] = sig;
@@ -8193,7 +8199,7 @@ namespace HomeScreenCompanion
                         // slice (below) when the run owns the folder.
                         var strmFile = Path.Combine(folderPath, entry.BaseName + ".strm");
                         if (own && !File.Exists(strmFile)) pendingNew.Add(entry);
-                        else if (ShowTopList.WriteIfChanged(strmFile, entry.FilePath)) changed = true;
+                        else if (ShowTopList.WriteIfChanged(strmFile, entry.FilePath)) { changed = true; metaChanged = true; }
                         wantedFiles.Add(entry.BaseName + ".nfo");
                         wantedFiles.Add(entry.BaseName + ".strm");
                         if (changed) changedBases.Add(entry.BaseName);
@@ -8216,7 +8222,7 @@ namespace HomeScreenCompanion
                     if (!ext.Equals(".strm", StringComparison.OrdinalIgnoreCase) && !ext.Equals(".nfo", StringComparison.OrdinalIgnoreCase)
                         && !ext.Equals(".jpg", StringComparison.OrdinalIgnoreCase)) continue;
                     if (wantedFiles.Contains(Path.GetFileName(f))) continue;
-                    try { File.Delete(f); removedFiles++; } catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
+                    try { File.Delete(f); removedFiles++; if (!ext.Equals(".jpg", StringComparison.OrdinalIgnoreCase)) metaChanged = true; } catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
                 }
 
                 if (!own)
@@ -8246,7 +8252,7 @@ namespace HomeScreenCompanion
                     // otherwise), each followed by one refresh of the library (normal priority),
                     // waited for. The first refresh also reads the changed nfo files.
                     int written = selected.Count - pendingNew.Count;
-                    bool needRefresh = changedBases.Count > 0 || removedFiles > 0 || TopListCopiesIn(folderPath).Count < written;
+                    bool needRefresh = metaChanged || TopListCopiesIn(folderPath).Count < written;
                     bool timedOut = false;
                     while ((pendingNew.Count > 0 || needRefresh) && !timedOut)
                     {
