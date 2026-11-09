@@ -313,10 +313,17 @@ namespace HomeScreenCompanion
 
                         var toAdd = desired.Where(id => !current.Contains(id)).ToArray();
                         var toRemove = current.Where(id => !desired.Contains(id)).ToArray();
-                        if (toAdd.Length > 0)
-                            await _collectionManager.AddToCollection(collId, toAdd).ConfigureAwait(false);
-                        if (toRemove.Length > 0)
-                            _collectionManager.RemoveFromCollection(boxSet, toRemove);
+                        // In slices while someone is watching (GentleMode): each call saves every item.
+                        foreach (var slice in GentleMode.Slices(toAdd))
+                        {
+                            await _collectionManager.AddToCollection(collId, slice).ConfigureAwait(false);
+                            await GentleMode.WroteAsync(CancellationToken.None, slice.Length).ConfigureAwait(false);
+                        }
+                        foreach (var slice in GentleMode.Slices(toRemove))
+                        {
+                            _collectionManager.RemoveFromCollection(boxSet, slice);
+                            await GentleMode.WroteAsync(CancellationToken.None, slice.Length).ConfigureAwait(false);
+                        }
                         changes += toAdd.Length + toRemove.Length;
                     }
                     catch (Exception ex)

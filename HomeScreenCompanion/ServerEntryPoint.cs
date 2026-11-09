@@ -38,7 +38,7 @@ namespace HomeScreenCompanion
         private readonly HashSet<long> _processedStrmIds = new HashSet<long>();
         private readonly HashSet<long> _showCopiesInFlight = new HashSet<long>();
 
-        public ServerEntryPoint(ILibraryManager libraryManager, ILogManager logManager, IJsonSerializer jsonSerializer, IProviderManager providerManager, IFileSystem fileSystem, ICollectionManager collectionManager, IItemRepository itemRepository, IMediaSourceManager mediaSourceManager, ITaskManager taskManager, IUserDataManager userDataManager)
+        public ServerEntryPoint(ILibraryManager libraryManager, ILogManager logManager, IJsonSerializer jsonSerializer, IProviderManager providerManager, IFileSystem fileSystem, ICollectionManager collectionManager, IItemRepository itemRepository, IMediaSourceManager mediaSourceManager, ITaskManager taskManager, IUserDataManager userDataManager, MediaBrowser.Controller.Session.ISessionManager sessionManager)
         {
             _libraryManager = libraryManager;
             _logger = PluginLog.Wrap(logManager.GetLogger("HomeScreenCompanion_RealTime"), "Real-time");
@@ -50,6 +50,7 @@ namespace HomeScreenCompanion
             _mediaSourceManager = mediaSourceManager;
             _taskManager = taskManager;
             _userDataManager = userDataManager;
+            GentleMode.Initialize(sessionManager);
         }
 
         public void Run()
@@ -313,9 +314,10 @@ namespace HomeScreenCompanion
                             && string.Equals(m.GetProviderId("Imdb"), imdb, StringComparison.OrdinalIgnoreCase))
                           .ToList();
 
+                        BaseItem? primary = null;
                         if (originals.Count > 0)
                         {
-                            var primary = originals[0];
+                            primary = originals[0];
                             try { _libraryManager.MergeItems(new[] { primary, current }); }
                             catch (Exception ex) { _logger.Warn("[TopList] Merge failed for '" + itemName + "': " + ex.Message); }
 
@@ -324,8 +326,9 @@ namespace HomeScreenCompanion
                                 await TopListCollectionMirror.SyncCopy(_libraryManager.GetItemById(itemId) ?? current, originals);
                         }
 
-                        // Idempotent — skips if the item already has a runtime.
-                        MergeTopListVersionsTask.QueueStrmProbe(_providerManager, _fileSystem, current);
+                        // Idempotent — skips if the item already has a runtime. Copies the film's media
+                        // info when there is one, else probes at low priority.
+                        MergeTopListVersionsTask.QueueStrmProbe(_providerManager, _fileSystem, _libraryManager.GetItemById(itemId) ?? current, _libraryManager, primary);
                         _logger.Info("[TopList] Linked + probed '" + itemName + "'");
                     }
                     catch (Exception ex)

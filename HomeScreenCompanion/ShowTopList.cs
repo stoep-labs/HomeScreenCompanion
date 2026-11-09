@@ -470,7 +470,7 @@ namespace HomeScreenCompanion
             _mediaSourceManager = mediaSourceManager;
         }
 
-        private static bool SyncVideoInfo(BaseItem copy, BaseItem original)
+        internal static bool SyncVideoInfo(BaseItem copy, BaseItem original)
         {
             bool changed = false;
             if (copy.Container != original.Container) { copy.Container = original.Container; changed = true; }
@@ -481,14 +481,15 @@ namespace HomeScreenCompanion
             return changed;
         }
 
-        private static void CopyMediaStreams(BaseItem copy, BaseItem original)
+        internal static bool CopyMediaStreams(BaseItem copy, BaseItem original)
         {
-            if (_itemRepository == null || _mediaSourceManager == null) return;
+            if (_itemRepository == null || _mediaSourceManager == null) return false;
             var theirs = _mediaSourceManager.GetMediaStreams(original) ?? new List<MediaStream>();
-            if (theirs.Count == 0) return;
+            if (theirs.Count == 0) return false;
             var mine = _mediaSourceManager.GetMediaStreams(copy) ?? new List<MediaStream>();
-            if (StreamSignature(mine) == StreamSignature(theirs)) return;
+            if (StreamSignature(mine) == StreamSignature(theirs)) return false;
             _itemRepository.SaveMediaStreams(copy.InternalId, theirs, CancellationToken.None);
+            return true;
         }
 
         private static string StreamSignature(List<MediaStream> streams) =>
@@ -496,7 +497,7 @@ namespace HomeScreenCompanion
                 .Select(s => $"{s.Index}:{s.Type}:{s.Codec}:{s.Language}:{s.Width}x{s.Height}:{s.Channels}:{s.IsExternal}:{s.Path}"));
 
         // The fields a card or details page shows. A copy's SortName is its rank and stays.
-        private static bool SyncMetadata(BaseItem copy, BaseItem original, bool isSeries)
+        internal static bool SyncMetadata(BaseItem copy, BaseItem original, bool isSeries)
         {
             bool changed = false;
             if (!string.IsNullOrEmpty(original.Name) && copy.Name != original.Name) { copy.Name = original.Name; changed = true; }

@@ -3475,7 +3475,7 @@ public class HomeScreenCompanionService : IService
                             if (strmToOriginal.TryGetValue(li.Path, out var origItem) && li.Id != origItem.Id)
                             {
                                 _libraryManager.MergeItems(new[] { origItem, li });
-                                MergeTopListVersionsTask.QueueStrmProbe(_providerManager, _fileSystem, li);
+                                MergeTopListVersionsTask.QueueStrmProbe(_providerManager, _fileSystem, li, _libraryManager, origItem);
                             }
                         }
                         catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
