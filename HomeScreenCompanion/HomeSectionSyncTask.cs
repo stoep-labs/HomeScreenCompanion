@@ -167,9 +167,9 @@ namespace HomeScreenCompanion
                     + (sourceCount > 1 ? $" from {sourceCount} source users." : ".");
                 _log.Rule();
                 _log.Info("Summary");
-                _log.Info($"  Sections:      {totals.Copied} copied to {RunLog.Plural(usersDone, "user")}{(sourceCount > 1 ? $" from {RunLog.Plural(sourceCount, "source user")}" : "")}{(totals.Failed > 0 ? $", {RunLog.Plural(totals.Failed, "user")} failed" : "")}");
+                _log.Info($"  Sections:      {totals.Copied} copied to {RunLog.Plural(usersDone, "user")}{(totals.Unchanged > 0 ? $", {totals.Unchanged} unchanged" : "")}{(sourceCount > 1 ? $" from {RunLog.Plural(sourceCount, "source user")}" : "")}{(totals.Failed > 0 ? $", {RunLog.Plural(totals.Failed, "user")} failed" : "")}");
                 if (userStatus.SummaryLine() is string disabledLine) _log.Info("  " + disabledLine);
-                if (GentleMode.SummaryLine() is string gentleLine) _log.Info("  " + gentleLine);
+                foreach (var gentleLine in GentleMode.SummaryLines()) _log.Info("  " + gentleLine);
                 _log.Info($"  Done in {RunLog.Elapsed(DateTime.Now - startTime)}  ·  {(totals.Failed > 0 ? "✖ Completed with " + RunLog.Plural(totals.Failed, "error") : "✔ Completed")}");
                 _log.Rule();
                 progress.Report(100);
@@ -196,7 +196,7 @@ namespace HomeScreenCompanion
 
         private sealed class SyncTotals
         {
-            public int Copied, Targets, Failed, Skipped;
+            public int Copied, Unchanged, Targets, Failed, Skipped;
             public bool ConfigChanged;   // top-list or source row tracking updated
         }
 
@@ -371,6 +371,18 @@ namespace HomeScreenCompanion
             if (profile.LibraryOrder) CopyLibraryOrder(profile.SourceUserId, sourceName, targets, userStatus);
         }
 
+        // A row as Emby stores it, without its id: to tell whether a user's rows already are the master's.
+        private string RowKey(ContentSection section)
+        {
+            try
+            {
+                var c = _jsonSerializer.DeserializeFromString<ContentSection>(_jsonSerializer.SerializeToString(section));
+                typeof(ContentSection).GetProperty("Id")?.SetValue(c, null);
+                return _jsonSerializer.SerializeToString(c);
+            }
+            catch (Exception swallowed) { PluginLog.Swallowed(swallowed); return Guid.NewGuid().ToString("N"); }
+        }
+
         // Copy all: the user's home screen replaced by the master's. Rows of sources and top-lists
         // the user is on and the master is not are kept (put back at their place), unless it is
         // an exact copy (mirror: the user is already off those, see UpdateMemberships).
@@ -424,6 +436,23 @@ namespace HomeScreenCompanion
             foreach (var k in kept)
                 HomeScreenCompanionTask.RememberRowPosition(_userManager, _jsonSerializer, k.PositionKey, targetIdStr, targetInternalId, k.Row.Id, cancellationToken);
 
+            var copies = new List<(ContentSection Section, ContentSection Copy)>();
+            foreach (var section in masterSections)
+            {
+                var copy = PrepareCopy(config, managed, section, sourceKey, targetIdStr, targetKey, targetName, notCopied);
+                if (copy != null) copies.Add((section, copy));
+            }
+            // The user's rows already are the master's (the same rows in the same order, none kept
+            // aside): nothing is written. Deleting and adding them all again would write every row
+            // of every user on every sync, and give each row a new id.
+            if (kept.Count == 0 && existingSections.Length == copies.Count
+                && existingSections.Select(RowKey).SequenceEqual(copies.Select(c => RowKey(c.Copy))))
+            {
+                _log.Debug($"  {targetName}: {RunLog.Plural(copies.Count, "section")} already as the master's — nothing written");
+                totals.Unchanged += copies.Count;
+                return 0;
+            }
+
             if (existingSections.Length > 0)
             {
                 _log.Debug($"  {targetName}: replacing {existingSections.Length} existing sections");
@@ -436,10 +465,8 @@ namespace HomeScreenCompanion
             }
 
             int copiedHere = 0;
-            foreach (var section in masterSections)
+            foreach (var (section, copy) in copies)
             {
-                var copy = PrepareCopy(config, managed, section, sourceKey, targetIdStr, targetKey, targetName, notCopied);
-                if (copy == null) continue;
                 _log.Debug($"  {targetName}: + [{section.SectionType}] \"{copy.CustomName ?? copy.Name}\"");
                 var rotating = managed.RotatingRowOf(section, sourceKey);
                 var beforeAdd = rotating != null ? _userManager.GetHomeSections(targetInternalId, cancellationToken)?.Sections ?? Array.Empty<ContentSection>() : null;
@@ -526,11 +553,16 @@ namespace HomeScreenCompanion
                 if (match != null)
                 {
                     typeof(ContentSection).GetProperty("Id")?.SetValue(copy, match.Id);
-                    GentleMode.Wrote(cancellationToken);
-                    _userManager.UpdateHomeSection(targetInternalId, copy, cancellationToken);
+                    // The user's row already as the master's: not written again.
+                    bool changed = HomeScreenCompanionTask.SectionKey(_jsonSerializer, copy) != HomeScreenCompanionTask.SectionKey(_jsonSerializer, match);
+                    if (changed)
+                    {
+                        GentleMode.Wrote(cancellationToken);
+                        _userManager.UpdateHomeSection(targetInternalId, copy, cancellationToken);
+                    }
                     done.Add(match.Id ?? "");
                     if (rotating != null) { RotatingRow.Track(rotating, managed.SourceUserId(rotating, targetKey) ?? targetIdStr, match.Id ?? "", copy); totals.ConfigChanged = true; }
-                    _log.Debug($"  {targetName}: = '{label}' updated");
+                    _log.Debug($"  {targetName}: = '{label}' {(changed ? "updated" : "unchanged")}");
                 }
                 else
                 {

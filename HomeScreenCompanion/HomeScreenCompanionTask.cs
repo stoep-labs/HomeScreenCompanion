@@ -1842,7 +1842,7 @@ namespace HomeScreenCompanion
                     _log.Info($"  Playlists:     {statsList.Sum(g => g.PlaylistUsersCreated)} created, {statsList.Sum(g => g.PlaylistUsersUpdated)} updated{(statsList.Sum(g => g.PlaylistUsersFailed) > 0 ? $", {statsList.Sum(g => g.PlaylistUsersFailed)} failed" : "")}");
                 _log.Info($"  Home sections: {totalHsSynced} synced, {totalHsRemoved + _deletedGroupRowsRemoved} removed");
                 if (_userStatus?.SummaryLine() is string _disabledLine) _log.Info("  " + _disabledLine);
-                if (GentleMode.SummaryLine() is string _gentleLine) _log.Info("  " + _gentleLine);
+                foreach (var _gentleLine in GentleMode.SummaryLines()) _log.Info("  " + _gentleLine);
                 _log.Info($"  Done in {elapsedStr}  ·  {StatusSymbol(groupsFailed, groupsWarned)} {finalStatus}");
                 _log.Rule();
             }
@@ -3875,8 +3875,8 @@ namespace HomeScreenCompanion
         // while someone is watching the members go in slices with a pause between them.
         private async Task<BoxSet> CreateCollectionGently(string name, List<long> ids, CancellationToken cancellationToken)
         {
-            var first = GentleMode.Streaming ? ids.Take(GentleMode.SliceSize).ToArray() : ids.ToArray();
-            var created = await _collectionManager.CreateCollection(new CollectionCreationOptions { Name = name, IsLocked = false, ItemIdList = first });
+            var first = ids.Take(GentleMode.BatchSize).ToArray();
+            var created = await GentleMode.TimedAsync("collection members", () => _collectionManager.CreateCollection(new CollectionCreationOptions { Name = name, IsLocked = false, ItemIdList = first }));
             await GentleMode.WroteAsync(cancellationToken, first.Length);
             if (created != null && first.Length < ids.Count)
                 await AddToCollectionGently(created.InternalId, ids.Skip(first.Length).ToList(), cancellationToken);
@@ -3887,7 +3887,7 @@ namespace HomeScreenCompanion
         {
             foreach (var slice in GentleMode.Slices(ids))
             {
-                await _collectionManager.AddToCollection(collectionId, slice);
+                await GentleMode.TimedAsync("collection members", () => _collectionManager.AddToCollection(collectionId, slice));
                 await GentleMode.WroteAsync(cancellationToken, slice.Length);
             }
         }
@@ -3896,7 +3896,7 @@ namespace HomeScreenCompanion
         {
             foreach (var slice in GentleMode.Slices(ids))
             {
-                _collectionManager.RemoveFromCollection(boxSet, slice);
+                GentleMode.Timed("collection members", () => _collectionManager.RemoveFromCollection(boxSet, slice));
                 await GentleMode.WroteAsync(cancellationToken, slice.Length);
             }
         }
@@ -4850,17 +4850,22 @@ namespace HomeScreenCompanion
                             try
                             {
                                 // Hämta befintlig sektion som bas — plugin-inställningar appliceras ovanpå utan att nollställa Emby-egna värden
+                                var _hsBefore = SectionKey(_jsonSerializer, ownedSection);
                                 var updateSection = BuildContentSection(_jsonSerializer, settingsDict, userLibraryId, ownedSection);
                                 typeof(ContentSection).GetProperty("Id")?.SetValue(updateSection, ownedSection.Id);
-                                GentleMode.Wrote(cancellationToken);
-                                _userManager.UpdateHomeSection(userInternalId, updateSection, cancellationToken);
+                                if (SectionKey(_jsonSerializer, updateSection) != _hsBefore)
+                                {
+                                    GentleMode.Wrote(cancellationToken);
+                                    _userManager.UpdateHomeSection(userInternalId, updateSection, cancellationToken);
+                                    _hsAction = "updated";
+                                }
+                                else _hsAction = "unchanged";
                                 trackId = ownedSection.Id ?? sectionMarker;
-                                _hsAction = "updated";
                                 if (_posMove && MoveToPosition(_userManager, userInternalId, ownedSection.Id ?? "", _posNow, cancellationToken,
                                         tc.HomeSectionUserIds.Where(u => u != userId), settingsDict.TryGetValue("CustomName", out var _movedName) ? _movedName : null))
                                 {
                                     _posMoved++;
-                                    _hsAction = "updated, moved to its new position";
+                                    _hsAction += ", moved to its new position";
                                 }
                                 goto _hsSectionDone;
                             }
@@ -5066,10 +5071,14 @@ namespace HomeScreenCompanion
                     string sectionId;
                     if (owned != null)
                     {
+                        var before = SectionKey(_jsonSerializer, owned);
                         written = RotatingRow.Build(tc, pick, config, _libraryManager, _jsonSerializer, owned);
                         typeof(ContentSection).GetProperty("Id")?.SetValue(written, owned.Id);
-                        GentleMode.Wrote(cancellationToken);
-                        _userManager.UpdateHomeSection(uid, written, cancellationToken);
+                        if (SectionKey(_jsonSerializer, written) != before)
+                        {
+                            GentleMode.Wrote(cancellationToken);
+                            _userManager.UpdateHomeSection(uid, written, cancellationToken);
+                        }
                         sectionId = owned.Id;
                         if (posMove) MoveToPosition(_userManager, uid, sectionId, settingsNow, cancellationToken, tc.HomeSectionUserIds.Where(u => u != userId), written.CustomName);
                     }
@@ -5820,6 +5829,17 @@ namespace HomeScreenCompanion
                 catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
             }
             return updated;
+        }
+
+        /// <summary>
+        /// A row as Emby stores it (written and read back through <see cref="ContentSection"/>), to
+        /// tell whether an update would change anything: an unchanged row is not written again.
+        /// Take it before <see cref="BuildContentSection"/>, which changes the row it is given.
+        /// </summary>
+        internal static string SectionKey(IJsonSerializer jsonSerializer, ContentSection section)
+        {
+            try { return jsonSerializer.SerializeToString(jsonSerializer.DeserializeFromString<ContentSection>(jsonSerializer.SerializeToString(section))); }
+            catch (Exception swallowed) { PluginLog.Swallowed(swallowed); return Guid.NewGuid().ToString("N"); }
         }
 
         internal static ContentSection BuildContentSection(IJsonSerializer jsonSerializer, Dictionary<string, string> settings, string? libraryId, ContentSection? existing = null)
@@ -7368,7 +7388,7 @@ namespace HomeScreenCompanion
             if (gs.EnableHomeSection)
                 _log.Info($"  Home sections: {(gs.HomeSectionSynced ? 1 : 0)} synced");
             if (_userStatus?.SummaryLine() is string disabledLine) _log.Info("  " + disabledLine);
-            if (GentleMode.SummaryLine() is string gentleLine) _log.Info("  " + gentleLine);
+            foreach (var gentleLine in GentleMode.SummaryLines()) _log.Info("  " + gentleLine);
             _log.Info($"  Done in {RunLog.Elapsed(DateTime.Now - startTime)}  ·  {StatusSymbol(failed, warned)} {finalStatus}");
             _log.Rule();
         }

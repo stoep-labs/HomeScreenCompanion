@@ -316,12 +316,12 @@ namespace HomeScreenCompanion
                         // In slices while someone is watching (GentleMode): each call saves every item.
                         foreach (var slice in GentleMode.Slices(toAdd))
                         {
-                            await _collectionManager.AddToCollection(collId, slice).ConfigureAwait(false);
+                            await GentleMode.TimedAsync("collection members", () => _collectionManager.AddToCollection(collId, slice)).ConfigureAwait(false);
                             await GentleMode.WroteAsync(CancellationToken.None, slice.Length).ConfigureAwait(false);
                         }
                         foreach (var slice in GentleMode.Slices(toRemove))
                         {
-                            _collectionManager.RemoveFromCollection(boxSet, slice);
+                            GentleMode.Timed("collection members", () => _collectionManager.RemoveFromCollection(boxSet, slice));
                             await GentleMode.WroteAsync(CancellationToken.None, slice.Length).ConfigureAwait(false);
                         }
                         changes += toAdd.Length + toRemove.Length;

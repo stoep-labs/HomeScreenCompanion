@@ -479,18 +479,24 @@ namespace HomeScreenCompanion
                         string rowId;
                         if (owned != null)
                         {
+                            var before = HomeScreenCompanionTask.SectionKey(jsonSerializer, owned);
                             var updated = HomeScreenCompanionTask.BuildContentSection(
                                 jsonSerializer, settingsDict, tl.HomeSectionLibraryId, owned);
                             typeof(ContentSection).GetProperty("Id")?.SetValue(updated, owned.Id);
-                            GentleMode.Wrote(cancellationToken);
-                            userManager.UpdateHomeSection(uid, updated, cancellationToken);
+                            // An unchanged row is not written again (a sync of many users would
+                            // otherwise rewrite every row every time).
+                            bool changed = HomeScreenCompanionTask.SectionKey(jsonSerializer, updated) != before;
+                            if (changed)
+                            {
+                                GentleMode.Wrote(cancellationToken);
+                                userManager.UpdateHomeSection(uid, updated, cancellationToken);
+                            }
                             rowId = owned.Id;
                             bool moved = posMove && HomeScreenCompanionTask.MoveToPosition(userManager, uid, rowId, posNow, cancellationToken,
                                 OtherUsers(tl, userId), settingsDict.TryGetValue("CustomName", out var ownName) ? ownName : null);
                             if (moved) posMoved++;
-                            _log.Debug($"  {who}: section updated{(moved ? ", moved to its new position" : "")}");
-                            totalUpdated++;
-                            tlUpdated++;
+                            _log.Debug($"  {who}: section {(changed ? "updated" : "unchanged")}{(moved ? ", moved to its new position" : "")}");
+                            if (changed) { totalUpdated++; tlUpdated++; }
                         }
                         else
                         {
@@ -564,7 +570,7 @@ namespace HomeScreenCompanion
 
             Plugin.Instance?.SaveConfiguration();
             if (userStatus.SummaryLine() is string disabledLine) _log.Skip(disabledLine);
-            if (standalone && GentleMode.SummaryLine() is string gentleLine) _log.Info("    " + gentleLine);
+            if (standalone) foreach (var gentleLine in GentleMode.SummaryLines()) _log.Info("    " + gentleLine);
             var summary = $"Updated {totalUpdated} section(s){(totalAdded > 0 ? $", added {totalAdded}" : "")} across {topLists.Count} top-list(s).";
             _log.Info($"    {RunLog.Plural(totalUpdated, "section")} updated{(totalAdded > 0 ? $", {totalAdded} added" : "")} across {RunLog.Plural(topLists.Count, "top-list")}{(totalErrors > 0 ? $", {RunLog.Plural(totalErrors, "error")}" : "")}  ·  {RunLog.Elapsed(DateTime.Now - startTime)}");
             return (totalUpdated, summary);
@@ -659,8 +665,10 @@ namespace HomeScreenCompanion
                         // A rotating row keeps the tag it shows now (showing a collection or playlist now: left alone).
                         if (rotating && !string.Equals(owned.SectionType, "items", StringComparison.OrdinalIgnoreCase)) continue;
                         if (rotating) rowSettings["_queryTagId"] = (owned.Query?.TagIds ?? Array.Empty<string>()).FirstOrDefault() ?? "";
+                        var before = HomeScreenCompanionTask.SectionKey(jsonSerializer, owned);
                         var updatedSec = HomeScreenCompanionTask.BuildContentSection(jsonSerializer, rowSettings, string.Empty, owned);
                         typeof(ContentSection).GetProperty("Id")?.SetValue(updatedSec, owned.Id);
+                        if (HomeScreenCompanionTask.SectionKey(jsonSerializer, updatedSec) == before) continue;
                         GentleMode.Wrote(cancellationToken);
                         userManager.UpdateHomeSection(uid, updatedSec, cancellationToken);
                         totalUpdated++;
@@ -707,8 +715,10 @@ namespace HomeScreenCompanion
                         var secs = userManager.GetHomeSections(uid, cancellationToken)?.Sections ?? Array.Empty<ContentSection>();
                         var owned = secs.FirstOrDefault(s => s.Id == tracking.SectionId);
                         if (owned == null) continue;
+                        var before = HomeScreenCompanionTask.SectionKey(jsonSerializer, owned);
                         var updatedSec = HomeScreenCompanionTask.BuildContentSection(jsonSerializer, otherRowSettings, otherTl.HomeSectionLibraryId, owned);
                         typeof(ContentSection).GetProperty("Id")?.SetValue(updatedSec, owned.Id);
+                        if (HomeScreenCompanionTask.SectionKey(jsonSerializer, updatedSec) == before) continue;
                         GentleMode.Wrote(cancellationToken);
                         userManager.UpdateHomeSection(uid, updatedSec, cancellationToken);
                         totalUpdated++;
