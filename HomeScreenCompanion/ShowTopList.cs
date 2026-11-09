@@ -223,7 +223,7 @@ namespace HomeScreenCompanion
             // Series that left the list.
             foreach (var dir in Directory.GetDirectories(folderPath))
                 if (!usedFolders.Contains(Path.GetFileName(dir)))
-                    try { Directory.Delete(dir, true); } catch (Exception ex) { log?.Invoke($"Top-list: could not remove '{dir}' — {ex.Message}"); }
+                    try { Directory.Delete(dir, true); Interlocked.Increment(ref Changes); } catch (Exception ex) { log?.Invoke($"Top-list: could not remove '{dir}' — {ex.Message}"); }
 
             jsonSerializer.SerializeToFile(manifest, Path.Combine(folderPath, ManifestFileName));
             return manifest.Count;
@@ -593,6 +593,9 @@ namespace HomeScreenCompanion
             return string.IsNullOrWhiteSpace(safe) ? "unknown" : safe;
         }
 
+        /// <summary>Files written or removed by WriteIfChanged / CopyIfChanged / WriteFolder (a caller compares before and after).</summary>
+        internal static int Changes;
+
         // Both return true when they wrote the file (it was missing or different).
         internal static bool WriteIfChanged(string path, string content)
         {
@@ -602,6 +605,7 @@ namespace HomeScreenCompanion
             }
             catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
             File.WriteAllText(path, content);
+            Interlocked.Increment(ref Changes);
             return true;
         }
 
@@ -616,12 +620,13 @@ namespace HomeScreenCompanion
             }
             catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
             File.Copy(source, target, overwrite: true);
+            Interlocked.Increment(ref Changes);
             return true;
         }
 
         private static void TryDelete(string path)
         {
-            try { File.Delete(path); } catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
+            try { File.Delete(path); Interlocked.Increment(ref Changes); } catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
         }
     }
 }

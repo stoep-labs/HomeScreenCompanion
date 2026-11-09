@@ -502,7 +502,7 @@ namespace HomeScreenCompanion
             catch (Exception ex) { log.Warn($"Ranked copy '{copy.Name}': media info could not be copied: {ex.Message}"); needsProbe = (copy.RunTimeTicks ?? 0) <= 0; }
             try
             {
-                if (CopyPeople(copy, film, libraryManager, cancellationToken)) writes++;
+                if (CopyPeople(copy, film, libraryManager, cancellationToken, "cast", m => log.Debug(m))) writes++;
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { log.Debug($"  Ranked copy '{copy.Name}': cast could not be copied: {ex.Message}"); }
@@ -521,43 +521,55 @@ namespace HomeScreenCompanion
             return (reranked, writes, needsProbe);
         }
 
-        // The film's cast and crew, once (the ranked library fetches no people itself): the copy's
-        // details page shows them (Cast & Crew, Director), and has none without them.
-        // Emby looks every person up again when it saves a cast, all inside one database write
-        // that holds up every other write (playback progress too). Each lookup searches all the
-        // people in the library, so on a large library one film's cast can take seconds. The
-        // people go with their provider ids: Emby then finds them by id (an index of short
-        // values, and the exact person rather than a namesake) instead of reading every person's
-        // row for the name. While someone is watching the cast goes in steps, each its own short
-        // write: first CastFirstStep new people, then as many as took about CastStepTarget
-        // before. People saved in an earlier step are remembered by Emby by then and cost next to
-        // nothing. GentleMode pauses between the steps.
-        private const int CastFirstStep = 5;
+        // The film's cast and crew, once (the copy's library fetches no people itself): the copy's
+        // details page shows them (Cast & Crew, Director), and has none without them. Used for
+        // ranked and top-list copies; kind names the write in the run summary.
+        // Emby looks every new person up when it saves a cast, all inside one database write that
+        // holds up every other write (playback progress too); on a large library one lookup can
+        // take a long time. The people go with their provider ids: Emby then finds them by id
+        // (and the exact person rather than a namesake), and remembers them, so people saved in an
+        // earlier step cost next to nothing in the next one (each save replaces the whole list).
+        // While someone is watching the cast goes in steps, each its own short write: CastFirstStep
+        // new people first, then as many as the last step's time per person says fit in
+        // CastStepTarget (at most twice the last step); a step over the target halves the next one
+        // (down to 1 person). A step that still took over GentleMode.LongStep is followed by a
+        // longer pause (GentleMode.AfterStep). Nobody watching: the whole cast in one write.
+        private const int CastFirstStep = 2;
+        private const int CastMaxStep = 50;
+        private static readonly TimeSpan CastStepTarget = TimeSpan.FromMilliseconds(50);
 
         // A ranked collection of 100+ copies logs its progress every 50 copies, once it has run this long.
         private static readonly TimeSpan ProgressAfter = TimeSpan.FromSeconds(10);
-        private static readonly TimeSpan CastStepTarget = TimeSpan.FromMilliseconds(150);
 
-        private static bool CopyPeople(BaseItem copy, BaseItem film, ILibraryManager libraryManager, CancellationToken cancellationToken)
+        internal static bool CopyPeople(BaseItem copy, BaseItem film, ILibraryManager libraryManager, CancellationToken cancellationToken,
+            string kind = "cast", Action<string>? debug = null)
         {
             var theirs = libraryManager.GetItemPeople(new InternalPeopleQuery { ItemIds = new[] { film.InternalId }, EnableProviderIds = true }) ?? new List<PersonInfo>();
             if (theirs.Count == 0) return false;
             // Done when the copy has them all; a cast left short (a run stopped between steps) is
-            // saved again from the start (each save replaces the whole list).
+            // saved again from the start.
             var mine = libraryManager.GetItemPeople(copy) ?? new List<PersonInfo>();
             if (mine.Count >= theirs.Count) return false;
             int done = 0, step = CastFirstStep;
             while (done < theirs.Count)
             {
-                int upTo = GentleMode.Streaming ? Math.Min(theirs.Count, done + step) : theirs.Count;
+                bool watching = GentleMode.Streaming;
+                int upTo = watching ? Math.Min(theirs.Count, done + step) : theirs.Count;
                 var part = upTo == theirs.Count ? theirs : theirs.Take(upTo).ToList();
                 var sw = System.Diagnostics.Stopwatch.StartNew();
-                GentleMode.Timed("cast", () => libraryManager.UpdatePeople(copy, part, true));
-                double msPerPerson = Math.Max(0.1, sw.Elapsed.TotalMilliseconds / (upTo - done));
+                GentleMode.Timed(kind, () => libraryManager.UpdatePeople(copy, part, true));
+                var took = sw.Elapsed;
+                int added = upTo - done;
                 done = upTo;
+                if (watching) debug?.Invoke($"  '{copy.Name}': {kind} step {done}/{theirs.Count} ({added} new) {took.TotalMilliseconds:0} ms");
                 if (done >= theirs.Count) break;
-                step = Math.Max(2, Math.Min(50, (int)(CastStepTarget.TotalMilliseconds / msPerPerson)));
-                GentleMode.Step(cancellationToken);
+                if (took > CastStepTarget) step = Math.Max(1, step / 2);
+                else
+                {
+                    double msPerPerson = Math.Max(0.1, took.TotalMilliseconds / added);
+                    step = Math.Max(1, Math.Min(Math.Min(CastMaxStep, step * 2), (int)(CastStepTarget.TotalMilliseconds / msPerPerson)));
+                }
+                GentleMode.AfterStep(took, cancellationToken);
             }
             return true;
         }
@@ -590,7 +602,7 @@ namespace HomeScreenCompanion
         // `expected` copies are indexed and `identified` of them saved with their IMDb id (Emby's
         // refresh of the library reports done before the refreshes of its new items are). Polls
         // every 2 s, then 5 s, then every 10 s.
-        private static async Task<bool> WaitForCopiesAsync(IProviderManager providerManager, ILibraryManager libraryManager, long libInternalId,
+        internal static async Task<bool> WaitForCopiesAsync(IProviderManager providerManager, ILibraryManager libraryManager, long libInternalId,
             string folderPath, int expected, int identified, TimeSpan max, CancellationToken cancellationToken)
         {
             var deadline = DateTime.UtcNow + max;
@@ -611,13 +623,21 @@ namespace HomeScreenCompanion
             }
         }
 
-        // Ranked copies take everything from their film (nfo with its ids, images, text and media
-        // info copied by PrepareCopy), so the library fetches nothing online. Libraries made by
-        // older builds fetched TheMovieDb metadata and images for every copy: they are switched
-        // over once.
+        // Ranked and movie top-list copies take everything from their film (nfo with its ids, images,
+        // text and media info copied by PrepareCopy / TopListCopies.Prepare), so their library
+        // fetches nothing online. Libraries made by older builds fetched TheMovieDb metadata and
+        // images for every copy: they are switched over once.
+        // Nor does Emby watch the folder (real-time monitoring): HSC writes many files into it at
+        // once, and Emby's monitor would refresh the whole library (at high priority) for each of
+        // them. HSC refreshes the library itself, once, after it has written.
         private static readonly string[] LocalFetchers = { "Nfo" };
+        internal static readonly string[] MovieTypes = { "Movie" };
+        internal static readonly string[] ShowTypes = { "Series", "Season", "Episode" };
 
-        private static void UseLocalMetadataOnly(ILibraryManager libraryManager, long libInternalId, string? libName, RunLog log)
+        private static void UseLocalMetadataOnly(ILibraryManager libraryManager, long libInternalId, string? libName, RunLog log) =>
+            UseHscLibraryOptions(libraryManager, libInternalId, libName, MovieTypes, "Ranked library", log);
+
+        internal static void UseHscLibraryOptions(ILibraryManager libraryManager, long libInternalId, string? libName, string[] typeNames, string label, RunLog log)
         {
             try
             {
@@ -625,20 +645,31 @@ namespace HomeScreenCompanion
                 var options = folder.GetLibraryOptions();
                 if (options == null) return;
                 var types = (options.TypeOptions ?? Array.Empty<TypeOptions>()).ToList();
-                var movie = types.FirstOrDefault(t => string.Equals(t.Type, "Movie", StringComparison.OrdinalIgnoreCase));
-                if (movie != null && (movie.MetadataFetchers ?? Array.Empty<string>()).SequenceEqual(LocalFetchers)
-                    && (movie.ImageFetchers ?? Array.Empty<string>()).Length == 0)
-                    return;
-                if (movie == null) { movie = new TypeOptions { Type = "Movie" }; types.Add(movie); }
-                movie.MetadataFetchers = LocalFetchers.ToArray();
-                movie.MetadataFetcherOrder = LocalFetchers.ToArray();
-                movie.ImageFetchers = Array.Empty<string>();
-                movie.ImageFetcherOrder = Array.Empty<string>();
+                bool fetchers = false;
+                foreach (var typeName in typeNames)
+                {
+                    var t = types.FirstOrDefault(x => string.Equals(x.Type, typeName, StringComparison.OrdinalIgnoreCase));
+                    if (t != null && (t.MetadataFetchers ?? Array.Empty<string>()).SequenceEqual(LocalFetchers)
+                        && (t.ImageFetchers ?? Array.Empty<string>()).Length == 0)
+                        continue;
+                    if (t == null) { t = new TypeOptions { Type = typeName }; types.Add(t); }
+                    t.MetadataFetchers = LocalFetchers.ToArray();
+                    t.MetadataFetcherOrder = LocalFetchers.ToArray();
+                    t.ImageFetchers = Array.Empty<string>();
+                    t.ImageFetcherOrder = Array.Empty<string>();
+                    fetchers = true;
+                }
+                bool monitor = options.EnableRealtimeMonitor;
+                if (!fetchers && !monitor) return;
                 options.TypeOptions = types.ToArray();
+                options.EnableRealtimeMonitor = false;
                 folder.UpdateLibraryOptions(options);
-                log.Info($"    Ranked library '{libName}': no longer fetches metadata and images online (the copies take them from their films)");
+                var what = new List<string>();
+                if (fetchers) what.Add("no longer fetches metadata and images online (the copies take them from their films)");
+                if (monitor) what.Add("no longer watched for file changes (HSC refreshes it after writing)");
+                log.Info($"    {label} '{libName}': {string.Join("; ", what)}");
             }
-            catch (Exception ex) { log.Warn($"Ranked library '{libName}': its metadata settings could not be updated: {ex.Message}"); }
+            catch (Exception ex) { log.Warn($"{label} '{libName}': its metadata settings could not be updated: {ex.Message}"); }
         }
 
         private static readonly ImageType[] CopyImageTypes = { ImageType.Primary, ImageType.Backdrop, ImageType.Logo, ImageType.Thumb };
@@ -702,6 +733,7 @@ namespace HomeScreenCompanion
             var options = new LibraryOptions
             {
                 PathInfos = new[] { new MediaPathInfo { Path = folderPath } },
+                EnableRealtimeMonitor = false,
                 TypeOptions = new[]
                 {
                     new TypeOptions

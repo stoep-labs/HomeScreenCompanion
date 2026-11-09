@@ -241,7 +241,8 @@ namespace HomeScreenCompanion
                 if (li.Id == primary.Id) continue;
                 try
                 {
-                    libraryManager.MergeItems(new[] { primary, li });
+                    // Already a version of it (the real-time handler links new copies too).
+                    if (!TopListCopies.IsMerged(li, primary)) libraryManager.MergeItems(new[] { primary, li });
                     QueueStrmProbe(providerManager, fileSystem, li, libraryManager, primary);
                     merged++;
                 }

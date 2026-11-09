@@ -1691,7 +1691,7 @@ namespace HomeScreenCompanion
                 SyncPlaylistTags(config, dryRun);
                 bool _hasTopLists = (config.TopLists ?? new List<TopListHomeSection>()).Any(t => !string.IsNullOrWhiteSpace(t.TagName));
                 if (_hasTopLists) { _log.Blank(); _log.Info("» Top-lists"); }
-                SyncTopListFolders(config, dryRun);
+                SyncTopListFolders(config, dryRun, null, cancellationToken);
                 if (!dryRun) TopListSyncTask.SyncAll(_libraryManager, _userViewManager, _userManager, _jsonSerializer, _logger, cancellationToken, _log);
 
                 progress.Report(100);
@@ -1950,7 +1950,7 @@ namespace HomeScreenCompanion
             {
                 // Same rebuild as the full sync, limited to this list. A show list is rebuilt from
                 // its tag or, when picked by hand, from the shows saved in its folder.
-                SyncTopListFolders(config, false, tl.TagName);
+                SyncTopListFolders(config, false, tl.TagName, cancellationToken);
                 var tlFolder = Path.Combine(Plugin.Instance!.DataFolderPath, "toplists", SanitizeTopListFolderName(tl.TagName));
                 listSummary = isShow ? $"{RunLog.Plural(ShowTopList.ReadManifest(tlFolder, _jsonSerializer).Count, "show")} synced to its library folder"
                     : $"{RunLog.Plural(Directory.Exists(tlFolder) ? Directory.GetFiles(tlFolder, "*.strm").Length : 0, "movie")} synced to its library folder";
@@ -1960,8 +1960,7 @@ namespace HomeScreenCompanion
                 var (ok, msg) = rebuildManual(tl);
                 if (ok) _log.Ok($"Top-list '{tl.TagName}': {msg}");
                 else { errors++; _log.Error($"Top-list '{tl.TagName}' failed — {msg}"); }
-                try { _libraryMonitor?.ReportFileSystemChanged(Path.Combine(Plugin.Instance!.DataFolderPath, "toplists", SanitizeTopListFolderName(tl.TagName))); }
-                catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
+                RefreshTopListFolder(Path.Combine(Plugin.Instance!.DataFolderPath, "toplists", SanitizeTopListFolderName(tl.TagName)));
                 listSummary = ok ? msg : "rebuild failed";
             }
 
@@ -3321,7 +3320,7 @@ namespace HomeScreenCompanion
             CleanupDisabledPlaylists(config, dryRun);
             SyncPlaylistTags(config, dryRun);
             // Only this group's own top-list (other lists are not fed by this tag).
-            SyncTopListFolders(config, dryRun, tagName);
+            SyncTopListFolders(config, dryRun, tagName, cancellationToken);
             // Made with the group's Create as top-list: its rows too (the group has no other row).
             if (!dryRun && SourceTopLists.IsOn(tagConfig) && (config.TopLists ?? new List<TopListHomeSection>()).Any(t => t.FromSource && string.Equals(t.TagName, tagName, StringComparison.OrdinalIgnoreCase)))
             {
@@ -3444,7 +3443,7 @@ namespace HomeScreenCompanion
                 _log.Blank();
                 _log.Info("» Top-list");
                 SaveTopListPart(config, tagConfig, tagName, new List<BaseItem>());
-                SyncTopListFolders(config, false, tagName);
+                SyncTopListFolders(config, false, tagName, cancellationToken);
             }
 
             if (tagConfig.EnableHomeSection)
@@ -7972,7 +7971,7 @@ namespace HomeScreenCompanion
         }
 
         // onlyTag: Run Group on one top-list — rebuild just that list and leave the other folders alone.
-        private void SyncTopListFolders(PluginConfiguration config, bool dryRun, string? onlyTag = null)
+        private void SyncTopListFolders(PluginConfiguration config, bool dryRun, string? onlyTag = null, CancellationToken cancellationToken = default)
         {
             var dataPath = Plugin.Instance.DataFolderPath;
             var topListsPath = Path.Combine(dataPath, "toplists");
@@ -8134,9 +8133,23 @@ namespace HomeScreenCompanion
                 int count = 0;
                 var rankExtras = TopListHistory.Update(tl.TagName, selected.Select(s => s.Item).ToList(), badgeStyle,
                     _jsonSerializer, _libraryManager, _userManager, _userDataManager, m => _log.Warn(m));
-                // Only files that changed are written (and the ones no longer in the list removed): the
-                // folder is a watched library, so rewriting every file made Emby refresh every title of
-                // the list on each sync.
+                // The list's library (none yet for a new list: EnsureLibraries makes it below). With one,
+                // the run owns the folder until its copies are prepared (TopListCopies): the real-time
+                // handler leaves them alone, Emby does not watch the folder, and the library is
+                // refreshed once after the writes.
+                var tlLib = RankedCollections.LibraryFor(_libraryManager, folderPath);
+                long tlLibId = 0;
+                bool own = tlLib != null && long.TryParse(tlLib.ItemId, out tlLibId);
+                if (own)
+                {
+                    RankedCollections.UseHscLibraryOptions(_libraryManager, tlLibId, tlLib!.Name, RankedCollections.MovieTypes, "Top-list library", _log);
+                    TopListCopies.Begin(folderPath);
+                }
+                try
+                {
+                // Only files that changed are written (and the ones no longer in the list removed):
+                // each changed file is work for Emby's refresh of the library.
+                var pendingNew = new List<(string BaseName, string FilePath, BaseItem Item)>();
                 var changedBases = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var wantedFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var tempDir = Path.Combine(Path.GetTempPath(), "hsc_" + Guid.NewGuid().ToString("N"));
@@ -8175,9 +8188,12 @@ namespace HomeScreenCompanion
                         }
                         foreach (var suffix in new[] { ".jpg", "-thumb.jpg" })
                             wantedFiles.Add(entry.BaseName + suffix);
-                        // .strm last: the folder is a watched library, and Emby creates the item the
-                        // moment it sees the .strm — the nfo and badged images must already be there.
-                        if (ShowTopList.WriteIfChanged(Path.Combine(folderPath, entry.BaseName + ".strm"), entry.FilePath)) changed = true;
+                        // .strm last: Emby creates the item the moment it sees the .strm — the nfo and
+                        // badged images must already be there. A new title's .strm waits for its
+                        // slice (below) when the run owns the folder.
+                        var strmFile = Path.Combine(folderPath, entry.BaseName + ".strm");
+                        if (own && !File.Exists(strmFile)) pendingNew.Add(entry);
+                        else if (ShowTopList.WriteIfChanged(strmFile, entry.FilePath)) changed = true;
                         wantedFiles.Add(entry.BaseName + ".nfo");
                         wantedFiles.Add(entry.BaseName + ".strm");
                         if (changed) changedBases.Add(entry.BaseName);
@@ -8203,79 +8219,91 @@ namespace HomeScreenCompanion
                     try { File.Delete(f); removedFiles++; } catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
                 }
 
-                // Notify the file system monitor so Emby is aware of the changes
-                if (changedBases.Count > 0 || removedFiles > 0)
+                if (!own)
                 {
-                    try { _libraryMonitor?.ReportFileSystemChanged(folderPath); }
-                    catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
-                }
-
-                // For items already indexed in the library: update SortName and poster directly
-                // so changes are visible immediately without waiting for a full library scan.
-                try
-                {
-                    var sortPaths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                    var originalNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                    for (int si = 0; si < selected.Count; si++)
+                    // No library yet (EnsureLibraries makes and scans it), or one HSC did not find.
+                    if (changedBases.Count > 0 || removedFiles > 0)
                     {
-                        var _strm = Path.Combine(folderPath, selected[si].BaseName + ".strm");
-                        sortPaths[_strm] = (si + 1).ToString().PadLeft(digits, '0');
-                        originalNames[_strm] = selected[si].Item.Name ?? "";
+                        try { _libraryMonitor?.ReportFileSystemChanged(folderPath); }
+                        catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
+                    }
+                }
+                else
+                {
+                    var strmPaths = new Dictionary<string, (string Rank, BaseItem Film)>(StringComparer.OrdinalIgnoreCase);
+                    for (int si = 0; si < selected.Count; si++)
+                        strmPaths[Path.Combine(folderPath, selected[si].BaseName + ".strm")] = ((si + 1).ToString().PadLeft(digits, '0'), selected[si].Item);
+
+                    // Copies of films that left the list go straight away.
+                    foreach (var stale in TopListCopiesIn(folderPath).Where(c => !strmPaths.ContainsKey(c.Path)))
+                    {
+                        try { GentleMode.Timed("top-list copy delete", () => _libraryManager.DeleteItem(stale, new DeleteOptions { DeleteFileLocation = false })); }
+                        catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
+                        GentleMode.Wrote(cancellationToken);
                     }
 
-                    var libItems = _libraryManager.GetItemList(new InternalItemsQuery
+                    // New titles: their .strm in slices (a few while someone is watching, 25
+                    // otherwise), each followed by one refresh of the library (normal priority),
+                    // waited for. The first refresh also reads the changed nfo files.
+                    int written = selected.Count - pendingNew.Count;
+                    bool needRefresh = changedBases.Count > 0 || removedFiles > 0 || TopListCopiesIn(folderPath).Count < written;
+                    bool timedOut = false;
+                    while ((pendingNew.Count > 0 || needRefresh) && !timedOut)
                     {
-                        Recursive = true,
-                        IncludeItemTypes = new[] { "Movie" }
-                    }).Where(i => !string.IsNullOrEmpty(i.Path)
-                               && i.Path.StartsWith(folderPath + Path.DirectorySeparatorChar,
-                                                    StringComparison.OrdinalIgnoreCase))
-                      .ToList();
-
-                    foreach (var li in libItems)
-                    {
-                        var strmPath = li.Path;
-                        if (string.IsNullOrEmpty(strmPath)) continue;
-                        // Unchanged files and rank: the item is left alone (no update, no refresh).
-                        bool rankChanged = sortPaths.TryGetValue(strmPath, out var newSort) && !string.Equals(li.SortName, newSort, StringComparison.Ordinal);
-                        // The copy shows the original's title (see BuildTopListNfo), whatever language its library fetched.
-                        bool nameChanged = originalNames.TryGetValue(strmPath, out var origName) && origName.Length > 0 && !string.Equals(li.Name, origName, StringComparison.Ordinal);
-                        if (nameChanged) li.Name = origName;
-                        if (!rankChanged && !nameChanged && !changedBases.Contains(Path.GetFileNameWithoutExtension(strmPath))
-                            && HomeScreenCompanionService.RankedImagesApplied(li, folderPath)) continue;
-
-                        // Update SortName
-                        if (newSort != null)
-                        {
-                            var prop = li.GetType().GetProperty("SortName");
-                            if (prop?.CanWrite == true) prop.SetValue(li, newSort);
-                        }
-
-                        // Point poster and thumb at our local ranked images
-                        HomeScreenCompanionService.ApplyRankedImages(li, folderPath);
-
-                        // Merge STRM as an alternate version of the original library movie.
-                        // MergeItems replicates what Emby does automatically when two video
-                        // files for the same film share a folder, but across different virtual
-                        // libraries.
+                        cancellationToken.ThrowIfCancellationRequested();
+                        int take = Math.Min(GentleMode.BatchSize, pendingNew.Count);
+                        foreach (var w in pendingNew.Take(take))
+                            ShowTopList.WriteIfChanged(Path.Combine(folderPath, w.BaseName + ".strm"), w.FilePath);
+                        pendingNew.RemoveRange(0, take);
+                        written += take;
+                        needRefresh = false;
                         try
                         {
-                            var strmImdb = li.GetProviderId("Imdb");
-                            if (!string.IsNullOrEmpty(strmImdb)
-                                && origLookup.TryGetValue(strmImdb, out var primary)
-                                && li.Id != primary.Id)
+                            _providerManager.QueueRefresh(tlLibId, new MetadataRefreshOptions(_fileSystem)
                             {
-                                _libraryManager.MergeItems(new[] { primary, li });
-                                MergeTopListVersionsTask.QueueStrmProbe(_providerManager, _fileSystem, li, _libraryManager, primary);
-                            }
+                                Recursive = true,
+                                MetadataRefreshMode = MetadataRefreshMode.Default,
+                                ImageRefreshMode = MetadataRefreshMode.Default
+                            }, RefreshPriority.Normal);
                         }
-                        catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
-
-                        try { _libraryManager.UpdateItem(li, li.Parent, ItemUpdateType.MetadataEdit, null); }
+                        catch (Exception ex) { _log.Warn($"Top-list library '{tlLib!.Name}' could not be refreshed: {ex.Message}"); break; }
+                        if (!RankedCollections.WaitForCopiesAsync(_providerManager, _libraryManager, tlLibId, folderPath, written, 0, TimeSpan.FromSeconds(90), cancellationToken).GetAwaiter().GetResult())
+                            timedOut = true;
+                        if (pendingNew.Count > 0) GentleMode.Wrote(cancellationToken, take);
+                    }
+                    // Not indexed in time: the rest is written now and Emby adds it later (the
+                    // real-time handler prepares those copies).
+                    foreach (var w in pendingNew)
+                        ShowTopList.WriteIfChanged(Path.Combine(folderPath, w.BaseName + ".strm"), w.FilePath);
+                    if (timedOut)
+                    {
+                        _log.Warn($"Top-list '{tl.TagName}': Emby is still adding its copies — the next sync finishes them");
+                        try { _providerManager.QueueRefresh(tlLibId, new MetadataRefreshOptions(_fileSystem) { Recursive = true }, RefreshPriority.Low); }
                         catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
                     }
+
+                    // Every copy: rank, badged images, the film's text, media info and cast, merged
+                    // with the film. A copy that is already right costs reads only.
+                    int preparedWrites = 0;
+                    foreach (var li in TopListCopiesIn(folderPath))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        if (!strmPaths.TryGetValue(li.Path, out var want)) continue;
+                        var imdb = li.GetProviderId("Imdb");
+                        var mergeWith = !string.IsNullOrEmpty(imdb) && origLookup.TryGetValue(imdb, out var orig) ? orig : want.Film;
+                        int writes = TopListCopies.Prepare(li, want.Film, mergeWith, want.Rank,
+                            changedBases.Contains(Path.GetFileNameWithoutExtension(li.Path)),
+                            _libraryManager, _providerManager, _fileSystem, m => _log.Warn(m), m => _log.Debug(m), cancellationToken);
+                        preparedWrites += writes;
+                        if (writes > 0) GentleMode.Wrote(cancellationToken, writes);
+                    }
+                    if (preparedWrites > 0) _log.Debug($"  Top-list '{tl.TagName}': copies brought in line with their films ({RunLog.Plural(preparedWrites, "write")})");
                 }
-                catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
+                }
+                finally
+                {
+                    if (own) TopListCopies.End(folderPath);
+                }
 
                 _log.Ok($"Top-list '{tl.TagName}': {RunLog.Plural(count, "movie")} synced to its library folder");
             }
@@ -8298,6 +8326,39 @@ namespace HomeScreenCompanion
                 }
                 Plugin.Instance.SaveConfiguration();
             }
+        }
+
+        // After HSC wrote into a top-list folder: one refresh of its library, at normal priority
+        // (Emby does not watch HSC's folders: its monitor refreshes the library at high priority
+        // once per changed file). No library found: Emby's monitor is told about the folder.
+        private void RefreshTopListFolder(string folderPath)
+        {
+            try
+            {
+                var lib = RankedCollections.LibraryFor(_libraryManager, folderPath);
+                if (lib != null && long.TryParse(lib.ItemId, out var libId))
+                    _providerManager.QueueRefresh(libId, new MetadataRefreshOptions(_fileSystem)
+                    {
+                        Recursive = true,
+                        MetadataRefreshMode = MetadataRefreshMode.Default,
+                        ImageRefreshMode = MetadataRefreshMode.Default
+                    }, RefreshPriority.Normal);
+                else _libraryMonitor?.ReportFileSystemChanged(folderPath);
+            }
+            catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
+        }
+
+        // The movie copies Emby has indexed in a top-list folder.
+        private List<BaseItem> TopListCopiesIn(string folderPath)
+        {
+            var prefix = folderPath.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return _libraryManager.GetItemList(new InternalItemsQuery
+            {
+                IncludeItemTypes = new[] { "Movie" },
+                Recursive = true,
+                IsVirtualItem = false,
+                PathStartsWith = prefix
+            }).Where(i => !string.IsNullOrEmpty(i.Path) && i.Path.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList();
         }
 
         // Show top-lists are rebuilt on every sync, manual ones too: their series get new episodes,
@@ -8347,10 +8408,15 @@ namespace HomeScreenCompanion
                     }
                     if (maxItems > 0) series = series.Take(maxItems).ToList();
 
+                    var tlLib = RankedCollections.LibraryFor(_libraryManager, folderPath);
+                    if (tlLib != null && long.TryParse(tlLib.ItemId, out var tlLibId))
+                        RankedCollections.UseHscLibraryOptions(_libraryManager, tlLibId, tlLib.Name, RankedCollections.ShowTypes, "Top-list library", _log);
+                    int changesBefore = ShowTopList.Changes;
                     var count = ShowTopList.WriteFolder(folderPath, series, badgeStyle,
                         _libraryManager, _jsonSerializer, _httpClient, _providerManager, _fileSystem, m => _log.Warn(m),
                         ranked => TopListHistory.Update(tl.TagName, ranked, badgeStyle, _jsonSerializer, _libraryManager, _userManager, _userDataManager, m => _log.Warn(m)));
-                    try { _libraryMonitor?.ReportFileSystemChanged(folderPath); } catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
+                    // One refresh of the library when a file changed (Emby does not watch the folder).
+                    if (ShowTopList.Changes != changesBefore) RefreshTopListFolder(folderPath);
                     ShowTopList.ApplyIndexed(folderPath, _libraryManager, _jsonSerializer);
                     _log.Ok($"Top-list '{tl.TagName}': {RunLog.Plural(count, "show")} synced to its library folder");
                 }

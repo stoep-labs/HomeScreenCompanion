@@ -40,7 +40,8 @@ namespace HomeScreenCompanion
         private static ISessionManager? _sessions;
         private static readonly object Sync = new object();
         private static int _pending, _pauses, _streamsAtStart, _maxStreams;
-        private static TimeSpan _paused = TimeSpan.Zero, _sliceWork = TimeSpan.Zero, _longestPause = TimeSpan.Zero;
+        private static TimeSpan _paused = TimeSpan.Zero, _sliceWork = TimeSpan.Zero, _longestPause = TimeSpan.Zero, _longestWrite = TimeSpan.Zero;
+        private static string _longestKind = "";
         private static readonly Dictionary<string, (int Count, TimeSpan Total, TimeSpan Max)> Times = new Dictionary<string, (int, TimeSpan, TimeSpan)>();
 
         internal static void Initialize(ISessionManager sessionManager) => _sessions = sessionManager;
@@ -68,6 +69,7 @@ namespace HomeScreenCompanion
             lock (Sync)
             {
                 _pending = 0; _pauses = 0; _paused = TimeSpan.Zero; _sliceWork = TimeSpan.Zero; _longestPause = TimeSpan.Zero;
+                _longestWrite = TimeSpan.Zero; _longestKind = "";
                 Times.Clear();
                 _streamsAtStart = ActiveStreams();
                 _maxStreams = _streamsAtStart;
@@ -96,7 +98,8 @@ namespace HomeScreenCompanion
                     lines.Add($"Gentle mode:   {_pauses + 1} slices, {RunLog.Elapsed(_paused)} of pauses ({RunLog.Plural(_pauses, "pause")}, {MinPause.TotalSeconds:0}–{Math.Max(MinPause.TotalSeconds, Math.Ceiling(_longestPause.TotalSeconds)):0}s each) while up to {(_maxStreams == 1 ? "1 person was" : $"{_maxStreams} people were")} watching");
                 if (Times.Count > 0)
                     lines.Add("Write times:   " + string.Join("  ·  ", Times.Select(t =>
-                        $"{t.Key} {t.Value.Count}× avg {Ms(TimeSpan.FromTicks(t.Value.Total.Ticks / t.Value.Count))}, max {Ms(t.Value.Max)}")));
+                        $"{t.Key} {t.Value.Count}× avg {Ms(TimeSpan.FromTicks(t.Value.Total.Ticks / t.Value.Count))}, max {Ms(t.Value.Max)}"))
+                        + $"  ·  longest single write: {_longestKind} {Ms(_longestWrite)}");
             }
             return lines;
         }
@@ -147,6 +150,7 @@ namespace HomeScreenCompanion
                 _sliceWork += took;
                 Times.TryGetValue(kind, out var t);
                 Times[kind] = (t.Count + 1, t.Total + took, took > t.Max ? took : t.Max);
+                if (took > _longestWrite) { _longestWrite = took; _longestKind = kind; }
             }
         }
 
@@ -170,6 +174,38 @@ namespace HomeScreenCompanion
             var wait = SliceDue(0);
             if (wait > TimeSpan.Zero && cancellationToken.WaitHandle.WaitOne(wait))
                 cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        /// <summary>
+        /// After one step of a long write that still took longer than <see cref="LongStep"/> (one
+        /// step can not be made smaller, e.g. a single person Emby takes long to look up): while
+        /// someone is watching, pauses <see cref="LongStepFactor"/> × that step, within
+        /// <see cref="MinPause"/>..<see cref="MaxPause"/>, so the database is free most of the
+        /// time around it. Starts a new slice. Otherwise like <see cref="Step"/>.
+        /// </summary>
+        internal static void AfterStep(TimeSpan took, CancellationToken cancellationToken)
+        {
+            if (took <= LongStep) { Step(cancellationToken); return; }
+            lock (Sync) { _pending = 0; _sliceWork = TimeSpan.Zero; }
+            int streams = ActiveStreams();
+            if (streams == 0) return;
+            var pause = TimeSpan.FromTicks(Math.Min(MaxPause.Ticks, Math.Max(MinPause.Ticks, LongStepFactor * took.Ticks)));
+            Paused(pause, streams);
+            if (cancellationToken.WaitHandle.WaitOne(pause)) cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        internal static readonly TimeSpan LongStep = TimeSpan.FromMilliseconds(300);
+        internal const int LongStepFactor = 3;
+
+        private static void Paused(TimeSpan pause, int streams)
+        {
+            lock (Sync)
+            {
+                _pauses++;
+                _paused += pause;
+                if (pause > _longestPause) _longestPause = pause;
+                if (streams > _maxStreams) _maxStreams = streams;
+            }
         }
 
         internal static async Task WroteAsync(CancellationToken cancellationToken, int count = 1)
@@ -219,13 +255,7 @@ namespace HomeScreenCompanion
             int streams = ActiveStreams();
             if (streams == 0) return TimeSpan.Zero;
             var pause = TimeSpan.FromTicks(Math.Min(MaxPause.Ticks, Math.Max(MinPause.Ticks, 2 * work.Ticks)));
-            lock (Sync)
-            {
-                _pauses++;
-                _paused += pause;
-                if (pause > _longestPause) _longestPause = pause;
-                if (streams > _maxStreams) _maxStreams = streams;
-            }
+            Paused(pause, streams);
             return pause;
         }
     }
