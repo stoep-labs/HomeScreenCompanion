@@ -329,6 +329,7 @@ namespace HomeScreenCompanion
                 _log = new RunLog(ExecutionLog, null, "", config?.ExtendedConsoleOutput ?? false, Progress, "Top-lists");
                 _log.Rule();
                 _log.Info($"Top-list section sync  ·  {startTime:yyyy-MM-dd HH:mm}");
+                GentleMode.Announce(_log);
                 _log.Rule();
             }
             else
@@ -481,6 +482,7 @@ namespace HomeScreenCompanion
                             var updated = HomeScreenCompanionTask.BuildContentSection(
                                 jsonSerializer, settingsDict, tl.HomeSectionLibraryId, owned);
                             typeof(ContentSection).GetProperty("Id")?.SetValue(updated, owned.Id);
+                            GentleMode.Wrote(cancellationToken);
                             userManager.UpdateHomeSection(uid, updated, cancellationToken);
                             rowId = owned.Id;
                             bool moved = posMove && HomeScreenCompanionTask.MoveToPosition(userManager, uid, rowId, posNow, cancellationToken,
@@ -493,6 +495,7 @@ namespace HomeScreenCompanion
                         else
                         {
                             var beforeIds = new HashSet<string>(sections.Where(s => !string.IsNullOrEmpty(s.Id)).Select(s => s.Id));
+                            GentleMode.Wrote(cancellationToken);
                             userManager.AddHomeSection(uid, HomeScreenCompanionTask.BuildContentSection(
                                 jsonSerializer, settingsDict, tl.HomeSectionLibraryId), cancellationToken);
                             var after = userManager.GetHomeSections(uid, cancellationToken)?.Sections ?? Array.Empty<ContentSection>();
@@ -561,6 +564,7 @@ namespace HomeScreenCompanion
 
             Plugin.Instance?.SaveConfiguration();
             if (userStatus.SummaryLine() is string disabledLine) _log.Skip(disabledLine);
+            if (standalone && GentleMode.SummaryLine() is string gentleLine) _log.Info("    " + gentleLine);
             var summary = $"Updated {totalUpdated} section(s){(totalAdded > 0 ? $", added {totalAdded}" : "")} across {topLists.Count} top-list(s).";
             _log.Info($"    {RunLog.Plural(totalUpdated, "section")} updated{(totalAdded > 0 ? $", {totalAdded} added" : "")} across {RunLog.Plural(topLists.Count, "top-list")}{(totalErrors > 0 ? $", {RunLog.Plural(totalErrors, "error")}" : "")}  ·  {RunLog.Elapsed(DateTime.Now - startTime)}");
             return (totalUpdated, summary);
@@ -657,6 +661,7 @@ namespace HomeScreenCompanion
                         if (rotating) rowSettings["_queryTagId"] = (owned.Query?.TagIds ?? Array.Empty<string>()).FirstOrDefault() ?? "";
                         var updatedSec = HomeScreenCompanionTask.BuildContentSection(jsonSerializer, rowSettings, string.Empty, owned);
                         typeof(ContentSection).GetProperty("Id")?.SetValue(updatedSec, owned.Id);
+                        GentleMode.Wrote(cancellationToken);
                         userManager.UpdateHomeSection(uid, updatedSec, cancellationToken);
                         totalUpdated++;
                     }
@@ -704,6 +709,7 @@ namespace HomeScreenCompanion
                         if (owned == null) continue;
                         var updatedSec = HomeScreenCompanionTask.BuildContentSection(jsonSerializer, otherRowSettings, otherTl.HomeSectionLibraryId, owned);
                         typeof(ContentSection).GetProperty("Id")?.SetValue(updatedSec, owned.Id);
+                        GentleMode.Wrote(cancellationToken);
                         userManager.UpdateHomeSection(uid, updatedSec, cancellationToken);
                         totalUpdated++;
                     }

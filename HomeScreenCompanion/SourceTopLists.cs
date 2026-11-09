@@ -617,7 +617,7 @@ namespace HomeScreenCompanion
                             Recursive = true,
                             MetadataRefreshMode = MetadataRefreshMode.Default,
                             ImageRefreshMode = MetadataRefreshMode.Default
-                        }, RefreshPriority.High);
+                        }, RefreshPriority.Normal);
                     }
                     catch (Exception ex) { log.Warn($"Top-list library '{lib.Name}' could not be scanned: {ex.Message}"); }
                 }

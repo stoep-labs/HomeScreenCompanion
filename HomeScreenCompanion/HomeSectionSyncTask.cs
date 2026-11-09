@@ -110,6 +110,7 @@ namespace HomeScreenCompanion
                 var startTime = DateTime.Now;
                 _log.Rule();
                 _log.Info($"Home Screen Sync  ·  {startTime:yyyy-MM-dd HH:mm}");
+                GentleMode.Announce(_log);
                 _log.Rule();
 
                 if (!config.HomeSyncEnabled)
@@ -168,6 +169,7 @@ namespace HomeScreenCompanion
                 _log.Info("Summary");
                 _log.Info($"  Sections:      {totals.Copied} copied to {RunLog.Plural(usersDone, "user")}{(sourceCount > 1 ? $" from {RunLog.Plural(sourceCount, "source user")}" : "")}{(totals.Failed > 0 ? $", {RunLog.Plural(totals.Failed, "user")} failed" : "")}");
                 if (userStatus.SummaryLine() is string disabledLine) _log.Info("  " + disabledLine);
+                if (GentleMode.SummaryLine() is string gentleLine) _log.Info("  " + gentleLine);
                 _log.Info($"  Done in {RunLog.Elapsed(DateTime.Now - startTime)}  ·  {(totals.Failed > 0 ? "✖ Completed with " + RunLog.Plural(totals.Failed, "error") : "✔ Completed")}");
                 _log.Rule();
                 progress.Report(100);
@@ -332,6 +334,7 @@ namespace HomeScreenCompanion
                         var row = before.FirstOrDefault(s => managed.TopListRow(s) == tl);
                         if (row == null)
                         {
+                            GentleMode.Wrote(cancellationToken);
                             _userManager.AddHomeSection(targetInternalId, managed.NewTopListRow(tl, _jsonSerializer, _libraryManager), cancellationToken);
                             row = (_userManager.GetHomeSections(targetInternalId, cancellationToken)?.Sections ?? Array.Empty<ContentSection>())
                                 .FirstOrDefault(s => !string.IsNullOrEmpty(s.Id) && !before.Any(b => b.Id == s.Id));
@@ -440,6 +443,7 @@ namespace HomeScreenCompanion
                 _log.Debug($"  {targetName}: + [{section.SectionType}] \"{copy.CustomName ?? copy.Name}\"");
                 var rotating = managed.RotatingRowOf(section, sourceKey);
                 var beforeAdd = rotating != null ? _userManager.GetHomeSections(targetInternalId, cancellationToken)?.Sections ?? Array.Empty<ContentSection>() : null;
+                GentleMode.Wrote(cancellationToken);
                 _userManager.AddHomeSection(targetInternalId, copy, cancellationToken);
                 if (rotating != null && TrackRotatingRow(rotating, beforeAdd!, copy, targetIdStr, targetInternalId, cancellationToken)) totals.ConfigChanged = true;
                 totals.Copied++;
@@ -456,6 +460,7 @@ namespace HomeScreenCompanion
                     : null;
                 if (row == null)
                 {
+                    GentleMode.Wrote(cancellationToken);
                     _userManager.AddHomeSection(targetInternalId, CopySection(k.Row), cancellationToken);
                     row = (_userManager.GetHomeSections(targetInternalId, cancellationToken)?.Sections ?? Array.Empty<ContentSection>())
                         .FirstOrDefault(s => !string.IsNullOrEmpty(s.Id) && !before.Any(b => b.Id == s.Id));
@@ -521,6 +526,7 @@ namespace HomeScreenCompanion
                 if (match != null)
                 {
                     typeof(ContentSection).GetProperty("Id")?.SetValue(copy, match.Id);
+                    GentleMode.Wrote(cancellationToken);
                     _userManager.UpdateHomeSection(targetInternalId, copy, cancellationToken);
                     done.Add(match.Id ?? "");
                     if (rotating != null) { RotatingRow.Track(rotating, managed.SourceUserId(rotating, targetKey) ?? targetIdStr, match.Id ?? "", copy); totals.ConfigChanged = true; }
@@ -528,6 +534,7 @@ namespace HomeScreenCompanion
                 }
                 else
                 {
+                    GentleMode.Wrote(cancellationToken);
                     _userManager.AddHomeSection(targetInternalId, copy, cancellationToken);
                     var added = (_userManager.GetHomeSections(targetInternalId, cancellationToken)?.Sections ?? Array.Empty<ContentSection>())
                         .FirstOrDefault(s => !string.IsNullOrEmpty(s.Id) && !current.Any(b => b.Id == s.Id));
