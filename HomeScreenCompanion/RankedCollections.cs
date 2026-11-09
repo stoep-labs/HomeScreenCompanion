@@ -474,16 +474,7 @@ namespace HomeScreenCompanion
                 changed = true;
             }
             // The film's own poster / backdrop / logo, so the collection looks the same as before.
-            var types = new[] { ImageType.Primary, ImageType.Backdrop, ImageType.Logo, ImageType.Thumb };
-            var filmImages = (film.ImageInfos ?? Array.Empty<ItemImageInfo>()).Where(i => types.Contains(i.Type)).ToList();
-            var copyImages = (copy.ImageInfos ?? Array.Empty<ItemImageInfo>()).ToList();
-            if (filmImages.Count > 0 && !filmImages.All(f => copyImages.Any(c => c.Type == f.Type && string.Equals(c.Path, f.Path, StringComparison.OrdinalIgnoreCase))))
-            {
-                copyImages.RemoveAll(c => types.Contains(c.Type));
-                copyImages.AddRange(filmImages.Select(f => new ItemImageInfo { Path = f.Path, Type = f.Type, DateModified = f.DateModified, Width = f.Width, Height = f.Height }));
-                copy.ImageInfos = copyImages.ToArray();
-                changed = true;
-            }
+            if (MatchFilmImages(copy, film)) changed = true;
             // The details page shows the film's own text and media info: the ranked library
             // fetches nothing online and Emby never probes a .strm during a scan (a copy without a
             // runtime is marked played when stopped instead of getting a resume point).
@@ -609,6 +600,27 @@ namespace HomeScreenCompanion
                 log.Info($"    Ranked library '{libName}': no longer fetches metadata and images online (the copies take them from their films)");
             }
             catch (Exception ex) { log.Warn($"Ranked library '{libName}': its metadata settings could not be updated: {ex.Message}"); }
+        }
+
+        private static readonly ImageType[] CopyImageTypes = { ImageType.Primary, ImageType.Backdrop, ImageType.Logo, ImageType.Thumb };
+
+        // Points the copy's poster / backdrop / logo / thumb at the film's own image files, so the
+        // collection looks the same as before (and the copy gets the film's real-poster badge).
+        // Covers a copy with no images at all and one whose image paths differ from the film's.
+        // Only changes copy.ImageInfos (the caller saves); true when they differed.
+        internal static bool MatchFilmImages(BaseItem copy, BaseItem film)
+        {
+            var filmImages = (film.ImageInfos ?? Array.Empty<ItemImageInfo>()).Where(i => CopyImageTypes.Contains(i.Type)).ToList();
+            if (filmImages.Count == 0) return false;
+            var copyImages = (copy.ImageInfos ?? Array.Empty<ItemImageInfo>()).ToList();
+            var copyOwn = copyImages.Where(c => CopyImageTypes.Contains(c.Type)).ToList();
+            if (copyOwn.Count == filmImages.Count
+                && filmImages.All(f => copyOwn.Any(c => c.Type == f.Type && string.Equals(c.Path, f.Path, StringComparison.OrdinalIgnoreCase))))
+                return false;
+            copyImages.RemoveAll(c => CopyImageTypes.Contains(c.Type));
+            copyImages.AddRange(filmImages.Select(f => new ItemImageInfo { Path = f.Path, Type = f.Type, DateModified = f.DateModified, Width = f.Width, Height = f.Height }));
+            copy.ImageInfos = copyImages.ToArray();
+            return true;
         }
 
         private static bool WriteIfChanged(string path, string content)
