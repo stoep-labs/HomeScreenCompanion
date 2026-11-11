@@ -739,6 +739,8 @@ namespace HomeScreenCompanion
                                 CountsTowardLimit(imdbLookup, blacklist, passesFilters));
                             fetchTimer.Stop();
                             fetchError = fetcher.LastError;
+                            // Entries of a JSON list left out (see ListFetcher.LastNote): a warning, not a failure.
+                            if (fetcher.LastNote != null) gs.Warnings.Add($"{tagConfig.Url!.Trim()}: {fetcher.LastNote}");
                             // Empty with "Preserve…" on: the URL's last good entries stand in for it (see LastGoodLists).
                             if (items.Count > 0) { if (!dryRun) LastGoodLists.Save(tagConfig.Url!, items, _jsonSerializer); }
                             else if (config.PreserveTagsOnEmptyResult && LastGoodLists.Load(tagConfig.Url!, _jsonSerializer) is var _lastGood && _lastGood != null)
@@ -1592,6 +1594,10 @@ namespace HomeScreenCompanion
                                     foreach (var id in toRemove) _log.Debug($"    - {CollLabel(id)}");
                                 }
                             }
+                            // A dry run does not work out a ranked collection's copies (RankedCollections.SyncAsync
+                            // writes them), so its films compared with its copies would say every title changes.
+                            else if (dryRun && rankedSources.ContainsKey(cName))
+                                _log.Debug($"  {cName}  →  ranked collection: its copies are not worked out in a dry run");
                             else if (toAdd.Count > 0 || toRemove.Count > 0)
                             {
                                 collWouldUpdate++;
@@ -1929,6 +1935,9 @@ namespace HomeScreenCompanion
             _log.Info($"Home Screen Companion v{Plugin.Instance?.Version}  ·  {startTime:yyyy-MM-dd HH:mm}  ·  Single top-list: {tagName}");
             _log.Rule();
             if (config == null) { LastRunStatus = "Failed: no config"; _log.Error("Plugin configuration could not be loaded"); return (false, "Config not found"); }
+            // Run on one top-list is a run like Run Group: a simulation in a dry run.
+            bool dryRun = config.DryRunMode;
+            if (dryRun) _log.Warn(DryRun.Header);
 
             var tl = (config.TopLists ?? new List<TopListHomeSection>())
                 .FirstOrDefault(t => string.Equals(t.TagName, tagName, StringComparison.OrdinalIgnoreCase));
@@ -1950,10 +1959,17 @@ namespace HomeScreenCompanion
             {
                 // Same rebuild as the full sync, limited to this list. A show list is rebuilt from
                 // its tag or, when picked by hand, from the shows saved in its folder.
-                SyncTopListFolders(config, false, tl.TagName, cancellationToken);
+                SyncTopListFolders(config, dryRun, tl.TagName, cancellationToken);
                 var tlFolder = Path.Combine(Plugin.Instance!.DataFolderPath, "toplists", SanitizeTopListFolderName(tl.TagName));
-                listSummary = isShow ? $"{RunLog.Plural(ShowTopList.ReadManifest(tlFolder, _jsonSerializer).Count, "show")} synced to its library folder"
-                    : $"{RunLog.Plural(Directory.Exists(tlFolder) ? Directory.GetFiles(tlFolder, "*.strm").Length : 0, "movie")} synced to its library folder";
+                var inFolder = isShow ? RunLog.Plural(ShowTopList.ReadManifest(tlFolder, _jsonSerializer).Count, "show")
+                    : RunLog.Plural(Directory.Exists(tlFolder) ? Directory.GetFiles(tlFolder, "*.strm").Length : 0, "movie");
+                // A dry run left the folder as it was: say what is in it, not that it was synced.
+                listSummary = dryRun ? $"dry run — {inFolder} in its library folder, not changed" : $"{inFolder} synced to its library folder";
+            }
+            else if (dryRun)
+            {
+                _log.Skip($"Dry run — top-list '{tl.TagName}': its folder would be rebuilt from its saved movies");
+                listSummary = "dry run";
             }
             else
             {
@@ -1968,14 +1984,15 @@ namespace HomeScreenCompanion
             {
                 _log.Blank();
                 _log.Info("» Home sections");
-                TopListSyncTask.SyncAll(_libraryManager, _userViewManager, _userManager, _jsonSerializer, _logger, cancellationToken, _log, tl.TagName);
+                TopListSyncTask.SyncAll(_libraryManager, _userViewManager, _userManager, _jsonSerializer, _logger, cancellationToken, _log, tl.TagName, dryRun);
 
                 _log.Blank();
                 _log.Info("» Collection mirror");
                 var folder = Path.Combine(Plugin.Instance!.DataFolderPath, "toplists", SanitizeTopListFolderName(tl.TagName));
-                var changes = TopListCollectionMirror.SyncFolder(folder, cancellationToken).GetAwaiter().GetResult();
+                var changes = TopListCollectionMirror.SyncFolder(folder, cancellationToken, dryRun).GetAwaiter().GetResult();
                 if (TopListCollectionMirror.Enabled || changes > 0)
-                    _log.Ok($"Top-list '{tl.TagName}': {RunLog.Plural(changes, "collection membership")} changed");
+                    _log.Ok(dryRun ? $"Dry run: top-list '{tl.TagName}': {RunLog.Plural(changes, "collection membership")} would change"
+                                   : $"Top-list '{tl.TagName}': {RunLog.Plural(changes, "collection membership")} changed");
                 else
                     _log.Skip($"Top-list '{tl.TagName}': collection mirror is off — nothing to do");
             }
@@ -2073,8 +2090,8 @@ namespace HomeScreenCompanion
                 if (dryRun) _log.Skip("Dry run: the rotating row is not changed");
                 else ManageHomeSections(config, cancellationToken, debug, null, tagConfig.Tag.Trim());
                 _log.Rule();
-                LastRunStatus = $"Completed ({DateTime.Now:HH:mm})";
-                return (true, "Rotating row synced");
+                LastRunStatus = dryRun ? $"Dry run — completed ({DateTime.Now:HH:mm})" : $"Completed ({DateTime.Now:HH:mm})";
+                return (true, dryRun ? "Dry run — the rotating row is not changed" : "Rotating row synced");
             }
             if (_preview == null && tagConfig.SourceType == "AI" && tagConfig.AiRefreshIntervalDays > 0 &&
                 tagConfig.Active && IsScheduleActive(tagConfig.ActiveIntervals) &&
@@ -2432,6 +2449,8 @@ namespace HomeScreenCompanion
                         var items = await fetcher.FetchItems(src.Url, srcLimit, config.TraktClientId, config.MdblistApiKey, config.TmdbApiKey, cancellationToken,
                             CountsTowardLimit(imdbLookup, blacklist, passesFilters));
                         fetchTimer.Stop();
+                        // Entries of a JSON list left out (see ListFetcher.LastNote): a warning, not a failure.
+                        if (fetcher.LastNote != null) gs.Warnings.Add($"{src.Url.Trim()}: {fetcher.LastNote}");
                         // Empty with "Preserve…" on: the URL's last good entries stand in for it (see LastGoodLists).
                         if (items.Count > 0) { if (_preview == null && !dryRun) LastGoodLists.Save(src.Url, items, _jsonSerializer); }
                         else if (_preview == null && config.PreserveTagsOnEmptyResult && LastGoodLists.Load(src.Url, _jsonSerializer) is var _lastGood && _lastGood != null)
@@ -5741,7 +5760,8 @@ namespace HomeScreenCompanion
             IUserManager userManager,
             PluginConfiguration config,
             IEnumerable<string> libraryIdsToExclude,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool dryRun = false)   // counts the rows that would change, without changing them
         {
             var allTrackedIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var tag in config.Tags ?? new List<TagConfig>())
@@ -5808,6 +5828,7 @@ namespace HomeScreenCompanion
                             .Where(id => !existingExcluded.Contains(id, StringComparer.OrdinalIgnoreCase))
                             .ToList();
                         if (missing.Count == 0) continue;
+                        if (dryRun) { updated++; continue; }
 
                         existingExcluded.AddRange(missing);
                         var newExcluded = existingExcluded.ToArray();

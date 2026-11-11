@@ -53,7 +53,7 @@ namespace HomeScreenCompanion
         internal static int ActiveStreams()
         {
             var sessions = _sessions;
-            if (sessions == null) return 0;
+            if (sessions == null || !Enabled) return 0;
             try
             {
                 return sessions.Sessions.Count(s => s != null && s.NowPlayingItem != null);
@@ -63,9 +63,16 @@ namespace HomeScreenCompanion
 
         internal static bool Streaming => ActiveStreams() > 0;
 
+        // The setting (GentleModeEnabled, on by default). Off: nobody counts as watching, so every
+        // run goes at full speed. A run uses the value from when it started (Begin, under RunGate);
+        // the background parts outside a run read the current setting.
+        private static volatile bool _runEnabled;
+        internal static bool Enabled => RunGate.Busy ? _runEnabled : Plugin.Instance?.Configuration?.GentleModeEnabled == true;
+
         /// <summary>A run starts (RunGate): counters back to zero.</summary>
         internal static void Begin()
         {
+            _runEnabled = Plugin.Instance?.Configuration?.GentleModeEnabled == true;
             lock (Sync)
             {
                 _pending = 0; _pauses = 0; _paused = TimeSpan.Zero; _sliceWork = TimeSpan.Zero; _longestPause = TimeSpan.Zero;

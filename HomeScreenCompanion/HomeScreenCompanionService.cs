@@ -110,6 +110,7 @@ namespace HomeScreenCompanion
         public int Count { get; set; }
         public int InLibraryCount { get; set; }
         public List<SourceTestItem> Items { get; set; } = new List<SourceTestItem>();
+        public string Note { get; set; } = "";   // a warning about the list (ListFetcher.LastNote), "" = none
     }
 
     public class SourceTestItem
@@ -772,6 +773,8 @@ namespace HomeScreenCompanion
         public bool DryRunMode { get; set; }
         public bool PreserveTagsOnEmptyResult { get; set; } = true;
         public bool IgnoreMarkedAsWatched { get; set; }
+        // Null in backups made before Gentle mode: the current setting is kept.
+        public bool? GentleModeEnabled { get; set; }
         public bool TopListMirrorCollections { get; set; }
         public bool ShowCopyPasteButtons { get; set; }
         public bool ShowImportCollectionButton { get; set; }
@@ -1304,7 +1307,9 @@ public class HomeScreenCompanionService : IService
                     Count = items.Count,
                     InLibraryCount = inLibrary,
                     Items = results,
-                    Message = $"Successfully found {items.Count} items ({inLibrary} in library)."
+                    Message = $"Successfully found {items.Count} items ({inLibrary} in library).",
+                    // A JSON list's left-out entries (ListFetcher.LastNote), shown in the test popup.
+                    Note = fetcher.LastNote ?? ""
                 };
             }
             catch (Exception ex)
@@ -4036,6 +4041,7 @@ public class HomeScreenCompanionService : IService
                     DryRunMode                = config.DryRunMode,
                     PreserveTagsOnEmptyResult = config.PreserveTagsOnEmptyResult,
                     IgnoreMarkedAsWatched     = config.IgnoreMarkedAsWatched,
+                    GentleModeEnabled         = config.GentleModeEnabled,
                     TopListMirrorCollections  = config.TopListMirrorCollections,
                     ShowCopyPasteButtons      = config.ShowCopyPasteButtons,
                     ShowImportCollectionButton = config.ShowImportCollectionButton,
@@ -4193,6 +4199,7 @@ public class HomeScreenCompanionService : IService
                     config.DryRunMode                = s.DryRunMode;
                     config.PreserveTagsOnEmptyResult = s.PreserveTagsOnEmptyResult;
                     config.IgnoreMarkedAsWatched     = s.IgnoreMarkedAsWatched;
+                    if (s.GentleModeEnabled != null) config.GentleModeEnabled = s.GentleModeEnabled.Value;
                     mirrorChanged = config.TopListMirrorCollections != s.TopListMirrorCollections;
                     config.TopListMirrorCollections  = s.TopListMirrorCollections;
                     config.ShowCopyPasteButtons      = s.ShowCopyPasteButtons;

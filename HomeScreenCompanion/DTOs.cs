@@ -258,6 +258,19 @@ namespace HomeScreenCompanion
         public string? imdb_id { get; set; }
     }
 
+    // A TMDb movie (title, release_date) or show (name, first_air_date) with its external ids
+    // (append_to_response=external_ids): tells which one a JSON-list entry without a type means.
+    public class TmdbTitleWithIds
+    {
+        public string? title { get; set; }
+        public string? original_title { get; set; }
+        public string? release_date { get; set; }
+        public string? name { get; set; }
+        public string? original_name { get; set; }
+        public string? first_air_date { get; set; }
+        public TmdbExternalIds? external_ids { get; set; }
+    }
+
     // One entry of a plain JSON list (any other http(s) URL): the usual field names, all read as
     // text so a number or a string both work.
     public class JsonListItem
