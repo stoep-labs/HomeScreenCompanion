@@ -483,7 +483,7 @@ namespace HomeScreenCompanion
     [Route("/HomeScreenCompanion/Collections/Owner", "GET")]
     [Authenticated(Roles = "Admin")]
     public class GetCollectionOwnerRequest : IReturn<GetCollectionOwnerResponse> { public string Name { get; set; } = ""; }
-    public class GetCollectionOwnerResponse { public bool Exists { get; set; } public bool NotMadeByHsc { get; set; } }
+    public class GetCollectionOwnerResponse { public bool Exists { get; set; } public bool NotMadeByHsc { get; set; } public bool MadeByHsc { get; set; } }
 
     [Route("/HomeScreenCompanion/Manage/DeleteTag", "POST")]
     [Authenticated(Roles = "Admin")]
@@ -2584,10 +2584,12 @@ public class HomeScreenCompanionService : IService
             var name = (request.Name ?? "").Trim();
             var coll = name.Length == 0 ? null : _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "BoxSet" }, Name = name, Recursive = true })
                 .FirstOrDefault(c => !TagAnchor.IsAnchor(c, _jsonSerializer));
+            bool created = coll != null && CollectionOwnership.IsCreated(coll, _libraryManager);
             return new GetCollectionOwnerResponse
             {
                 Exists = coll != null,
-                NotMadeByHsc = coll != null && !CollectionOwnership.IsCreated(coll, _libraryManager)
+                MadeByHsc = created,
+                NotMadeByHsc = coll != null && !created
                     && !HomeScreenCompanionTask.RecordImportedCollections(Plugin.Instance?.Configuration).Contains(name)
             };
         }
