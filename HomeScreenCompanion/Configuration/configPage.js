@@ -3238,7 +3238,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
     function pinPickHtml(t, type) {
         var every = randomPickEvery(t.RandomPickEvery);
         return '<div class="source-pinned-container" data-pinned-ids="' + encodeURIComponent(JSON.stringify(t.PinnedItemIds || [])) + '"' +
-                ' style="display:' + (randomPickApplies(type) ? 'block' : 'none') + '; padding-top:14px; margin-bottom:14px; border-top:1px solid var(--hsc-hairline);">' +
+                ' style="display:' + (randomPickApplies(type) ? 'block' : 'none') + '; margin-top:14px; padding-top:14px; margin-bottom:14px; border-top:1px solid var(--hsc-hairline);">' +
             '<p style="margin:0 0 10px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Pinned titles</p>' +
             '<div style="position:relative; margin-bottom:10px;">' +
                 '<input is="emby-input" type="text" class="txtManualSearch" autocomplete="off" label="Add a movie or show" placeholder="Type to search…" />' +
