@@ -214,14 +214,18 @@ namespace HomeScreenCompanion
         public List<string> MediaInfoConditions { get; set; } = new List<string>();
         public List<MediaInfoFilter> MediaInfoFilters { get; set; } = new List<MediaInfoFilter>();
 
-        // "Pinned" (Manual sources): its titles always have the tag, and a Random pick source with
-        // the same tag and RandomPickCountPinned counts them in its Max (see RandomPick).
-        public bool Pinned { get; set; } = false;
-        // "Random pick": each Max is filled with titles picked at random from everything the source
-        // matches, the same pick all day / week (RandomPickEvery "Day" or "Week"). With
-        // RandomPickCountPinned the pinned titles of the same tag are part of the Max.
+        // "Pinned titles": movies and shows (Emby item ids) that always get this source's tag,
+        // collection and playlist, first, and take places in its Max (see RandomPick).
+        public List<string> PinnedItemIds { get; set; } = new List<string>();
+        // "Random pick": the source's Max (less its pinned titles) is filled with titles picked at
+        // random from everything it finds, the same pick for each period (RandomPickEvery
+        // "15Minutes", "Hour", "Day" or "Week").
         public bool RandomPick { get; set; } = false;
         public string RandomPickEvery { get; set; } = "Day";
+        // 4.8.0.966: a Manual source marked "Pinned" gives its titles as pinned titles to the Random
+        // pick source with the same tag. Still read; no longer offered for new sources.
+        public bool Pinned { get; set; } = false;
+        // 4.8.0.966 only, no longer used: pinned titles always count toward Max.
         public bool RandomPickCountPinned { get; set; } = true;
 
         // AI source settings

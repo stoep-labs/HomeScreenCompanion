@@ -86,7 +86,7 @@ namespace HomeScreenCompanion
             public bool? IsUnplayed { get; set; }
         }
 
-        private class GroupRunStats
+        internal class GroupRunStats
         {
             public string? DisplayName;
             public string? GroupName;   // the group's Name (with TagName: its key in GroupIssues)
@@ -183,6 +183,7 @@ namespace HomeScreenCompanion
                 if (config == null) return;
                 _writtenTags = BuildWrittenTags(config);
                 _deletedGroupRowsRemoved = 0;
+                lock (_appliedPicks) _appliedPicks.Clear();
                 _userStatus = UserStatus.Read(_userManager);
 
                 // The detail lines are always made: the plugin's log file gets them all, the page
@@ -945,9 +946,9 @@ namespace HomeScreenCompanion
                                 }
                             }
                             OrderByPopularity(tagConfig, matchedLocalItems, effectiveLimit);
-                            if (RandomPick.On(tagConfig))
+                            if (RandomPick.Shapes(tagConfig))
                             {
-                                var _rp = ApplyRandomPick(config, tagConfig, matchedLocalItems);
+                                var _rp = ApplyRandomPick(config, tagConfig, matchedLocalItems, !dryRun, TagConfigTargetsEpisodes(tagConfig));
                                 matchedLocalItems.Clear();
                                 matchedLocalItems.AddRange(_rp.Items);
                                 randomCounted = _rp.Counted;
@@ -1103,9 +1104,11 @@ namespace HomeScreenCompanion
                                 aiConfigChanged = true;
                             }
                         }
-                        if (tagConfig.SourceType != "MediaInfo" && RandomPick.On(tagConfig))
+                        // Pinned titles and Max (MediaInfo above): after the blacklist and filters, so
+                        // pinned titles are never dropped by them.
+                        if (tagConfig.SourceType != "MediaInfo" && RandomPick.Shapes(tagConfig))
                         {
-                            var _rp = ApplyRandomPick(config, tagConfig, matchedLocalItems);
+                            var _rp = ApplyRandomPick(config, tagConfig, matchedLocalItems, !dryRun);
                             matchedLocalItems.Clear();
                             matchedLocalItems.AddRange(_rp.Items);
                             randomCounted = _rp.Counted;
@@ -1899,6 +1902,7 @@ namespace HomeScreenCompanion
                 foreach (var _gentleLine in GentleMode.SummaryLines()) _log.Info("  " + _gentleLine);
                 _log.Info($"  Done in {elapsedStr}  ·  {StatusSymbol(groupsFailed, groupsWarned)} {finalStatus}");
                 _log.Rule();
+                SaveAppliedPicks();
             }
             catch (Exception ex)
             {
@@ -1916,6 +1920,43 @@ namespace HomeScreenCompanion
                 return await RunSingleEntryGatedAsync(entryName, cancellationToken).ConfigureAwait(false);
         }
 
+        // The stats of the last single-group run (its footer), read by the Random pick task.
+        internal GroupRunStats? LastSingleRun { get; private set; }
+
+        // Set while the Random pick task runs a source (RunRandomPickAsync).
+        private bool _pickOnly;
+
+        /// <summary>
+        /// Random pick task: Run Group for one source, limited to its tags and its collection
+        /// (no playlists, home rows, top-lists or tag art), through the same paced code. The page's
+        /// log and last-run status are left as they are. Null when the run did not get as far.
+        /// </summary>
+        internal async Task<GroupRunStats?> RunRandomPickAsync(string entryName, CancellationToken cancellationToken)
+        {
+            using (await RunGate.EnterAsync($"Random pick '{entryName}'", _logger, cancellationToken).ConfigureAwait(false))
+            {
+                IsRunning = true;
+                _pickOnly = true;
+                var savedLog = _log;
+                var savedStatus = LastRunStatus;
+                LastSingleRun = null;
+                try
+                {
+                    lock (_appliedPicks) _appliedPicks.Clear();
+                    var (ok, _) = await RunSingleEntryInternalAsync(entryName, cancellationToken).ConfigureAwait(false);
+                    if (ok && !(Plugin.Instance?.Configuration?.DryRunMode ?? true)) SaveAppliedPicks();
+                    return LastSingleRun;
+                }
+                finally
+                {
+                    _pickOnly = false;
+                    _log = savedLog;
+                    LastRunStatus = savedStatus;
+                    IsRunning = false;
+                }
+            }
+        }
+
         private async Task<(bool Success, string Message)> RunSingleEntryGatedAsync(string entryName, CancellationToken cancellationToken)
         {
             IsRunning = true;
@@ -1924,7 +1965,10 @@ namespace HomeScreenCompanion
             LastRunStatus = "Running...";
             try
             {
-            return await RunSingleEntryInternalAsync(entryName, cancellationToken);
+            lock (_appliedPicks) _appliedPicks.Clear();
+            var result = await RunSingleEntryInternalAsync(entryName, cancellationToken);
+            if (result.Success && !(Plugin.Instance?.Configuration?.DryRunMode ?? true)) SaveAppliedPicks();
+            return result;
             }
             finally
             {
@@ -2130,7 +2174,9 @@ namespace HomeScreenCompanion
             bool dryRun = config.DryRunMode || _preview != null;
             bool logMissing = config.LogMissingItems;
             var startTime = DateTime.Now;
-            _log = _preview != null ? new RunLog(new List<string>(), null, "", false) : new RunLog(ExecutionLog, _logger, "", config.ExtendedConsoleOutput, Progress);
+            // A preview has no log; the Random pick task keeps the page's log and status as they are
+            // (it logs one line per source itself).
+            _log = _preview != null || _pickOnly ? new RunLog(new List<string>(), null, "", false) : new RunLog(ExecutionLog, _logger, "", config.ExtendedConsoleOutput, Progress);
             if (_preview == null && RotatingRow.Is(tagConfig))
             {
                 _log.Rule();
@@ -2663,9 +2709,9 @@ namespace HomeScreenCompanion
                         }
                     }
                     OrderByPopularity(tagConfig, matchedLocalItems, effectiveLimit);
-                    if (RandomPick.On(tagConfig))
+                    if (RandomPick.Shapes(tagConfig))
                     {
-                        var _rp = ApplyRandomPick(config, tagConfig, matchedLocalItems);
+                        var _rp = ApplyRandomPick(config, tagConfig, matchedLocalItems, !dryRun, TagConfigTargetsEpisodes(tagConfig));
                         matchedLocalItems.Clear();
                         matchedLocalItems.AddRange(_rp.Items);
                         _randomCounted = _rp.Counted;
@@ -2865,24 +2911,22 @@ namespace HomeScreenCompanion
                 _log.Debug($"  Filter conditions: {beforeCount} → {matchedLocalItems.Count} items");
             }
 
-            // Random pick (MediaInfo picked above): each URL / local source picks its own Max from
-            // its titles that passed the filters.
-            if (tagConfig.SourceType != "MediaInfo" && RandomPick.On(tagConfig))
+            // Pinned titles and Max (MediaInfo above): each URL / local source fills its own Max from
+            // its titles that passed the blacklist and filters; the pinned titles come first and
+            // are never dropped by them.
+            if (tagConfig.SourceType != "MediaInfo" && RandomPick.Shapes(tagConfig))
             {
                 var _passed = new HashSet<BaseItem>(matchedLocalItems);
                 var _picked = new List<BaseItem>();
-                int _counted = 0;
                 foreach (var (src, items) in _perSrc.Count > 0 ? _perSrc : new List<(TagConfig, List<BaseItem>)> { (tagConfig, matchedLocalItems.ToList()) })
                 {
-                    if (!RandomPick.On(src)) { _picked.AddRange(items.Where(_passed.Contains)); continue; }
-                    var _rp = ApplyRandomPick(config, src, items.Where(_passed.Contains).ToList());
+                    var _rp = ApplyRandomPick(config, src, items.Where(_passed.Contains).ToList(), !dryRun);
                     foreach (var i in _rp.Items) if (!_picked.Contains(i)) _picked.Add(i);
                     _srcTitles[src] = _rp.Counted;
-                    _counted += _rp.Counted;
                 }
                 matchedLocalItems.Clear();
                 matchedLocalItems.AddRange(_picked);
-                _randomCounted = _counted;
+                _randomCounted = _picked.Count;
             }
 
             // Preview of a list source: the matches in list order plus what is not in the library.
@@ -3148,7 +3192,7 @@ namespace HomeScreenCompanion
             // of a renamed tag, or a deleted group's tag. The full run removes these through the
             // history too; doing it here means Run Group cleans up a rename straight away.
             // Tags of other groups (active or not) are left to the full run.
-            if (_preview == null)
+            if (_preview == null && !_pickOnly)
             {
                 var orphanTags = LoadFileHistory("homescreencompanion_history.txt")
                     .Where(t => !outTags.Contains(t, StringComparer.OrdinalIgnoreCase)
@@ -3223,7 +3267,7 @@ namespace HomeScreenCompanion
                 _log.Skip("The tag is applied to the collection itself, not to its items (see results)");
             else
                 _log.Skip("Tagging is not enabled for this group");
-            if (!dryRun && tagConfig.EnableTag && !tagConfig.OnlyCollection && !_isBoxSetHse)
+            if (!dryRun && !_pickOnly && tagConfig.EnableTag && !tagConfig.OnlyCollection && !_isBoxSetHse)
                 ApplyTagArt(tagName, tagConfig, matchedLocalItems);
 
             // Apply collection (scoped to this entry's collection only)
@@ -3355,13 +3399,14 @@ namespace HomeScreenCompanion
                 RankedCollections.RestoreDisplayOrders(config.Tags.Where(t => RankedCollections.Wants(config, t))
                     .Select(t => string.IsNullOrWhiteSpace(t.CollectionName) ? t.Tag.Trim() : t.CollectionName.Trim()), _libraryManager);
 
-            if (tagConfig.EnablePlaylist)
+            if (tagConfig.EnablePlaylist && !_pickOnly)
             {
                 _log.Blank();
                 _log.Info("» Playlists");
                 if (dryRun) _log.Skip("Dry run — playlists are not changed");
             }
-            if (IsNextWatch(tagConfig))
+            if (_pickOnly) { }   // the Random pick task changes only tags and the collection
+            else if (IsNextWatch(tagConfig))
             {
                 // Each user's own picks; nothing is written for a user whose list could not be made.
                 if (_nextWatchPerUser != null && _nextWatchPerUser.Count > 0)
@@ -3397,7 +3442,7 @@ namespace HomeScreenCompanion
                     }
                 }
 
-                Plugin.Instance!.SaveConfiguration();
+                if (!_pickOnly) Plugin.Instance!.SaveConfiguration();
             }
 
             var _boxSetFound = ApplyTagToSourceBoxSet(tagConfig, tagName, dryRun, cancellationToken);
@@ -3412,7 +3457,7 @@ namespace HomeScreenCompanion
                         _boxSetTaggedCount++;
             }
 
-            tagsRemoved += CleanupBoxSetTags(config, dryRun, cancellationToken);
+            if (!_pickOnly) tagsRemoved += CleanupBoxSetTags(config, dryRun, cancellationToken);
             gs.BoxSetFound = _boxSetFound;
             gs.BoxSetTaggedCount = _boxSetTaggedCount;
             gs.TagsAdded = tagsAdded;
@@ -3420,6 +3465,7 @@ namespace HomeScreenCompanion
             if (_isBoxSetHse && !_boxSetFound)
                 gs.Warnings.Add($"Collection '{tagConfig.LocalSourceId}' was not found in the library");
 
+            if (_pickOnly) { WriteSingleRunFooter(gs, startTime, dryRun, logMissing); return (true, ""); }
             // This group's top-list switched off: removed before its plain row comes back.
             if (!dryRun) SourceTopLists.RemoveQueued(config, _libraryManager, _userManager, _log, cancellationToken, tagName, tagConfig.Name);
             // Manage home sections for this entry
@@ -3602,7 +3648,7 @@ namespace HomeScreenCompanion
             : t.SourceType == "MediaInfo" ? "no filter rules yet"
             : t.SourceType == "LocalPlaylist" ? "no playlist picked yet" : "no collection picked yet";
 
-        private static string GroupKey(TagConfig t) => GroupIssues.Key(t.Name, t.Tag);
+        internal static string GroupKey(TagConfig t) => GroupIssues.Key(t.Name, t.Tag);
 
         /// The source's name for the live step under "Last run": "Name [tag]" only when the tag
         /// differs from the name, so a source whose tag is its name is not named twice.
@@ -6259,13 +6305,22 @@ namespace HomeScreenCompanion
         // everything the source matches afterwards (ApplyRandomPick).
         private static int FetchLimit(TagConfig t) => t.Limit <= 0 || RandomPick.On(t) ? NoLimit : t.Limit;
 
-        // The pinned titles of the source's tag: Manual sources marked Pinned (not the source's own
-        // group) that are on, in schedule and write that tag.
+        // A source's pinned titles (see RandomPick): its own PinnedItemIds, any movie or show in the
+        // library (the source's filters and blacklist do not apply to them), and for a Random pick
+        // the titles of 4.8.0.966 Manual sources marked Pinned with the same tag (on, in schedule).
         private List<BaseItem> PinnedFor(PluginConfiguration config, TagConfig tc)
         {
-            var tag = (tc.Tag ?? "").Trim();
             var pinned = new List<BaseItem>();
-            if (tag.Length == 0) return pinned;
+            if (!RandomPick.Applies(tc)) return pinned;
+            foreach (var id in tc.PinnedItemIds ?? new List<string>())
+            {
+                BaseItem? item = null;
+                if (long.TryParse(id, out var internalId)) item = _libraryManager.GetItemById(internalId);
+                else if (Guid.TryParse(id, out var guid)) item = _libraryManager.GetItemById(guid);
+                if (item != null && IsTaggableTopLevelItem(item) && !pinned.Contains(item)) pinned.Add(item);
+            }
+            var tag = (tc.Tag ?? "").Trim();
+            if (!RandomPick.On(tc) || tag.Length == 0) return pinned;
             foreach (var t in (config.Tags ?? new List<TagConfig>()).Where(t => RandomPick.IsPinnedSource(t) && t.Active && t.EnableTag && !t.OnlyCollection
                 && IsScheduleActive(t.ActiveIntervals)
                 && !string.Equals(GroupKey(t), GroupKey(tc), StringComparison.OrdinalIgnoreCase)
@@ -6278,13 +6333,39 @@ namespace HomeScreenCompanion
             return pinned;
         }
 
-        // Random pick: the source's Max picked from all it matched (see RandomPick).
-        private RandomPick.Result ApplyRandomPick(PluginConfiguration config, TagConfig tc, List<BaseItem> pool)
+        // The periods of the Random picks this run made (group key → period), saved to
+        // RandomPickState when the run ends well. Not filled by a dry run or a preview.
+        private readonly Dictionary<string, string> _appliedPicks = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        private void SaveAppliedPicks()
         {
-            var r = RandomPick.Apply(tc, pool, PinnedFor(config, tc), DateTime.Now);
-            _log.Info($"  Random pick ({r.Period}): {r.Items.Count} of {r.Pool} titles"
-                + (r.Pinned > 0 ? $" + {r.Pinned} pinned = {r.Counted} of Max {tc.Limit}" : $", Max {tc.Limit}")
-                + (r.Items.Count > 0 ? " — " + string.Join(", ", r.Items.Take(10).Select(i => i.Name)) : ""));
+            Dictionary<string, string> done;
+            lock (_appliedPicks) { done = new Dictionary<string, string>(_appliedPicks, StringComparer.OrdinalIgnoreCase); _appliedPicks.Clear(); }
+            RandomPickState.Save(done);
+        }
+
+        // Pinned titles and Max (see RandomPick) for one row of a source: its pinned titles first
+        // (added by the group's first row), then a random pick or its first titles. The pinned
+        // titles take places in the Max of the first rows with a Max. noPinned: a source that
+        // tags episodes it scanned (pinned titles are movies and shows).
+        private RandomPick.Result ApplyRandomPick(PluginConfiguration config, TagConfig tc, List<BaseItem> pool, bool record, bool noPinned = false, bool log = true)
+        {
+            var rows = _preview != null ? _preview.Group
+                : (config.Tags ?? new List<TagConfig>()).Where(t => string.Equals(GroupKey(t), GroupKey(tc), StringComparison.OrdinalIgnoreCase)).ToList();
+            var pinned = noPinned ? new List<BaseItem>() : PinnedFor(config, tc);
+            int share = RandomPick.PinnedShare(rows, tc, pinned.Count);
+            bool addPinned = rows.Count == 0 || !rows.Contains(tc) || ReferenceEquals(rows[0], tc);
+            var r = RandomPick.Apply(tc, pool, pinned, share, addPinned, DateTime.Now);
+            if (record && r.Random && _preview == null)
+                lock (_appliedPicks) _appliedPicks[GroupKey(tc)] = r.Period;
+            if (log)
+            {
+                string pins = r.Pinned > 0 ? $"{r.Pinned} pinned + " : "";
+                string what = r.Random ? $"Random pick ({r.Period}): {pins}{r.Picked} picked of {r.Pool} titles"
+                    : $"Pinned titles: {pins}{r.Picked} of the source's {r.Pool} titles";
+                _log.Info("  " + what + (tc.Limit > 0 ? $", {r.Counted} of Max {tc.Limit}" : "")
+                    + (r.Items.Count > 0 ? " — " + string.Join(", ", r.Items.Take(10).Select(i => i.Name)) : ""));
+            }
             return r;
         }
 
@@ -6309,11 +6390,17 @@ namespace HomeScreenCompanion
             {
                 var bl = new HashSet<string>(t.Blacklist ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
                 var items = ManualItems(t, bl, FetchLimit(t), new GroupRunStats());
-                if (RandomPick.On(t)) items = RandomPick.Apply(t, items, PinnedFor(config, t), DateTime.Now).Items;
+                if (RandomPick.Shapes(t)) items = ApplyRandomPick(config, t, items, record: false, log: false).Items;
                 foreach (var i in items) if (!titles.Contains(i)) titles.Add(i);
             }
             return titles;
         }
+
+        // A source whose single run would only ever add its tag: another group in schedule writes
+        // the same tag and is not a plain Manual List (see SharedManualTitles). The Random pick task
+        // leaves such a source to the full sync, which knows every group's titles.
+        internal bool OnlyAddsSharedTag(PluginConfiguration config, TagConfig tc) =>
+            tc.AllTags().Any(t => TagUsedElsewhereInSchedule(config, tc, t) && SharedManualTitles(config, tc, t) == null);
 
         // External and AI sources: their titles go into the real-time tag cache (keyed by IMDb id).
         internal static bool IsListSource(TagConfig t) =>
@@ -6324,9 +6411,9 @@ namespace HomeScreenCompanion
         // (the sync's own UpdateItem raises ItemUpdated). Such a source caches only the titles that
         // passed its filters.
         // A list source caches its whole list in the real-time tag cache, unless it has filter
-        // conditions or a Random pick: then only the titles it ends up with (else the real-time
+        // conditions, pinned titles or a Random pick: then only the titles it ends up with (else the real-time
         // tagger would put the tag back on the ones left out).
-        private static bool CachesWholeList(TagConfig t) => !HasFilterConditions(t) && !RandomPick.On(t);
+        private static bool CachesWholeList(TagConfig t) => !HasFilterConditions(t) && !RandomPick.Shapes(t);
 
         internal static bool HasFilterConditions(TagConfig t) =>
             t.MediaInfoFilters?.Any(f => f?.Criteria?.Count > 0) == true || t.MediaInfoConditions?.Count > 0;
@@ -7455,9 +7542,10 @@ namespace HomeScreenCompanion
             }
             if (tc.SourceType != "MediaInfo" && (tc.MediaInfoFilters?.Count > 0 || tc.MediaInfoConditions?.Count > 0))
                 parts.Add($"{GetAllCriteria(tc).Count()} extra filter conditions");
-            parts.Add(RandomPick.On(tc) ? $"random pick of {tc.Limit} every {(RandomPick.Weekly(tc) ? "week" : "day")}"
+            parts.Add(RandomPick.On(tc) ? $"random pick of {tc.Limit} every {RandomPick.EveryLabel(tc)}"
                 : effectiveLimit >= NoLimit ? "no limit" : $"limit {effectiveLimit}");
             if (RandomPick.IsPinnedSource(tc)) parts.Add("pinned");
+            if (RandomPick.HasPinned(tc)) parts.Add($"{tc.PinnedItemIds.Count} pinned titles");
             if ((tc.Blacklist?.Count ?? 0) > 0) parts.Add($"{tc.Blacklist!.Count} blacklisted");
             var features = new List<string>();
             if (tc.EnableTag && !tc.OnlyCollection) features.Add("tag");
@@ -7613,6 +7701,7 @@ namespace HomeScreenCompanion
         /// <summary>Results block + Summary for a single-group run.</summary>
         private void WriteSingleRunFooter(GroupRunStats gs, DateTime startTime, bool dryRun, bool logMissing)
         {
+            LastSingleRun = gs;
             _log.Blank();
             _log.Info("Results");
             WriteGroupBlock(gs, dryRun, logMissing);

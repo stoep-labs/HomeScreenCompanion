@@ -2,6 +2,7 @@ using MediaBrowser.Controller.Entities;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.IO;
 using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
@@ -9,34 +10,89 @@ using System.Text;
 namespace HomeScreenCompanion
 {
     /// <summary>
-    /// "Random pick" on a source: each Max is filled with titles picked at random from everything
-    /// the source matches, instead of the first ones. The pick is worked out, not stored: it comes
-    /// from the tag and the day (or the Monday of the week), so every sync on the same day picks
-    /// the same titles (no tag churn, nothing to save, Dry Run changes nothing) and the next day
-    /// or week brings a new pick. Each title gets a rank from a hash of the seed and the title, the
-    /// lowest ranks are taken: a title that joins or leaves the source changes at most one pick,
-    /// and a higher Max only adds titles.
-    /// Max counts Emby items here (a film's versions are separate items and all get the tag), so
-    /// exactly Max items carry the tag and a home row showing that many shows every one of them.
-    /// Pinned titles (Manual sources with "Pinned", same tag) are never in the pick; with
-    /// RandomPickCountPinned they are part of the Max: 1 pinned and Max 8 picks 7.
+    /// "Pinned titles" and "Random pick" on a source.
+    ///
+    /// Pinned titles (PinnedItemIds) are any movies or shows in the library: they always get the
+    /// source's tag, collection and playlist, whether or not the source finds them, and the
+    /// source's filters and blacklist do not drop them. They come first and take places in Max.
+    ///
+    /// Max is the total. With Random pick on, the rest of Max is filled with titles picked at
+    /// random from everything the source finds (1 pinned and Max 8 picks 7); off, with the
+    /// source's first titles. A source with several rows (URLs, collections, playlists) has a Max
+    /// per row: the total is their sum, and the pinned titles take their places from the first
+    /// rows with a Max (a row with Max 0 takes all its titles).
+    ///
+    /// The pick is worked out, not stored: it comes from the tag and the period (a 15-minute slot,
+    /// the hour, the day or the Monday of the week), so every sync in the same period picks the
+    /// same titles (no tag churn, nothing to save, Dry Run changes nothing) and the next period
+    /// brings a new pick. Each title gets a rank from a hash of the seed and the title, the lowest
+    /// ranks are taken: a title that joins or leaves the source changes at most one pick, and a
+    /// higher Max only adds titles. Max counts Emby items for a pick (a film's versions are
+    /// separate items and all get the tag), so exactly Max items carry the tag.
+    ///
+    /// 4.8.0.966 had pinned titles as Manual List sources with "Pinned" and the same tag. They
+    /// still work: they count as pinned titles of a Random pick source with that tag.
     /// </summary>
     public static class RandomPick
     {
-        internal static bool On(TagConfig t) => t.RandomPick && t.Limit > 0 && !RotatingRow.Is(t) && !HomeScreenCompanionTask.IsNextWatch(t);
+        public const string Every15Minutes = "15Minutes", EveryHour = "Hour", EveryDay = "Day", EveryWeek = "Week";
 
-        internal static bool Weekly(TagConfig t) => string.Equals(t.RandomPickEvery, "Week", StringComparison.OrdinalIgnoreCase);
+        // Pinned titles and Random pick apply to sources that tag titles from what they find: not to
+        // Rotating from existing (tags nothing) nor Your Next Watch (per user).
+        internal static bool Applies(TagConfig t) => !RotatingRow.Is(t) && !HomeScreenCompanionTask.IsNextWatch(t);
 
-        // A Manual source marked Pinned whose titles count for random picks of its tag.
+        internal static bool On(TagConfig t) => t.RandomPick && t.Limit > 0 && Applies(t);
+
+        internal static bool HasPinned(TagConfig t) => Applies(t) && (t.PinnedItemIds?.Count ?? 0) > 0;
+
+        // The source's titles are shaped here (pinned first, then the pick or the first titles).
+        internal static bool Shapes(TagConfig t) => On(t) || HasPinned(t);
+
+        internal static string Every(TagConfig t)
+        {
+            var e = (t.RandomPickEvery ?? "").Trim();
+            foreach (var v in new[] { Every15Minutes, EveryHour, EveryWeek })
+                if (string.Equals(e, v, StringComparison.OrdinalIgnoreCase)) return v;
+            return EveryDay;
+        }
+
+        internal static string EveryLabel(TagConfig t)
+        {
+            switch (Every(t))
+            {
+                case Every15Minutes: return "15 minutes";
+                case EveryHour: return "hour";
+                case EveryWeek: return "week";
+                default: return "day";
+            }
+        }
+
+        // A Manual source marked Pinned (4.8.0.966) whose titles count as pinned for its tag.
         internal static bool IsPinnedSource(TagConfig t) => t.Pinned && string.Equals(t.SourceType, "Manual", StringComparison.OrdinalIgnoreCase);
 
-        /// <summary>The period a pick is for: "D2026-11-13", or "W2026-11-09" (that week's Monday).</summary>
-        public static string PeriodKey(bool weekly, DateTime today)
+        /// <summary>
+        /// The period a pick is for, in server time: "Q2026-11-13T10:15" (15-minute slot),
+        /// "H2026-11-13T10", "D2026-11-13", or "W2026-11-09" (that week's Monday). The day and week
+        /// keys are the ones 4.8.0.966 used.
+        /// </summary>
+        public static string PeriodKey(string every, DateTime now)
         {
-            var d = today.Date;
-            if (weekly) d = d.AddDays(-(((int)d.DayOfWeek + 6) % 7));
-            return (weekly ? "W" : "D") + d.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+            var c = CultureInfo.InvariantCulture;
+            switch (every)
+            {
+                case Every15Minutes:
+                    return "Q" + now.ToString("yyyy-MM-dd'T'HH", c) + ":" + (now.Minute / 15 * 15).ToString("00", c);
+                case EveryHour:
+                    return "H" + now.ToString("yyyy-MM-dd'T'HH", c);
+                case EveryWeek:
+                    var d = now.Date.AddDays(-(((int)now.DayOfWeek + 6) % 7));
+                    return "W" + d.ToString("yyyy-MM-dd", c);
+                default:
+                    return "D" + now.Date.ToString("yyyy-MM-dd", c);
+            }
         }
+
+        internal static string PeriodKey(TagConfig t, DateTime now) => PeriodKey(Every(t), now);
 
         public static string Seed(string tag, string periodKey) => (tag ?? "").Trim().ToLowerInvariant() + "|" + periodKey;
 
@@ -68,34 +124,130 @@ namespace HomeScreenCompanion
             return chosen;
         }
 
-        internal sealed class Result
+        /// <summary>
+        /// How many of a source's pinned titles take places in this row's Max: the pinned titles fill
+        /// the first rows with a Max, in the source's order. Rows with Max 0 take none.
+        /// </summary>
+        internal static int PinnedShare(IList<TagConfig> rows, TagConfig row, int pinned)
         {
-            public List<BaseItem> Items = new List<BaseItem>();
-            public int Pool;      // titles to pick from (pinned ones left out)
-            public int Pinned;    // pinned items counted in the Max
-            public string Period = "";
-            public int Counted => Items.Count + Pinned;
+            int left = pinned;
+            foreach (var r in rows)
+            {
+                if (r.Limit <= 0) { if (ReferenceEquals(r, row)) return 0; continue; }
+                int take = Math.Min(r.Limit, left);
+                if (ReferenceEquals(r, row)) return take;
+                left -= take;
+            }
+            return row.Limit > 0 ? Math.Min(row.Limit, pinned) : 0;
         }
 
-        /// <summary>The source's pick from pool (kept in the pool's order) for today.</summary>
-        internal static Result Apply(TagConfig t, List<BaseItem> pool, IList<BaseItem> pinned, DateTime today)
+        internal sealed class Result
+        {
+            public List<BaseItem> Items = new List<BaseItem>();   // the pinned titles first, then the pick
+            public int Picked;    // items picked (or taken in order) from the source's own titles
+            public int Pool;      // titles to pick from (pinned ones left out)
+            public int Pinned;    // pinned items this row added
+            public int Share;     // pinned places this row gave up in its Max
+            public string Period = "";
+            public bool Random;
+            public int Counted => Picked + Share;   // this row's places in its Max
+        }
+
+        /// <summary>
+        /// One row of a source: the pinned titles (when this row adds them) and its own titles, cut
+        /// to Max less the pinned places (share). pool is in the source's order.
+        /// </summary>
+        internal static Result Apply(TagConfig t, List<BaseItem> pool, IList<BaseItem> pinned, int share, bool addPinned, DateTime now)
         {
             var filmOf = PopularityCounter.FilmKeys(pool.Concat(pinned).ToList());
+            var pinnedIds = new HashSet<Guid>(pinned.Select(i => i.Id));
             var pinnedKeys = new HashSet<string>(pinned.Select(filmOf), StringComparer.OrdinalIgnoreCase);
-            int pinnedCount = t.RandomPickCountPinned ? pinned.Count : 0;
-            var groups = pool.Where(i => !pinnedKeys.Contains(filmOf(i)))
-                .GroupBy(filmOf, StringComparer.OrdinalIgnoreCase)
-                .Select(g => new KeyValuePair<string, int>(g.Key, g.Count()))
-                .ToList();
-            var period = PeriodKey(Weekly(t), today);
-            var chosen = Choose(groups, Math.Max(0, t.Limit - pinnedCount), Seed(t.Tag, period));
-            return new Result
+            var rest = pool.Where(i => !pinnedIds.Contains(i.Id) && !pinnedKeys.Contains(filmOf(i))).ToList();
+            var r = new Result { Share = share, Random = On(t) };
+            List<BaseItem> picks;
+            if (r.Random)
             {
-                Items = pool.Where(i => chosen.Contains(filmOf(i))).ToList(),
-                Pool = groups.Count,
-                Pinned = pinnedCount,
-                Period = period
-            };
+                var groups = rest.GroupBy(filmOf, StringComparer.OrdinalIgnoreCase)
+                    .Select(g => new KeyValuePair<string, int>(g.Key, g.Count())).ToList();
+                r.Pool = groups.Count;
+                r.Period = PeriodKey(t, now);
+                var chosen = Choose(groups, Math.Max(0, t.Limit - share), Seed(t.Tag, r.Period));
+                picks = rest.Where(i => chosen.Contains(filmOf(i))).ToList();
+            }
+            else if (t.Limit > 0)
+            {
+                // The source's first titles (a film's versions together count as one, as without pins).
+                int room = Math.Max(0, t.Limit - share);
+                var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                picks = new List<BaseItem>();
+                foreach (var i in rest)
+                {
+                    var k = filmOf(i);
+                    if (!taken.Contains(k)) { if (taken.Count >= room) continue; taken.Add(k); }
+                    picks.Add(i);
+                }
+                r.Pool = rest.Select(filmOf).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+            }
+            else
+            {
+                picks = rest;
+                r.Pool = rest.Count;
+            }
+            if (addPinned) r.Items.AddRange(pinned);
+            r.Pinned = addPinned ? pinned.Count : 0;
+            r.Items.AddRange(picks);
+            r.Picked = picks.Count;
+            return r;
+        }
+    }
+
+    /// <summary>
+    /// The period of the last Random pick each source applied (random-pick-state.txt: one
+    /// "group key TAB period" line per source), so the Random pick task only re-runs a source when
+    /// its period changed. Written by real syncs and Run Groups, never by a dry run or a preview.
+    /// </summary>
+    internal static class RandomPickState
+    {
+        private static readonly object Gate = new object();
+
+        private static string? FilePath => Plugin.Instance == null ? null : Path.Combine(Plugin.Instance.DataFolderPath, "random-pick-state.txt");
+
+        internal static Dictionary<string, string> Load()
+        {
+            var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            lock (Gate)
+            {
+                try
+                {
+                    var path = FilePath;
+                    if (path == null || !File.Exists(path)) return result;
+                    foreach (var line in File.ReadAllLines(path))
+                    {
+                        var p = line.Split('\t');
+                        if (p.Length == 2 && p[0].Length > 0) result[p[0]] = p[1];
+                    }
+                }
+                catch (Exception ex) { PluginLog.Swallowed(ex); }
+            }
+            return result;
+        }
+
+        internal static void Save(IDictionary<string, string> applied)
+        {
+            if (applied.Count == 0) return;
+            lock (Gate)
+            {
+                try
+                {
+                    var path = FilePath;
+                    if (path == null) return;
+                    var all = Load();
+                    foreach (var kv in applied) all[kv.Key] = kv.Value;
+                    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                    File.WriteAllLines(path, all.OrderBy(k => k.Key, StringComparer.OrdinalIgnoreCase).Select(k => k.Key + "\t" + k.Value));
+                }
+                catch (Exception ex) { PluginLog.Swallowed(ex); }
+            }
         }
     }
 }

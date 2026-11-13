@@ -3105,25 +3105,32 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         return intervals;
     }
 
-    // ── Manual List source: search the library, add, reorder and remove movies and shows ──
-    function readManualIds(row) {
-        var box = row.querySelector('.source-manual-container');
-        try { return JSON.parse(decodeURIComponent((box && box.dataset.manualIds) || '%5B%5D')); } catch (ex) { return []; }
+    // ── Manual List source and Pinned titles: search the library, add, reorder and remove movies
+    // and shows. Each list keeps its ids in a data attribute of its box (data-manual-ids /
+    // data-pinned-ids).
+    function readTitleIds(box, key) {
+        try { return JSON.parse(decodeURIComponent((box && box.dataset[key]) || '%5B%5D')); } catch (ex) { return []; }
     }
+    function readManualIds(row) { return readTitleIds(row.querySelector('.source-manual-container'), 'manualIds'); }
+    function readPinnedIds(row) { return readTitleIds(row.querySelector('.source-pinned-container'), 'pinnedIds'); }
 
     function initManualEditor(row) {
-        var box = row.querySelector('.source-manual-container');
+        initTitleList(row.querySelector('.source-manual-container'), 'manualIds');
+        initTitleList(row.querySelector('.source-pinned-container'), 'pinnedIds');
+    }
+
+    function initTitleList(box, key) {
         if (!box) return;
         var input = box.querySelector('.txtManualSearch');
         var results = box.querySelector('.manualSearchResults');
         var listEl = box.querySelector('.manualItemList');
-        var items = readManualIds(row).map(function (id) { return { Id: id, Name: '', Year: null, Type: '' }; });
+        var items = readTitleIds(box, key).map(function (id) { return { Id: id, Name: '', Year: null, Type: '' }; });
         var searchTimer = null, searchSeq = 0;
 
         function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
         function kind(t) { return t === 'Series' ? 'Show' : (t === 'Movie' ? 'Movie' : ''); }
         function save() {
-            box.dataset.manualIds = encodeURIComponent(JSON.stringify(items.map(function (i) { return i.Id; })));
+            box.dataset[key] = encodeURIComponent(JSON.stringify(items.map(function (i) { return i.Id; })));
             if (typeof checkFormState === 'function') setTimeout(checkFormState, 0);
         }
         function render() {
@@ -3216,36 +3223,48 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         return c ? c.checked : true;
     }
 
-    // Random pick and Pinned (RandomPick.cs). Random pick applies to every source that tags titles
-    // from what it matches: not to Rotating from existing (tags nothing) nor Your Next Watch (per user).
+    // Pinned titles and Random pick (RandomPick.cs), on every source that tags titles from what it
+    // finds: not Rotating from existing (tags nothing) nor Your Next Watch (per user).
     function randomPickApplies(type) {
         return !!type && type !== 'RotatingExisting' && type !== 'NextWatch';
     }
-    function randomPickHtml(t, type) {
-        var every = t.RandomPickEvery === 'Week' ? 'Week' : 'Day';
-        return '<div class="random-pick-box" style="display:' + (randomPickApplies(type) ? 'block' : 'none') + '; margin:4px 0 14px;">' +
-            '<div class="checkboxContainer" style="margin-bottom:0;"><label>' +
-                '<input type="checkbox" is="emby-checkbox" class="chkRandomPick"' + (t.RandomPick ? ' checked' : '') + ' />' +
-                '<span>Random pick</span></label></div>' +
-            '<div class="random-pick-options" style="display:' + (t.RandomPick ? 'block' : 'none') + '; margin:10px 0 0 20px; padding-left:15px; border-left:2px solid var(--line-color);">' +
-                '<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px;">' +
+    var RANDOM_PICK_EVERY = [['15Minutes', '15 minutes'], ['Hour', 'Hour'], ['Day', 'Day'], ['Week', 'Week']];
+    function randomPickEvery(v) {
+        for (var i = 0; i < RANDOM_PICK_EVERY.length; i++) if (String(v || '').toLowerCase() === RANDOM_PICK_EVERY[i][0].toLowerCase()) return RANDOM_PICK_EVERY[i][0];
+        return 'Day';
+    }
+    // Same layout as the other Source tab sections: a bold heading, the search field and list of
+    // the Manual List, then one row of inline controls (as the Max items rows).
+    function pinPickHtml(t, type) {
+        var every = randomPickEvery(t.RandomPickEvery);
+        return '<div class="source-pinned-container" data-pinned-ids="' + encodeURIComponent(JSON.stringify(t.PinnedItemIds || [])) + '"' +
+                ' style="display:' + (randomPickApplies(type) ? 'block' : 'none') + '; padding-top:14px; margin-bottom:14px; border-top:1px solid var(--hsc-hairline);">' +
+            '<p style="margin:0 0 10px 0; font-size:0.9em; font-weight:bold; opacity:0.7;">Pinned titles</p>' +
+            '<div style="position:relative; margin-bottom:10px;">' +
+                '<input is="emby-input" type="text" class="txtManualSearch" autocomplete="off" label="Add a movie or show" placeholder="Type to search…" />' +
+                '<div class="manualSearchResults" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:200;background:var(--plugin-popup-bg,#2a2a2a);border:1px solid var(--hsc-hairline);border-radius:6px;max-height:240px;overflow-y:auto;margin-top:2px;box-shadow:var(--hsc-shadow-float);"></div>' +
+            '</div>' +
+            '<div class="manualItemList" style="max-height:240px;overflow-y:auto;border:1px solid var(--hsc-hairline);border-radius:6px;padding:4px 8px;min-height:44px;"></div>' +
+            '<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:14px; min-height:40px;">' +
+                '<label style="display:flex; align-items:center; gap:6px; cursor:pointer; white-space:nowrap; margin:0; width:auto; flex:0 0 auto;">' +
+                    '<input type="checkbox" is="emby-checkbox" class="chkRandomPick"' + (t.RandomPick ? ' checked' : '') + ' />' +
+                    '<span>Random pick</span></label>' +
+                '<span class="random-pick-options" style="display:' + (t.RandomPick ? 'flex' : 'none') + '; align-items:center; gap:12px; margin-left:12px;">' +
                     '<label style="font-size:0.9em; white-space:nowrap; margin:0;">New pick every</label>' +
                     '<select is="emby-select" class="selRandomPickEvery" style="width:140px;">' +
-                        '<option value="Day"' + (every === 'Day' ? ' selected' : '') + '>Day</option>' +
-                        '<option value="Week"' + (every === 'Week' ? ' selected' : '') + '>Week</option>' +
-                    '</select></div>' +
-                '<div class="checkboxContainer" style="margin-bottom:0;"><label>' +
-                    '<input type="checkbox" is="emby-checkbox" class="chkRandomPickCountPinned"' + (t.RandomPickCountPinned !== false ? ' checked' : '') + ' />' +
-                    '<span>Pinned titles with the same tag count toward Max</span></label></div>' +
-            '</div></div>';
+                        RANDOM_PICK_EVERY.map(function (o) { return '<option value="' + o[0] + '"' + (every === o[0] ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') +
+                    '</select></span>' +
+            '</div>' +
+        '</div>';
     }
     function readRandomPick(row) {
         var on = row.querySelector('.chkRandomPick'), every = row.querySelector('.selRandomPickEvery'),
-            counted = row.querySelector('.chkRandomPickCountPinned'), pinned = row.querySelector('.chkPinned');
+            pinned = row.querySelector('.chkPinned');
         return {
             RandomPick: !!(on && on.checked),
-            RandomPickEvery: every && every.value === 'Week' ? 'Week' : 'Day',
-            RandomPickCountPinned: counted ? counted.checked : true,
+            RandomPickEvery: randomPickEvery(every && every.value),
+            PinnedItemIds: readPinnedIds(row),
+            // 4.8.0.966 "Pinned" Manual sources: still read, shown only while ticked.
             Pinned: !!(pinned && pinned.checked)
         };
     }
@@ -3603,14 +3622,14 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         </div>
                         <div style="position:relative; margin-bottom:10px;">
                             <input is="emby-input" type="text" class="txtManualSearch" autocomplete="off" label="Add a movie or show" placeholder="Type to search…" />
-                            <div class="manualSearchResults" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:200;background:var(--plugin-popup-bg,#2a2a2a);border:1px solid var(--line-color);border-radius:6px;max-height:240px;overflow-y:auto;margin-top:2px;box-shadow:var(--hsc-shadow-float);"></div>
+                            <div class="manualSearchResults" style="display:none;position:absolute;top:100%;left:0;right:0;z-index:200;background:var(--plugin-popup-bg,#2a2a2a);border:1px solid var(--hsc-hairline);border-radius:6px;max-height:240px;overflow-y:auto;margin-top:2px;box-shadow:var(--hsc-shadow-float);"></div>
                         </div>
-                        <div class="manualItemList" style="max-height:420px;overflow-y:auto;border:1px solid var(--line-color);border-radius:6px;padding:4px 8px;min-height:44px;"></div>
+                        <div class="manualItemList" style="max-height:420px;overflow-y:auto;border:1px solid var(--hsc-hairline);border-radius:6px;padding:4px 8px;min-height:44px;"></div>
                         <div style="display:flex; align-items:center; gap:12px; margin-top:12px; flex-wrap:wrap;">
                             <label style="font-size:0.9em; white-space:nowrap; margin:0;">Max items</label>
                             <input is="emby-input" class="txtManualLimit" type="number" value="${sourceType === 'Manual' ? (tagConfig.Limit || 0) : 0}" min="0" style="width:90px;" />
                         </div>
-                        <div class="checkboxContainer" style="margin-top:10px; margin-bottom:10px;">
+                        <div class="checkboxContainer" style="display:${tagConfig.Pinned ? 'block' : 'none'}; margin-top:10px; margin-bottom:10px;">
                             <label>
                                 <input type="checkbox" is="emby-checkbox" class="chkPinned" ${tagConfig.Pinned ? 'checked' : ''} />
                                 <span>Pinned</span>
@@ -3684,8 +3703,6 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                         </div>
                     </div>
 
-                    ${randomPickHtml(tagConfig, sourceType)}
-
                     <div class="source-mediainfo-container" style="display: ${(sourceType && sourceType !== '') ? 'block' : 'none'};">
                         <div class="mi-limit-row" style="display:${sourceType === 'MediaInfo' || sourceType === 'NextWatch' ? 'flex' : 'none'}; align-items:center; gap:12px; margin-bottom:14px; flex-wrap:wrap;">
                             <label style="font-size:0.9em; white-space:nowrap; margin:0;">Max items</label>
@@ -3707,11 +3724,12 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                                 <div class="fieldDescription">Watched favourites and titles a user rated 7 or higher count as taste, unwatched favourites are suggested, and titles rated low are ignored. Off: only what was watched counts.</div>
                             </div>
                         </div>
-                        <div class="mi-toggle-row" style="display:${sourceType === 'MediaInfo' || mediaFilters.length > 0 ? 'none' : 'block'}; padding-top:14px; border-top:1px solid var(--line-color);">
+                        ${pinPickHtml(tagConfig, sourceType)}
+                        <div class="mi-toggle-row" style="display:${sourceType === 'MediaInfo' || mediaFilters.length > 0 ? 'none' : 'block'}; padding-top:14px; border-top:1px solid var(--hsc-hairline);">
                             <button type="button" is="emby-button" class="btnToggleAdditionalFilters raised" style="background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.85em;"><i class="md-icon" style="font-size:1em; margin-right:4px;">filter_list</i><span>Add filters (optional)</span></button>
                         </div>
                         <div class="mi-filter-body" style="display:${sourceType === 'MediaInfo' || mediaFilters.length > 0 ? 'block' : 'none'};">
-                            <div class="mi-help-btn-row" style="display:${sourceType === 'MediaInfo' ? 'none' : 'flex'}; margin-bottom:14px; padding-top:14px; border-top:1px solid var(--line-color);">
+                            <div class="mi-help-btn-row" style="display:${sourceType === 'MediaInfo' ? 'none' : 'flex'}; margin-bottom:14px; padding-top:14px; border-top:1px solid var(--hsc-hairline);">
                                 <button type="button" is="emby-button" class="btnMiHelp raised" style="margin-left:auto; background:transparent; border:1px solid rgba(128,128,128,0.35); color:var(--theme-text-secondary); font-size:0.82em; padding:0 10px; min-width:0;"><i class="md-icon" style="font-size:1em; margin-right:4px;">help_outline</i><span>How to (filter guide)</span></button>
                             </div>
                             <div class="mediainfo-filter-list">${filterGroupsHtml}</div>
@@ -4663,7 +4681,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     _hint.textContent = _hints[type] || '';
                 }
 
-                var _rpBox = row.querySelector('.random-pick-box');
+                var _rpBox = row.querySelector('.source-pinned-container');
                 if (_rpBox) _rpBox.style.display = randomPickApplies(type) ? 'block' : 'none';
                 var isMi = type === 'MediaInfo';
                 var miLimitRow      = row.querySelector('.mi-limit-row');
@@ -4868,7 +4886,7 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
         if (chkRandomPick) {
             chkRandomPick.addEventListener('change', function () {
                 var opts = row.querySelector('.random-pick-options');
-                if (opts) opts.style.display = this.checked ? 'block' : 'none';
+                if (opts) opts.style.display = this.checked ? 'flex' : 'none';
             });
         }
 
@@ -7973,8 +7991,8 @@ define(['emby-input', 'emby-button', 'emby-select', 'emby-checkbox'], function (
                     TopListMaxItems: t.TopListMaxItems || 0, TopListBadgeStyle: t.TopListBadgeStyle || 'neutral',
                     TopListBadgeOptions: t.TopListBadgeOptions || '', TopListRealPoster: t.TopListRealPoster || '',
                     TopListLibraryIds: t.TopListLibraryIds || [],
-                    Pinned: !!t.Pinned, RandomPick: !!t.RandomPick, RandomPickEvery: t.RandomPickEvery === 'Week' ? 'Week' : 'Day',
-                    RandomPickCountPinned: t.RandomPickCountPinned !== false,
+                    Pinned: !!t.Pinned, RandomPick: !!t.RandomPick, RandomPickEvery: randomPickEvery(t.RandomPickEvery),
+                    PinnedItemIds: t.PinnedItemIds || [],
                     LastRuns: [],
                 };
             }
