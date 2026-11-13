@@ -708,7 +708,7 @@ namespace HomeScreenCompanion
                         List<BaseItem> tagOutputItems = matchedLocalItems;
                         List<BaseItem> collectionOutputItems = matchedLocalItems;
                         int matchCount = 0;
-                        int? randomCounted = null;   // Random pick: the items counted in its Max (pinned ones included)
+                        int? randomCounted = null;   // Random pick: the titles counted in its Max (pinned ones included)
                         string? fetchError = null;   // why a list / the AI came back empty (ListFetcher.LastError)
                         Dictionary<long, List<string>>? seriesEpisodeNamesCache = null;
                         if (GetAllCriteria(tagConfig).Any(c => c.TrimStart('!').StartsWith("EpisodeTitle:", StringComparison.OrdinalIgnoreCase)))
@@ -849,7 +849,9 @@ namespace HomeScreenCompanion
                                             } catch { }
                                         }
 
-                                        if (!IsTaggableTopLevelItem(itemToTag))
+                                        // Top-list and ranked copies are never a source's titles: the collection
+                                        // mirror puts a film's copies in its collections (TopListMirrorCollections).
+                                        if (!IsTaggableTopLevelItem(itemToTag) || !TopListCollectionMirror.IsOriginal(itemToTag))
                                             continue;
 
                                         var imdb = itemToTag.GetProviderId("Imdb");
@@ -873,8 +875,8 @@ namespace HomeScreenCompanion
                                     gs.Warnings.Add($"{DescribeSource(tagConfig)} '{tagConfig.LocalSourceId}' was not found in the library");
                                 }
 
-                                if (effectiveLimit < NoLimit && matchedLocalItems.Count > effectiveLimit)
-                                    matchedLocalItems = matchedLocalItems.Take(effectiveLimit).ToList();
+                                if (effectiveLimit < NoLimit)
+                                    matchedLocalItems = RandomPick.FirstTitles(matchedLocalItems, effectiveLimit);
                             }
                         }
                         else if (tagConfig.SourceType == "Manual")
@@ -2506,7 +2508,7 @@ namespace HomeScreenCompanion
             var matchedLocalItems = new List<BaseItem>();
             var _srcTitles = new Dictionary<TagConfig, int>();   // per URL / local source of the group
             var _perSrc = new List<(TagConfig Src, List<BaseItem> Items)>();   // each URL's / local source's titles, for Random pick
-            int? _randomCounted = null;   // Random pick: the items counted in its Max (pinned ones included)
+            int? _randomCounted = null;   // Random pick: the titles counted in its Max (pinned ones included)
             List<BaseItem> tagOutputItems = matchedLocalItems;
             List<BaseItem> collectionOutputItems = matchedLocalItems;
             int _listCount = 0;
@@ -2629,14 +2631,14 @@ namespace HomeScreenCompanion
                             BaseItem itemToTag = child;
                             if (child.GetType().Name.Contains("PlaylistItem")) { try { var inner = ((dynamic)child).Item; if (inner != null) itemToTag = inner; } catch { } }
                             if (itemToTag.GetType().Name.Contains("Episode")) { try { var series = ((dynamic)itemToTag).Series; if (series != null) itemToTag = series; } catch { } }
-                            if (!IsTaggableTopLevelItem(itemToTag)) continue;
+                            if (!IsTaggableTopLevelItem(itemToTag) || !TopListCollectionMirror.IsOriginal(itemToTag)) continue;
                             var imdb = itemToTag.GetProviderId("Imdb");
                             if (!string.IsNullOrEmpty(imdb) && blacklist.Contains(imdb)) continue;
                             if (passesFilters != null && !passesFilters(itemToTag)) continue;
                             if (!srcMatched.Contains(itemToTag)) srcMatched.Add(itemToTag);
                         }
-                        if (srcLimit < NoLimit && srcMatched.Count > srcLimit)
-                            srcMatched = srcMatched.Take(srcLimit).ToList();
+                        if (srcLimit < NoLimit)
+                            srcMatched = RandomPick.FirstTitles(srcMatched, srcLimit);
                         foreach (var m in srcMatched)
                             if (!matchedLocalItems.Contains(m)) matchedLocalItems.Add(m);
                         _perSrc.Add((src, srcMatched));
@@ -2926,7 +2928,7 @@ namespace HomeScreenCompanion
                 }
                 matchedLocalItems.Clear();
                 matchedLocalItems.AddRange(_picked);
-                _randomCounted = _picked.Count;
+                _randomCounted = TitleCount(_picked);
             }
 
             // Preview of a list source: the matches in list order plus what is not in the library.
@@ -6291,6 +6293,7 @@ namespace HomeScreenCompanion
                 if (long.TryParse(id, out var internalId)) item = _libraryManager.GetItemById(internalId);
                 else if (Guid.TryParse(id, out var guid)) item = _libraryManager.GetItemById(guid);
                 if (item == null || !IsTaggableTopLevelItem(item)) { gone++; continue; }
+                if (!TopListCollectionMirror.IsOriginal(item)) continue;
                 var imdb = item.GetProviderId("Imdb");
                 if (!string.IsNullOrEmpty(imdb) && blacklist.Contains(imdb)) continue;
                 if (passesFilters != null && !passesFilters(item)) continue;
@@ -6317,7 +6320,7 @@ namespace HomeScreenCompanion
                 BaseItem? item = null;
                 if (long.TryParse(id, out var internalId)) item = _libraryManager.GetItemById(internalId);
                 else if (Guid.TryParse(id, out var guid)) item = _libraryManager.GetItemById(guid);
-                if (item != null && IsTaggableTopLevelItem(item) && !pinned.Contains(item)) pinned.Add(item);
+                if (item != null && IsTaggableTopLevelItem(item) && TopListCollectionMirror.IsOriginal(item) && !pinned.Contains(item)) pinned.Add(item);
             }
             var tag = (tc.Tag ?? "").Trim();
             if (!RandomPick.On(tc) || tag.Length == 0) return pinned;

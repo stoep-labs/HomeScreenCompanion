@@ -2540,7 +2540,7 @@
                             <li><em>New pick every</em> <strong>15 minutes</strong>, <strong>Hour</strong>, <strong>Day</strong> or <strong>Week</strong> (from Monday), in server time. Every sync in the same period picks the same titles while the source's titles stay the same, so tags do not change back and forth. A list that changes between syncs (an AI source, a live list) can change the pick.</li>
                             <li>The <em>Random pick</em> task (Scheduled Tasks, every 15 minutes) makes the new pick when a period ends: it changes only that source's tags and collection, the playlist follows at the next Tag &amp; Collection Sync. It leaves out AI sources (that would ask the AI again) and sources whose tag another kind of source also writes; the Tag &amp; Collection Sync renews those. Dry Run changes nothing.</li>
                             <li>A source with several URLs, collections or playlists has a Max per row: the total is their sum. Pinned titles take their places from the first rows with a Max.</li>
-                            <li>A pick counts Emby items: a film with two versions takes two places, so exactly Max items have the tag.</li>
+                            <li>Max counts titles: a film with two versions takes one place, and both versions get the tag. Top-list copies are never picked.</li>
                             <li>For a home row in Emby's <em>Spotlight</em> view: the Emby web app asks for up to <strong>8</strong> items for a spotlight row. With Max 8 the row always shows the pinned titles; the others change with each pick.</li>
                         </ul></div>
                 </div>

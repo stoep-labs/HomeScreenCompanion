@@ -27,8 +27,9 @@ namespace HomeScreenCompanion
     /// same titles (no tag churn, nothing to save, Dry Run changes nothing) and the next period
     /// brings a new pick. Each title gets a rank from a hash of the seed and the title, the lowest
     /// ranks are taken: a title that joins or leaves the source changes at most one pick, and a
-    /// higher Max only adds titles. Max counts Emby items for a pick (a film's versions are
-    /// separate items and all get the tag), so exactly Max items carry the tag.
+    /// higher Max only adds titles. Max counts titles: a film's versions are separate items, all
+    /// get the tag and take one place together. Top-list and ranked copies are never picked
+    /// (TopListCollectionMirror.IsOriginal): the collection mirror puts them in collections.
     ///
     /// 4.8.0.966 had pinned titles as Manual List sources with "Pinned" and the same tag. They
     /// still work: they count as pinned titles of a Random pick source with that tag.
@@ -144,7 +145,7 @@ namespace HomeScreenCompanion
         internal sealed class Result
         {
             public List<BaseItem> Items = new List<BaseItem>();   // the pinned titles first, then the pick
-            public int Picked;    // items picked (or taken in order) from the source's own titles
+            public int Picked;    // titles picked (or taken in order) from the source's own titles
             public int Pool;      // titles to pick from (pinned ones left out)
             public int Pinned;    // pinned items this row added
             public int Share;     // pinned places this row gave up in its Max
@@ -159,6 +160,7 @@ namespace HomeScreenCompanion
         /// </summary>
         internal static Result Apply(TagConfig t, List<BaseItem> pool, IList<BaseItem> pinned, int share, bool addPinned, DateTime now)
         {
+            pool = pool.Where(TopListCollectionMirror.IsOriginal).ToList();
             var filmOf = PopularityCounter.FilmKeys(pool.Concat(pinned).ToList());
             var pinnedIds = new HashSet<Guid>(pinned.Select(i => i.Id));
             var pinnedKeys = new HashSet<string>(pinned.Select(filmOf), StringComparer.OrdinalIgnoreCase);
@@ -167,8 +169,8 @@ namespace HomeScreenCompanion
             List<BaseItem> picks;
             if (r.Random)
             {
-                var groups = rest.GroupBy(filmOf, StringComparer.OrdinalIgnoreCase)
-                    .Select(g => new KeyValuePair<string, int>(g.Key, g.Count())).ToList();
+                var groups = rest.Select(filmOf).Distinct(StringComparer.OrdinalIgnoreCase)
+                    .Select(k => new KeyValuePair<string, int>(k, 1)).ToList();
                 r.Pool = groups.Count;
                 r.Period = PeriodKey(t, now);
                 var chosen = Choose(groups, Math.Max(0, t.Limit - share), Seed(t.Tag, r.Period));
@@ -176,16 +178,7 @@ namespace HomeScreenCompanion
             }
             else if (t.Limit > 0)
             {
-                // The source's first titles (a film's versions together count as one, as without pins).
-                int room = Math.Max(0, t.Limit - share);
-                var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                picks = new List<BaseItem>();
-                foreach (var i in rest)
-                {
-                    var k = filmOf(i);
-                    if (!taken.Contains(k)) { if (taken.Count >= room) continue; taken.Add(k); }
-                    picks.Add(i);
-                }
+                picks = FirstTitles(rest, Math.Max(0, t.Limit - share), filmOf);
                 r.Pool = rest.Select(filmOf).Distinct(StringComparer.OrdinalIgnoreCase).Count();
             }
             else
@@ -196,8 +189,25 @@ namespace HomeScreenCompanion
             if (addPinned) r.Items.AddRange(pinned);
             r.Pinned = addPinned ? pinned.Count : 0;
             r.Items.AddRange(picks);
-            r.Picked = picks.Count;
+            r.Picked = picks.Select(filmOf).Distinct(StringComparer.OrdinalIgnoreCase).Count();
             return r;
+        }
+
+        /// <summary>
+        /// The first max titles of items, in their order: a film's versions together count as one.
+        /// </summary>
+        internal static List<BaseItem> FirstTitles(List<BaseItem> items, int max, Func<BaseItem, string>? filmOf = null)
+        {
+            filmOf = filmOf ?? PopularityCounter.FilmKeys(items);
+            var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var result = new List<BaseItem>();
+            foreach (var i in items)
+            {
+                var k = filmOf(i);
+                if (!taken.Contains(k)) { if (taken.Count >= max) continue; taken.Add(k); }
+                result.Add(i);
+            }
+            return result;
         }
     }
 
