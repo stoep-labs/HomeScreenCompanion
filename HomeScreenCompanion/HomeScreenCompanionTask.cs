@@ -2443,15 +2443,17 @@ namespace HomeScreenCompanion
             // Remove this tag from the cache before repopulating so blacklisted items don't get
             // immediately re-tagged by the real-time event handler when UpdateItem is called.
             // (Full run clears the entire cache first; single run must do a targeted removal.)
-            // Another group in schedule with the same tag: its titles keep the tag. This run only adds
-            // the tag; taking it off titles this source no longer has is left to the full sync, which
-            // knows every group's titles.
+            // Another group in schedule with the same tag: its titles keep the tag. When all those
+            // groups are Manual Lists their titles are known (_keptByTag), so the tag still comes off
+            // the titles this source no longer has and stays on theirs. Otherwise this run only adds
+            // the tag; taking it off is left to the full sync, which knows every group's titles.
             // The same goes for each of the source's extra tags (outTags: the Tag and its extra tags).
             var outTags = tagConfig.AllTags();
-            var _sharedTags = new HashSet<string>(outTags.Where(t => _preview == null && TagUsedElsewhereInSchedule(config, tagConfig, t) && !OnlyPinnedShare(config, tagConfig, t)), StringComparer.OrdinalIgnoreCase);
-            // Random pick whose tag only pinned sources share: their titles keep the tag (see OnlyPinnedShare).
-            var _pinnedKeep = new HashSet<Guid>(_preview == null && outTags.Any(t => OnlyPinnedShare(config, tagConfig, t) && TagUsedElsewhereInSchedule(config, tagConfig, t))
-                ? PinnedFor(config, tagConfig).Select(i => i.Id) : Enumerable.Empty<Guid>());
+            var _keptByTag = new Dictionary<string, HashSet<Guid>>(StringComparer.OrdinalIgnoreCase);
+            if (_preview == null)
+                foreach (var t in outTags.Where(t => TagUsedElsewhereInSchedule(config, tagConfig, t)))
+                    if (SharedManualTitles(config, tagConfig, t) is List<BaseItem> _kept) _keptByTag[t] = new HashSet<Guid>(_kept.Select(i => i.Id));
+            var _sharedTags = new HashSet<string>(outTags.Where(t => _preview == null && TagUsedElsewhereInSchedule(config, tagConfig, t) && !_keptByTag.ContainsKey(t)), StringComparer.OrdinalIgnoreCase);
             bool _tagShared = _sharedTags.Contains(tagName);
             if (_preview == null)
                 foreach (var t in outTags.Where(t => !_sharedTags.Contains(t))) TagCacheManager.Instance.RemoveTagFromAllEntries(t);
@@ -2990,11 +2992,13 @@ namespace HomeScreenCompanion
                     foreach (var t in outTags) TagCacheManager.Instance.AddToCache($"imdb_{_imdb}", t);
             int updateCount = 0;
             // Which of outTags an item gains (shouldHave) or loses. A tag another group in schedule
-            // also writes is only ever added (see _tagShared).
+            // also writes is only ever added (see _tagShared), or not taken off that group's titles
+            // (_keptByTag).
             List<string> TagChanges(BaseItem it, bool shouldHave)
             {
                 var existing = new HashSet<string>(it.Tags, StringComparer.OrdinalIgnoreCase);
-                return outTags.Where(ot => existing.Contains(ot) != shouldHave && (shouldHave || !_sharedTags.Contains(ot))).ToList();
+                return outTags.Where(ot => existing.Contains(ot) != shouldHave && (shouldHave || (!_sharedTags.Contains(ot)
+                    && !(_keptByTag.TryGetValue(ot, out var kept) && kept.Contains(it.Id))))).ToList();
             }
             void LogTagChanges(List<string> changes, bool added, string label)
             {
@@ -3007,7 +3011,7 @@ namespace HomeScreenCompanion
             }
             foreach (var item in allItems)
             {
-                bool shouldHave = tagConfig.EnableTag && !tagConfig.OnlyCollection && !_isBoxSetHse && (matchedIds.Contains(item.Id) || _pinnedKeep.Contains(item.Id));
+                bool shouldHave = tagConfig.EnableTag && !tagConfig.OnlyCollection && !_isBoxSetHse && matchedIds.Contains(item.Id);
                 var changes = TagChanges(item, shouldHave);
                 if (changes.Count == 0) continue;
                 if (debug)
@@ -6284,16 +6288,32 @@ namespace HomeScreenCompanion
             return r;
         }
 
-        // Single run of a Random pick source: another source in schedule with the same tag makes
-        // it shared (the run only adds it), unless all those are pinned: their titles are known, so
-        // the tag can be taken off titles no longer picked.
-        private static bool OnlyPinnedShare(PluginConfiguration config, TagConfig tc, string tag) =>
-            RandomPick.On(tc) && string.Equals(tag, (tc.Tag ?? "").Trim(), StringComparison.OrdinalIgnoreCase)
-            && (config.Tags ?? new List<TagConfig>()).Where(t => t.Active && t.EnableTag && !t.OnlyCollection
+        // Single run: the titles the other groups in schedule put on tag, when every one of them is
+        // a plain Manual List (titles known without reading anything: no filter conditions, tags
+        // only the titles themselves, no priority override). Null when any is not: the run then only
+        // adds the tag and the full sync takes it off.
+        private List<BaseItem>? SharedManualTitles(PluginConfiguration config, TagConfig tc, string tag)
+        {
+            var others = (config.Tags ?? new List<TagConfig>()).Where(t => t.Active && t.EnableTag && !t.OnlyCollection
                     && IsScheduleActive(t.ActiveIntervals, DateTime.Now)
                     && !string.Equals(GroupKey(t), GroupKey(tc), StringComparison.OrdinalIgnoreCase)
-                    && t.AllTags().Contains(tag, StringComparer.OrdinalIgnoreCase))
-                .All(RandomPick.IsPinnedSource);
+                    && t.AllTags().Contains(tag, StringComparer.OrdinalIgnoreCase)).ToList();
+            if (others.Count == 0 || tc.OverrideWhenActive) return null;
+            foreach (var t in others)
+            {
+                var (ep, sea, _) = EffectiveTagTargets(t);
+                if (!string.Equals(t.SourceType, "Manual", StringComparison.OrdinalIgnoreCase) || HasFilterConditions(t) || t.OverrideWhenActive || ep || sea) return null;
+            }
+            var titles = new List<BaseItem>();
+            foreach (var t in others)
+            {
+                var bl = new HashSet<string>(t.Blacklist ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
+                var items = ManualItems(t, bl, FetchLimit(t), new GroupRunStats());
+                if (RandomPick.On(t)) items = RandomPick.Apply(t, items, PinnedFor(config, t), DateTime.Now).Items;
+                foreach (var i in items) if (!titles.Contains(i)) titles.Add(i);
+            }
+            return titles;
+        }
 
         // External and AI sources: their titles go into the real-time tag cache (keyed by IMDb id).
         internal static bool IsListSource(TagConfig t) =>
