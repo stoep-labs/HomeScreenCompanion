@@ -2535,10 +2535,10 @@
                     <div><strong>Random pick</strong> — on the Source tab of every source type that tags titles (not <em>Rotating from existing</em> or <em>Your Next Watch</em>).
                         <ul style="margin:4px 0 0;padding-left:18px;line-height:1.7;">
                             <li>Each <em>Max items</em> is filled with titles picked at random from everything the source finds, instead of the first ones. With Max 0 nothing is picked: all titles are used.</li>
-                            <li><em>New pick every</em> <strong>Day</strong> or <strong>Week</strong> (from Monday). Every sync on the same day (or week) picks the same titles, so tags do not change back and forth; the next day or week brings a new pick. The day changes at midnight, server time.</li>
+                            <li><em>New pick every</em> <strong>Day</strong> or <strong>Week</strong> (from Monday). Every sync on the same day (or week) picks the same titles while the source's titles stay the same, so tags do not change back and forth; the next day or week brings a new pick. A list that changes between syncs (an AI source, a live list) can change the pick. The day changes at midnight, server time.</li>
                             <li>Here Max counts Emby items: a film with two versions takes two places, so exactly Max items have the tag.</li>
                             <li><em>Pinned titles with the same tag count toward Max</em>: the titles of <em>Pinned</em> Manual List sources with the same tag (on and in schedule) are part of the Max. With 1 pinned title and Max 8, 7 are picked, and 8 titles have the tag. Off: Max titles are picked and the pinned ones come on top. Pinned titles are never picked twice.</li>
-                            <li>For a home row in Emby's <em>Spotlight</em> view: the Emby web app asks for up to <strong>8</strong> items for a spotlight row (12 in its TV layout). With the row's tag on exactly 8 items (Max 8), the row always shows the pinned titles; the others change with each pick.</li>
+                            <li>For a home row in Emby's <em>Spotlight</em> view: the Emby web app asks for up to <strong>8</strong> items for a spotlight row. With the row's tag on exactly 8 items (Max 8), the row always shows the pinned titles; the others change with each pick.</li>
                         </ul></div>
                 </div>
                 <div id="help-more-mediainfo" class="help-feature-row">
