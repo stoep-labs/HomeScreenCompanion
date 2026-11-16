@@ -146,6 +146,7 @@ namespace HomeScreenCompanion
         public string StartedUtc { get; set; } = string.Empty;
         public string Step { get; set; } = string.Empty;   // what a running sync is doing now
         public string Waiting { get; set; } = string.Empty; // runs waiting for this one to finish (see RunGate)
+        public string Gentle { get; set; } = string.Empty;  // "1 person watching, gentle mode in use" while the run is paced (GentleMode.StatusText)
         public List<GroupIssue> GroupIssues { get; set; } = new List<GroupIssue>(); // each group's warnings / error from its last run
     }
 
@@ -515,6 +516,7 @@ namespace HomeScreenCompanion
         public string StartedUtc { get; set; } = "";
         public string Step { get; set; } = "";   // what a running sync is doing now
         public string Waiting { get; set; } = ""; // runs waiting for this one to finish (see RunGate)
+        public string Gentle { get; set; } = "";  // "1 person watching, gentle mode in use" while the run is paced (GentleMode.StatusText)
     }
 
     [Route("/HomeScreenCompanion/TopList/PrepareFolder", "POST")]
@@ -1149,6 +1151,7 @@ public class HomeScreenCompanionService : IService
                 StartedUtc = HomeScreenCompanionTask.LastStartedUtc?.ToString("o") ?? "",
                 Step = HomeScreenCompanionTask.Progress.Step,
                 Waiting = RunGate.WaitingFor(HomeScreenCompanionTask.Progress.Step, HomeScreenCompanionTask.IsRunning),
+                Gentle = HomeScreenCompanionTask.IsRunning ? GentleMode.StatusText() : "",
                 GroupIssues = GroupIssues.All()
             };
         }
@@ -1950,7 +1953,8 @@ public class HomeScreenCompanionService : IService
                 Logs = logs,
                 StartedUtc = HomeSectionSyncTask.LastStartedUtc?.ToString("o") ?? "",
                 Step = HomeSectionSyncTask.Progress.Step,
-                Waiting = RunGate.WaitingFor(HomeSectionSyncTask.Progress.Step, HomeSectionSyncTask.IsRunning)
+                Waiting = RunGate.WaitingFor(HomeSectionSyncTask.Progress.Step, HomeSectionSyncTask.IsRunning),
+                Gentle = HomeSectionSyncTask.IsRunning ? GentleMode.StatusText() : ""
             };
         }
 
@@ -1965,7 +1969,8 @@ public class HomeScreenCompanionService : IService
                 Logs = logs,
                 StartedUtc = TopListSyncTask.LastStartedUtc?.ToString("o") ?? "",
                 Step = TopListSyncTask.Progress.Step,
-                Waiting = RunGate.WaitingFor(TopListSyncTask.Progress.Step, TopListSyncTask.IsRunning)
+                Waiting = RunGate.WaitingFor(TopListSyncTask.Progress.Step, TopListSyncTask.IsRunning),
+                Gentle = TopListSyncTask.IsRunning ? GentleMode.StatusText() : ""
             };
         }
 
@@ -2209,13 +2214,18 @@ public class HomeScreenCompanionService : IService
                         var currentSections = _userManager.GetHomeSections(userInternalId, CancellationToken.None);
                         var allSections = currentSections?.Sections ?? Array.Empty<ContentSection>();
 
-                        // By title only a row no other source or top-list owns, and never a row on a
-                        // top-list's library (a top-list can have the same title).
+                        // The id is gone: the row that shows what this one shows, else by its title a
+                        // row that shows only what is gone (ShowsOnlyGone). Only a row no other source
+                        // or top-list owns, and never a row on a top-list's library. As the full sync.
                         ContentSection ownedSection = allSections.FirstOrDefault(s => s.Id == tracking.SectionId);
-                        if (ownedSection == null && settingsDict.TryGetValue("CustomName", out var _applyFallbackName) && !string.IsNullOrEmpty(_applyFallbackName))
-                            ownedSection = allSections.FirstOrDefault(s => HomeScreenCompanionTask.SameTitle(s.CustomName, _applyFallbackName)
-                                && !HomeScreenCompanionTask.SectionOwnedElsewhere(config, tc, userId, s.Id)
-                                && !TopListSyncTask.IsTopListRow(s, topListLibraries));
+                        bool MayTake(ContentSection s) => !HomeScreenCompanionTask.SectionOwnedElsewhere(config, tc, userId, s.Id)
+                            && !TopListSyncTask.IsTopListRow(s, topListLibraries);
+                        var shows = HomeScreenCompanionTask.SourceRowShows(_libraryManager, tc, sectionType ?? "", userId);
+                        if (ownedSection == null && shows.Count > 0)
+                            ownedSection = allSections.FirstOrDefault(s => HomeScreenCompanionTask.ShowsSame(s, sectionType, shows) && MayTake(s));
+                        if (ownedSection == null && settingsDict.TryGetValue("CustomName", out var _applyFallbackName) && !string.IsNullOrWhiteSpace(_applyFallbackName))
+                            ownedSection = allSections.FirstOrDefault(s => HomeScreenCompanionTask.SameTitle(s.CustomName, _applyFallbackName) && MayTake(s)
+                                && HomeScreenCompanionTask.ShowsOnlyGone(s, _libraryManager));
 
                         if (ownedSection == null) continue;
 

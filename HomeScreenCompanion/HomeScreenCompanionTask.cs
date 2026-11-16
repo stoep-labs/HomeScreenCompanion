@@ -63,7 +63,10 @@ namespace HomeScreenCompanion
 
         private struct CachedMediaInfo
         {
-            public bool Is4k, Is8k, Is1080, Is720, IsSd;
+            public bool Is4k, Is8k, Is1440, Is1080, Is720, IsSd;
+            // Emby gave the file a resolution label we know (see ApplyResolution). False = not probed
+            // or an unknown word: such a file matches no resolution rule, not even "not 1080p".
+            public bool ResolutionKnown;
             public bool IsHevc, IsAv1, IsH264;
             public bool IsHdr, IsHdr10, IsDv;
             public bool IsAtmos, IsTrueHd, IsDtsHdMa, IsDts, IsAc3, IsAac;
@@ -409,13 +412,15 @@ namespace HomeScreenCompanion
                 }
 
                 var mediaInfoCache = new Dictionary<long, CachedMediaInfo>();
+                _otherVersions.Clear();
+                _seriesInfo.Clear();
                 if (config.Tags.Any(t => t.Active && NeedsMediaDetails(t)))
                 {
                     foreach (var item in allItems)
                     {
-                        if (item.LocationType != LocationType.FileSystem) continue;
-                        var resolved = ResolveItemForMediaInfo(item, seriesEpisodeCache);
-                        mediaInfoCache[item.InternalId] = ExtractMediaInfo(resolved);
+                        // A show's details come from all its episodes, made when a rule needs them (SeriesMediaInfo).
+                        if (item.LocationType != LocationType.FileSystem || IsSeries(item)) continue;
+                        mediaInfoCache[item.InternalId] = ExtractMediaInfo(item);
                     }
                 }
 
@@ -1370,6 +1375,8 @@ namespace HomeScreenCompanion
                 _log.Blank();
                 _log.Info("» Applying tags");
                 phaseTimer.Restart();
+                // A tag row back in schedule loses [INACTIVE] before its titles get the tag.
+                RestoreInactiveTitlesFirst(config, dryRun, cancellationToken);
                 int tagsAdded = 0, tagsRemoved = 0, itemsChanged = 0, updateCount = 0;
                 var _dbgTagAdded = debug ? new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase) : null;
                 var _dbgTagRemoved = debug ? new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase) : null;
@@ -1398,13 +1405,13 @@ namespace HomeScreenCompanion
                     {
                         foreach (var t in toRemove) { item.RemoveTag(t); tagsRemoved++; tagRemovedByTag[t] = tagRemovedByTag.GetValueOrDefault(t) + 1; }
                         foreach (var t in toAdd) { item.AddTag(t); tagsAdded++; tagAddedByTag[t] = tagAddedByTag.GetValueOrDefault(t) + 1; }
-                        GentleMode.Wrote(cancellationToken);
-                        try { _libraryManager.UpdateItem(item, item.Parent, ItemUpdateType.MetadataEdit, null); }
+                        try { GentleMode.Timed("tag save", () => _libraryManager.UpdateItem(item, item.Parent, ItemUpdateType.MetadataEdit, null)); }
                         catch (Exception ex)
                         {
                             _log.Warn($"Could not save tags for '{item.Name}': {ex.Message}");
                             foreach (var t in toRemove) if (!configuredTags.Contains(t)) orphanCleanupFailed.Add(t);
                         }
+                        GentleMode.Wrote(cancellationToken);
                         if (++updateCount % 25 == 0)
                             await Task.Yield();
                     }
@@ -1437,13 +1444,13 @@ namespace HomeScreenCompanion
                     {
                         foreach (var t in toRemove) { item.RemoveTag(t); tagsRemoved++; tagRemovedByTag[t] = tagRemovedByTag.GetValueOrDefault(t) + 1; }
                         foreach (var t in toAdd) { item.AddTag(t); tagsAdded++; tagAddedByTag[t] = tagAddedByTag.GetValueOrDefault(t) + 1; }
-                        GentleMode.Wrote(cancellationToken);
-                        try { _libraryManager.UpdateItem(item, item.Parent, ItemUpdateType.MetadataEdit, null); }
+                        try { GentleMode.Timed("tag save", () => _libraryManager.UpdateItem(item, item.Parent, ItemUpdateType.MetadataEdit, null)); }
                         catch (Exception ex)
                         {
                             _log.Warn($"Could not save tags for '{item.Name}': {ex.Message}");
                             foreach (var t in toRemove) if (!configuredTags.Contains(t)) orphanCleanupFailed.Add(t);
                         }
+                        GentleMode.Wrote(cancellationToken);
                         if (++updateCount % 25 == 0)
                             await Task.Yield();
                     }
@@ -1476,13 +1483,13 @@ namespace HomeScreenCompanion
                     {
                         foreach (var t in toRemove) { item.RemoveTag(t); tagsRemoved++; tagRemovedByTag[t] = tagRemovedByTag.GetValueOrDefault(t) + 1; }
                         foreach (var t in toAdd) { item.AddTag(t); tagsAdded++; tagAddedByTag[t] = tagAddedByTag.GetValueOrDefault(t) + 1; }
-                        GentleMode.Wrote(cancellationToken);
-                        try { _libraryManager.UpdateItem(item, item.Parent, ItemUpdateType.MetadataEdit, null); }
+                        try { GentleMode.Timed("tag save", () => _libraryManager.UpdateItem(item, item.Parent, ItemUpdateType.MetadataEdit, null)); }
                         catch (Exception ex)
                         {
                             _log.Warn($"Could not save tags for season '{item.Name}': {ex.Message}");
                             foreach (var t in toRemove) if (!configuredTags.Contains(t)) orphanCleanupFailed.Add(t);
                         }
+                        GentleMode.Wrote(cancellationToken);
                         if (++updateCount % 25 == 0)
                             await Task.Yield();
                     }
@@ -2269,6 +2276,8 @@ namespace HomeScreenCompanion
             var personCache = new Dictionary<string, HashSet<long>>(StringComparer.OrdinalIgnoreCase);
             var collectionMembershipCache = new Dictionary<string, HashSet<long>>(StringComparer.OrdinalIgnoreCase);
             var mediaInfoCache = new Dictionary<long, CachedMediaInfo>();
+            _otherVersions.Clear();
+            _seriesInfo.Clear();
             var userDataCache = new Dictionary<(Guid, long), (bool Played, DateTimeOffset? LastPlayedDate, int PlayCount)>();
             var seriesLastPlayedCache = new Dictionary<(Guid, long), DateTimeOffset?>();
             var preloadedUsers = _userManager.GetUserList(new UserQuery { IsDisabled = false });
@@ -2342,9 +2351,9 @@ namespace HomeScreenCompanion
                 {
                     foreach (var item in allItems)
                     {
-                        if (item.LocationType != LocationType.FileSystem) continue;
-                        var resolved = ResolveItemForMediaInfo(item, seriesEpisodeCache);
-                        mediaInfoCache[item.InternalId] = ExtractMediaInfo(resolved);
+                        // A show's details come from all its episodes, made when a rule needs them (SeriesMediaInfo).
+                        if (item.LocationType != LocationType.FileSystem || IsSeries(item)) continue;
+                        mediaInfoCache[item.InternalId] = ExtractMediaInfo(item);
                     }
                 }
                 var singleTagCollPlCriteria = GetAllCriteria(tagConfig)
@@ -3026,6 +3035,8 @@ namespace HomeScreenCompanion
             _log.Blank();
             _log.Info("» Applying tags");
             var phaseTimer = System.Diagnostics.Stopwatch.StartNew();
+            // A tag row back in schedule loses [INACTIVE] before its titles get the tag (see the full sync).
+            RestoreInactiveTitlesFirst(config, dryRun, cancellationToken, tagName);
             int tagsAdded = 0, tagsRemoved = 0;
             var _dbgTagAdded = debug ? new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase) : null;
             var _dbgTagRemoved = debug ? new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase) : null;
@@ -3069,9 +3080,9 @@ namespace HomeScreenCompanion
                 if (!dryRun)
                 {
                     ApplyTagChanges(item, changes, shouldHave);
-                    GentleMode.Wrote(cancellationToken);
-                    try { _libraryManager.UpdateItem(item, item.Parent, ItemUpdateType.MetadataEdit, null); }
+                    try { GentleMode.Timed("tag save", () => _libraryManager.UpdateItem(item, item.Parent, ItemUpdateType.MetadataEdit, null)); }
                     catch (Exception ex) { _log.Warn($"Could not save tags for '{item.Name}': {ex.Message}"); }
+                    GentleMode.Wrote(cancellationToken);
                     if (++updateCount % 25 == 0) await Task.Yield();
                 }
                 if (shouldHave) tagsAdded += changes.Count; else tagsRemoved += changes.Count;
@@ -3124,9 +3135,9 @@ namespace HomeScreenCompanion
                     if (!dryRun)
                     {
                         ApplyTagChanges(ep, changesEp, shouldHaveEp);
-                        GentleMode.Wrote(cancellationToken);
-                        try { _libraryManager.UpdateItem(ep, ep.Parent, ItemUpdateType.MetadataEdit, null); }
+                        try { GentleMode.Timed("tag save", () => _libraryManager.UpdateItem(ep, ep.Parent, ItemUpdateType.MetadataEdit, null)); }
                         catch (Exception ex) { _log.Warn($"Could not save tags for episode '{ep.Name}': {ex.Message}"); }
+                        GentleMode.Wrote(cancellationToken);
                         if (++updateCount % 25 == 0) await Task.Yield();
                     }
                     if (shouldHaveEp) tagsAdded += changesEp.Count; else tagsRemoved += changesEp.Count;
@@ -3181,9 +3192,9 @@ namespace HomeScreenCompanion
                     if (!dryRun)
                     {
                         ApplyTagChanges(season, changesSeason, shouldHaveSeason);
-                        GentleMode.Wrote(cancellationToken);
-                        try { _libraryManager.UpdateItem(season, season.Parent, ItemUpdateType.MetadataEdit, null); }
+                        try { GentleMode.Timed("tag save", () => _libraryManager.UpdateItem(season, season.Parent, ItemUpdateType.MetadataEdit, null)); }
                         catch (Exception ex) { _log.Warn($"Could not save tags for season '{season.Name}': {ex.Message}"); }
+                        GentleMode.Wrote(cancellationToken);
                         if (++updateCount % 25 == 0) await Task.Yield();
                     }
                     if (shouldHaveSeason) tagsAdded += changesSeason.Count; else tagsRemoved += changesSeason.Count;
@@ -3232,9 +3243,9 @@ namespace HomeScreenCompanion
                         if (!dryRun)
                         {
                             item.RemoveTag(orphan);
-                            GentleMode.Wrote(cancellationToken);
-                            try { _libraryManager.UpdateItem(item, item.Parent, ItemUpdateType.MetadataEdit, null); }
+                            try { GentleMode.Timed("tag save", () => _libraryManager.UpdateItem(item, item.Parent, ItemUpdateType.MetadataEdit, null)); }
                             catch (Exception ex) { _log.Warn($"Could not save tags for '{item.Name}': {ex.Message}"); }
+                            GentleMode.Wrote(cancellationToken);
                             if (++updateCount % 25 == 0) await Task.Yield();
                         }
                         orphanRemoved++;
@@ -3559,9 +3570,9 @@ namespace HomeScreenCompanion
                     if (!dryRun)
                     {
                         item.RemoveTag(offTag);
-                        GentleMode.Wrote(cancellationToken);
-                        try { _libraryManager.UpdateItem(item, item.Parent, ItemUpdateType.MetadataEdit, null); }
+                        try { GentleMode.Timed("tag save", () => _libraryManager.UpdateItem(item, item.Parent, ItemUpdateType.MetadataEdit, null)); }
                         catch (Exception ex) { _log.Warn($"Could not save tags for '{item.Name}': {ex.Message}"); }
+                        GentleMode.Wrote(cancellationToken);
                     }
                     tagsRemoved++;
                 }
@@ -3701,7 +3712,7 @@ namespace HomeScreenCompanion
         {
             var tag = (tagName ?? tc.Tag ?? "").Trim();
             return tag.Length > 0 && (config.Tags ?? new List<TagConfig>()).Any(t => t.Active && t.EnableTag && !t.OnlyCollection
-                && IsScheduleActive(t.ActiveIntervals, DateTime.Now)
+                && IsScheduleActive(t.ActiveIntervals, RunGate.ScheduleNow)
                 && !string.Equals(GroupKey(t), GroupKey(tc), StringComparison.OrdinalIgnoreCase)
                 && t.AllTags().Contains(tag, StringComparer.OrdinalIgnoreCase));
         }
@@ -3775,7 +3786,14 @@ namespace HomeScreenCompanion
                                 SectionMarker = SectionMarker(t),
                                 // A rotating row goes by its id only: a row of the user's own can have its title.
                                 HomeSectionSettings = RotatingRow.Is(t) ? "{}" : t.HomeSectionSettings ?? "{}",
-                                DefaultTitle = RotatingRow.Is(t) ? "" : DefaultRowTitle(t)
+                                DefaultTitle = RotatingRow.Is(t) ? "" : DefaultRowTitle(t),
+                                // What the row shows (found by that when its id is gone); a rotating row: by its id only.
+                                SectionType = RotatingRow.Is(t) ? "" : (SourceTopLists.Json != null ? SectionTypeOf(t, SourceTopLists.Json) : DefaultSectionType(t)),
+                                Tag = RotatingRow.Is(t) ? "" : (t.Tag ?? "").Trim(),
+                                CollectionName = RotatingRow.Is(t) || !t.EnableCollection ? "" : t.CollectionName ?? "",
+                                HomeSectionLibraryId = RotatingRow.Is(t) ? "" : t.HomeSectionLibraryId ?? "",
+                                PlaylistId = RotatingRow.Is(t) ? "" : (t.PlaylistMappings ?? new List<PlaylistMapping>())
+                                    .FirstOrDefault(m => string.Equals(m.UserId, r.UserId, StringComparison.OrdinalIgnoreCase))?.PlaylistId ?? ""
                             });
                             queueChanged = true;
                         }
@@ -3823,7 +3841,8 @@ namespace HomeScreenCompanion
                     catch { continue; }
                     try
                     {
-                        if (DeleteSectionForUser(uid, r.UserId, r.SectionId, r.SectionMarker, r.HomeSectionSettings, cancellationToken, r.DefaultTitle)) n++;
+                        if (DeleteSectionForUser(uid, r.UserId, r.SectionId, r.SectionMarker, r.HomeSectionSettings, cancellationToken, r.DefaultTitle,
+                                SourceRowShows(_libraryManager, r.SectionType, r.Tag, r.CollectionName, r.HomeSectionLibraryId, r.PlaylistId), r.SectionType)) n++;
                     }
                     catch (Exception ex)
                     {
@@ -4267,9 +4286,20 @@ namespace HomeScreenCompanion
             }
         }
 
-        // An empty Custom Title is the pre-filled one: the group's name, else its tag.
+        // "Hide row title" (HomeSectionSettings "_hideTitle" = "true"): the row is written with a
+        // title of one space, which Emby's web app shows as an empty title (sectionscontroller.js:
+        // `" " === section.Name ? "&nbsp;"`). An empty title would get Emby's default name instead.
+        internal const string HideTitleKey = "_hideTitle";
+        internal const string HiddenTitle = " ";
+
+        internal static bool IsTitleHidden(IDictionary<string, string>? settings)
+            => settings != null && settings.TryGetValue(HideTitleKey, out var v) && string.Equals(v, "true", StringComparison.OrdinalIgnoreCase);
+
+        // An empty Custom Title is the pre-filled one: the group's name, else its tag. A hidden
+        // title wins over both.
         internal static void FillDefaultCustomName(Dictionary<string, string> settings, TagConfig tc)
         {
+            if (IsTitleHidden(settings)) { settings["CustomName"] = HiddenTitle; return; }
             if (settings.TryGetValue("CustomName", out var cn) && !string.IsNullOrWhiteSpace(cn)) return;
             var name = DefaultRowTitle(tc);
             if (name.Length > 0) settings["CustomName"] = name;
@@ -4725,17 +4755,17 @@ namespace HomeScreenCompanion
                             if (entryIdsToRemove.Count > 0)
                             {
                                 try {
-                                    await _playlistManager.RemoveFromPlaylist(existingPlaylist.InternalId, entryIdsToRemove.ToArray());
+                                    await GentleMode.TimedAsync("playlist", () => _playlistManager.RemoveFromPlaylist(existingPlaylist.InternalId, entryIdsToRemove.ToArray()));
                                 } catch (Exception ex) {
                                     _log.Warn($"Playlist \"{plName}\": could not remove {entryIdsToRemove.Count} items for {plUser.Name}: {ex.Message}");
                                 }
-                                await GentleMode.WroteAsync(cancellationToken);
+                                GentleMode.Unpaced();
                             }
 
                             if (toAdd.Length > 0)
                             {
-                                _playlistManager.AddToPlaylist(existingPlaylist.InternalId, toAdd, plUser);
-                                await GentleMode.WroteAsync(cancellationToken);
+                                GentleMode.Timed("playlist", () => _playlistManager.AddToPlaylist(existingPlaylist.InternalId, toAdd, plUser));
+                                GentleMode.Unpaced();
                             }
 
                             // Reorder the playlist so it mirrors the source order. AddToPlaylist appends new
@@ -4765,7 +4795,7 @@ namespace HomeScreenCompanion
                                     int at = targetIndex == 0 ? 0 : currentOrder.IndexOf(targetOrder[targetIndex - 1]) + 1;
                                     try
                                     {
-                                        await _playlistManager.MoveItem(existingPlaylist.InternalId, wanted, at);
+                                        await GentleMode.TimedAsync("playlist", () => _playlistManager.MoveItem(existingPlaylist.InternalId, wanted, at));
                                         currentOrder.Insert(at, wanted);
                                         reordered = true;
                                     }
@@ -4774,9 +4804,12 @@ namespace HomeScreenCompanion
                                         _log.Warn($"Playlist \"{plName}\": could not reorder for {plUser.Name}: {ex.Message}");
                                         break;
                                     }
-                                    await GentleMode.WroteAsync(cancellationToken);
+                                    GentleMode.Unpaced();
                                 }
                             }
+                            // Gentle mode: one playlist is changed in one go (a pause between the
+                            // moves showed it half in order); the pause comes now.
+                            await GentleMode.UnitDoneAsync(cancellationToken);
 
                             if (entryIdsToRemove.Count > 0 || toAdd.Length > 0 || reordered)
                             {
@@ -4892,7 +4925,9 @@ namespace HomeScreenCompanion
                                     // Switched off by its schedule (or made inactive): remember where the row
                                     // was, so it comes back at the same place when it switches on again.
                                     if (plainRow) RememberRowPosition(hsKey, tracking.UserId, uid, tracking.SectionId, cancellationToken);
-                                    if (DeleteSectionForUser(uid, tracking.UserId, tracking.SectionId, sectionMarker, tc.HomeSectionSettings, cancellationToken, DefaultRowTitle(tc))) _removedHs++;
+                                    var _delType = SectionTypeOf(tc, _jsonSerializer);
+                                    if (DeleteSectionForUser(uid, tracking.UserId, tracking.SectionId, sectionMarker, tc.HomeSectionSettings, cancellationToken, DefaultRowTitle(tc),
+                                            SourceRowShows(_libraryManager, tc, _delType, tracking.UserId), _delType)) _removedHs++;
                                 }
                                 catch (Exception ex)
                                 {
@@ -5010,7 +5045,8 @@ namespace HomeScreenCompanion
                     try
                     {
                         var uid = _userManager.GetInternalId(t.UserId);
-                        DeleteSectionForUser(uid, t.UserId, t.SectionId, sectionMarker, tc.HomeSectionSettings, cancellationToken, DefaultRowTitle(tc));
+                        DeleteSectionForUser(uid, t.UserId, t.SectionId, sectionMarker, tc.HomeSectionSettings, cancellationToken, DefaultRowTitle(tc),
+                            SourceRowShows(_libraryManager, tc, sectionType ?? "", t.UserId), sectionType);
                     }
                     catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
                     tc.HomeSectionTracked.Remove(t);
@@ -5054,18 +5090,35 @@ namespace HomeScreenCompanion
                         var currentSections = _userManager.GetHomeSections(userInternalId, cancellationToken);
                         var allCurrentSections = currentSections?.Sections ?? Array.Empty<ContentSection>();
 
-                        // Hitta vår sektion: 1) via spårat ID, 2) via CustomName-fallback (skyddar mot att Emby tilldelar nytt ID vid omordning)
+                        // Our row: 1) by its tracked id, 2) the id is gone (e.g. Copy & Sync made the
+                        // user's rows again): the row that shows what this one shows (ShowsSame), 3) none
+                        // does: by its title, a row that shows only what is gone (e.g. its collection was
+                        // made again with a new id).
                         ContentSection? ownedSection = null;
                         if (tracked != null && !string.IsNullOrEmpty(tracked.SectionId) && !tracked.SectionId.StartsWith("hsc__"))
                             ownedSection = allCurrentSections.FirstOrDefault(s => s.Id == tracked.SectionId);
-                        // The title fallback never takes a row another group or top-list owns: two sources
-                        // with the same Custom Title for one user would otherwise share (and keep
+                        // The fallbacks never take a row another group or top-list owns: two sources
+                        // with the same tag or Custom Title for one user would otherwise share (and keep
                         // overwriting) one row. Nor any row on a top-list's library, tracked or not: it
                         // would turn the top-list's row into this source's row.
-                        if (ownedSection == null && settingsDict.TryGetValue("CustomName", out var _hsFallbackName) && !string.IsNullOrEmpty(_hsFallbackName))
-                            ownedSection = allCurrentSections.FirstOrDefault(s => SameTitle(s.CustomName, _hsFallbackName)
-                                && !SectionOwnedElsewhere(config, hsKey, userId, s.Id)
-                                && !TopListSyncTask.IsTopListRow(s, topListLibraries));
+                        bool _hsMayTake(ContentSection s) => !SectionOwnedElsewhere(config, hsKey, userId, s.Id)
+                            && !TopListSyncTask.IsTopListRow(s, topListLibraries);
+                        var _hsShows = RowShows(BuildContentSection(_jsonSerializer, settingsDict, userLibraryId));
+                        string _hsSaved = string.IsNullOrEmpty(tracked?.SectionId) ? "none" : tracked!.SectionId;
+                        if (ownedSection == null && _hsShows.Count > 0)
+                        {
+                            ownedSection = allCurrentSections.FirstOrDefault(s => ShowsSame(s, sectionType, _hsShows) && _hsMayTake(s));
+                            if (ownedSection != null)
+                                _log.Debug($"  {UserName(userId)}: row {ownedSection.Id} that shows the same taken over (the saved id {_hsSaved} was gone)");
+                        }
+                        // 3) Last: by its title, only a row that shows nothing that still exists (ShowsOnlyGone).
+                        if (ownedSection == null && settingsDict.TryGetValue("CustomName", out var _hsFallbackName) && !string.IsNullOrWhiteSpace(_hsFallbackName))
+                        {
+                            ownedSection = allCurrentSections.FirstOrDefault(s => SameTitle(s.CustomName, _hsFallbackName) && _hsMayTake(s)
+                                && ShowsOnlyGone(s, _libraryManager));
+                            if (ownedSection != null)
+                                _log.Debug($"  {UserName(userId)}: row {ownedSection.Id} with the same title that showed what is gone taken over (the saved id {_hsSaved} was gone)");
+                        }
 
                         if (ownedSection != null)
                         {
@@ -5077,7 +5130,7 @@ namespace HomeScreenCompanion
                                 typeof(ContentSection).GetProperty("Id")?.SetValue(updateSection, ownedSection.Id);
                                 if (SectionKey(_jsonSerializer, updateSection) != _hsBefore)
                                 {
-                                    GentleMode.Wrote(cancellationToken);
+                                    GentleMode.Unpaced();
                                     _userManager.UpdateHomeSection(userInternalId, updateSection, cancellationToken);
                                     _hsAction = "updated";
                                 }
@@ -5107,7 +5160,7 @@ namespace HomeScreenCompanion
                         {
                             var beforeIds = new HashSet<string>(
                                 allCurrentSections.Where(s => !string.IsNullOrEmpty(s.Id)).Select(s => s.Id));
-                            GentleMode.Wrote(cancellationToken);
+                            GentleMode.Unpaced();
                             _userManager.AddHomeSection(userInternalId, BuildContentSection(_jsonSerializer, settingsDict, userLibraryId), cancellationToken);
                             var afterSections = _userManager.GetHomeSections(userInternalId, cancellationToken);
                             var newId = (afterSections?.Sections ?? Array.Empty<ContentSection>())
@@ -5145,6 +5198,16 @@ namespace HomeScreenCompanion
                         HsWarn(statsList, _hsTagName, _hsDisplayName, $"home section failed for {_hsUserName2}: {ex.Message}");
                     }
                 }
+                // Copy & Sync copies of this tag row for users who are not on the source: their title
+                // follows the source's ([INACTIVE] outside the schedule, the plain title in it), as
+                // the rows above. Only the copies Copy & Sync recorded by id (KnownTagRows).
+                if (sectionType == "items" && (scheduledOffTagRow || IsTagRow(tc, _jsonSerializer))
+                    && settingsDict.TryGetValue("_queryTagId", out var _copyTagId) && !string.IsNullOrEmpty(_copyTagId))
+                {
+                    int _copies = SetInactiveTitles(config, tc, _copyTagId, scheduledOffTagRow, true, false, cancellationToken);
+                    if (_copies > 0) _log.Ok($"{_hsDisplayName}: {(scheduledOffTagRow ? "[INACTIVE] put on" : "[INACTIVE] taken off")} {RunLog.Plural(_copies, "Copy & Sync copy", "Copy & Sync copies")}");
+                }
+
                 if (_posMove)
                 {
                     RowPlacement.MarkApplied(_posKey, _posNow);
@@ -5160,7 +5223,10 @@ namespace HomeScreenCompanion
                 {
                     HsWarn(statsList, _hsTagName, _hsDisplayName, "home section enabled but no users are selected");
                 }
+                // Gentle mode: this source's rows for every user are written; the pause comes now.
+                GentleMode.UnitDone(cancellationToken);
             }
+            GentleMode.UnitDone(cancellationToken);
 
             // A full run knows every tag row: tags the anchor holds for rows that are gone come off it.
             if (filterTagName == null)
@@ -5298,7 +5364,7 @@ namespace HomeScreenCompanion
                         typeof(ContentSection).GetProperty("Id")?.SetValue(written, owned.Id);
                         if (SectionKey(_jsonSerializer, written) != before)
                         {
-                            GentleMode.Wrote(cancellationToken);
+                            GentleMode.Unpaced();
                             _userManager.UpdateHomeSection(uid, written, cancellationToken);
                         }
                         sectionId = owned.Id;
@@ -5307,7 +5373,7 @@ namespace HomeScreenCompanion
                     else
                     {
                         written = RotatingRow.Build(tc, pick, config, _libraryManager, _jsonSerializer, null);
-                        GentleMode.Wrote(cancellationToken);
+                        GentleMode.Unpaced();
                         _userManager.AddHomeSection(uid, written, cancellationToken);
                         sectionId = (_userManager.GetHomeSections(uid, cancellationToken)?.Sections ?? Array.Empty<ContentSection>())
                             .Where(s => !string.IsNullOrEmpty(s.Id) && !sections.Any(b => b.Id == s.Id)).Select(s => s.Id).FirstOrDefault() ?? "";
@@ -5465,9 +5531,17 @@ namespace HomeScreenCompanion
         // A home row's identity across users (section ids differ per user): its custom title, else
         // its type and library. The settings page offers "After <row>" with the same key.
         // An inactive row keeps its key: the title counts without InactivePrefix.
+        // A hidden title (HiddenTitle) counts as no title; such a row is told apart by the tags it
+        // shows ("|tag:<ids>"), so two tag rows with hidden titles are two rows (in Copy & Sync and
+        // in Position). The page's copy: hseSectionKey in configPage.js.
         internal static string SectionKey(ContentSection s)
-            => !string.IsNullOrWhiteSpace(s.CustomName) ? "name:" + StripInactive(s.CustomName).Trim().ToLowerInvariant()
-                : "type:" + (s.SectionType ?? "").ToLowerInvariant() + "|" + (s.ParentId ?? "");
+        {
+            var title = StripInactive(s.CustomName).Trim();
+            if (title.Length > 0) return "name:" + title.ToLowerInvariant();
+            var tags = string.Join(",", (s.Query?.TagIds ?? Array.Empty<string>()).Where(t => !string.IsNullOrWhiteSpace(t))
+                .Select(t => t.Trim()).OrderBy(t => t, StringComparer.Ordinal));
+            return "type:" + (s.SectionType ?? "").ToLowerInvariant() + "|" + (s.ParentId ?? "") + (tags.Length > 0 ? "|tag:" + tags : "");
+        }
 
         // The key a Position knows this user's rows by: a rotating source's row by its source (see
         // RotatingRow.PositionKeys), any other row by its SectionKey.
@@ -5623,26 +5697,210 @@ namespace HomeScreenCompanion
         internal static void ApplyRowTitle(Dictionary<string, string> settings, TagConfig tc, IJsonSerializer json)
         {
             FillDefaultCustomName(settings, tc);
-            if (tc.Active && !IsScheduleActive(tc.ActiveIntervals, DateTime.Now) && IsTagRow(tc, json))
+            if (tc.Active && !IsScheduleActive(tc.ActiveIntervals, RunGate.ScheduleNow) && IsTagRow(tc, json))
                 MarkInactive(settings);
         }
 
+        // A hidden title (HiddenTitle) gets the prefix too: the row is empty and Emby hides it, and in
+        // the home screen settings it reads "[INACTIVE]".
         internal static void MarkInactive(Dictionary<string, string> settings)
         {
-            if (settings.TryGetValue("CustomName", out var cn) && !string.IsNullOrWhiteSpace(cn))
+            if (settings.TryGetValue("CustomName", out var cn) && !string.IsNullOrEmpty(cn))
                 settings["CustomName"] = InactivePrefix + StripInactive(cn);
         }
 
-        // Same row title, with or without InactivePrefix.
+        // The row's title with InactivePrefix put on (inactive) or taken off; null when it already is so.
+        internal static string? InactiveTitle(string? title, bool inactive)
+        {
+            if (string.IsNullOrEmpty(title)) return null;
+            var want = inactive ? InactivePrefix + StripInactive(title) : StripInactive(title);
+            return string.Equals(want, title, StringComparison.Ordinal) ? null : want;
+        }
+
+        // The rows of a tag row's source that HSC knows by id, per user: the source's tracked rows,
+        // and the rows Copy & Sync copied to users who are not on the source (HomeSyncAdditions
+        // "row" with the row's id; older records without an id are not known this way).
+        private static List<(string UserId, string SectionId, bool Copy)> KnownTagRows(PluginConfiguration config, TagConfig tc)
+        {
+            var rows = new List<(string, string, bool)>();
+            foreach (var t in tc.HomeSectionTracked ?? new List<HomeSectionTracking>())
+                if (!string.IsNullOrEmpty(t.SectionId) && !t.SectionId.StartsWith("hsc__"))
+                    rows.Add((t.UserId, t.SectionId, false));
+            var key = HomeSectionSyncTask.SourceKey(tc.Name, tc.Tag);
+            foreach (var a in config.HomeSyncAdditions ?? new List<HomeSyncAddition>())
+                if (a.List == HomeSyncAddition.Row && !string.IsNullOrEmpty(a.SectionId) && !string.IsNullOrEmpty(a.UserId)
+                    && string.Equals(a.Key, key, StringComparison.OrdinalIgnoreCase))
+                    rows.Add((a.UserId, a.SectionId, true));
+            return rows;
+        }
+
+        // Puts InactivePrefix on (inactive) or off the known rows of a tag row's source (KnownTagRows),
+        // only the title, and only on a row that still shows the source's tag (tagId). Disabled users
+        // are left alone. onlyCopies: the source's own rows are written by ManageHomeSections itself.
+        // Returns how many rows changed (or would, in dry run).
+        private int SetInactiveTitles(PluginConfiguration config, TagConfig tc, string tagId, bool inactive, bool onlyCopies, bool dryRun, CancellationToken cancellationToken)
+        {
+            int n = 0;
+            string display = !string.IsNullOrWhiteSpace(tc.Name) ? tc.Name.Trim() : (tc.Tag ?? "").Trim();
+            var tagKey = tagId.Replace("-", "");
+            foreach (var (userId, sectionId, copy) in KnownTagRows(config, tc))
+            {
+                if (onlyCopies && !copy) continue;
+                if (SkipDisabled(userId)) continue;
+                try
+                {
+                    var uid = _userManager.GetInternalId(userId);
+                    var row = (_userManager.GetHomeSections(uid, cancellationToken)?.Sections ?? Array.Empty<ContentSection>())
+                        .FirstOrDefault(s => s.Id == sectionId);
+                    if (row == null || !string.Equals(row.SectionType ?? "", "items", StringComparison.OrdinalIgnoreCase) || !RowShows(row).Contains(tagKey)) continue;
+                    var title = InactiveTitle(row.CustomName, inactive);
+                    if (title == null) continue;
+                    n++;
+                    if (dryRun) { _log.Debug($"  [Dry run] {UserName(userId)}: '{row.CustomName}' would be titled '{title}'{(copy ? " (Copy & Sync copy)" : "")}"); continue; }
+                    row.CustomName = title;
+                    GentleMode.Unpaced();
+                    _userManager.UpdateHomeSection(uid, row, cancellationToken);
+                    _log.Debug($"  {UserName(userId)}: row titled '{title}'{(copy ? " (Copy & Sync copy)" : "")}");
+                }
+                catch (Exception ex) { _log.Warn($"{display}: the title of a home section could not be {(inactive ? "marked [INACTIVE]" : "restored")}: {ex.Message}"); }
+            }
+            return n;
+        }
+
+        // Before the tags go on the titles: a tag row whose source is in schedule again loses
+        // InactivePrefix first, on the source's rows and its Copy & Sync copies. Else the row shows its
+        // titles under "[INACTIVE] …" until the home sections step at the end of the run (long in
+        // Gentle mode). ManageHomeSections still writes the rows as usual afterwards. filterTagName:
+        // Run Group (only that tag's sources). Never in Preview.
+        private void RestoreInactiveTitlesFirst(PluginConfiguration config, bool dryRun, CancellationToken cancellationToken, string? filterTagName = null)
+        {
+            if (_preview != null) return;
+            int n = 0;
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var tc in config.Tags)
+            {
+                if (filterTagName != null && !string.Equals(tc.Tag?.Trim(), filterTagName, StringComparison.OrdinalIgnoreCase)) continue;
+                if (RotatingRow.Is(tc) || !tc.Active || !SourceTopLists.PlainRow(tc) || !IsScheduleActive(tc.ActiveIntervals) || !IsTagRow(tc, _jsonSerializer)) continue;
+                // The first flat entry of a source holds its tracking (see ManageHomeSections).
+                if (!seen.Add(GroupKey(tc))) continue;
+                var tagItem = _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "Tag" }, Name = (tc.Tag ?? "").Trim(), Recursive = true }).FirstOrDefault();
+                if (tagItem == null) continue;
+                n += SetInactiveTitles(config, tc, tagItem.InternalId.ToString(), false, false, dryRun, cancellationToken);
+                GentleMode.UnitDone(cancellationToken);
+            }
+            if (n > 0) _log.Info(dryRun ? $"  Dry run — [INACTIVE] would be taken off {RunLog.Plural(n, "home section")} (back in schedule)"
+                                        : $"  [INACTIVE] taken off {RunLog.Plural(n, "home section")} (back in schedule)");
+        }
+
+        // Same row title, with or without InactivePrefix. A hidden title (HiddenTitle) or an empty
+        // one is never the same as anything: every row with a hidden title has the same one.
         internal static bool SameTitle(string? a, string? b)
-            => !string.IsNullOrEmpty(a) && !string.IsNullOrEmpty(b)
-               && string.Equals(StripInactive(a).Trim(), StripInactive(b).Trim(), StringComparison.OrdinalIgnoreCase);
+        {
+            var x = StripInactive(a).Trim();
+            var y = StripInactive(b).Trim();
+            return x.Length > 0 && y.Length > 0 && string.Equals(x, y, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // What a row shows: the tag ids it filters on (Query.TagIds) and its parent (ParentId: a
+        // collection, a playlist, a library), ids without dashes.
+        internal static HashSet<string> RowShows(ContentSection s)
+        {
+            var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var t in s.Query?.TagIds ?? Array.Empty<string>()) if (!string.IsNullOrWhiteSpace(t)) ids.Add(t.Trim().Replace("-", ""));
+            if (!string.IsNullOrWhiteSpace(s.ParentId)) ids.Add(s.ParentId.Trim().Replace("-", ""));
+            return ids;
+        }
+
+        // A row of the same type that shows any of these ids (see RowShows). How a source's row is
+        // found when its tracked id is gone: by what it shows, not by its title, since several rows
+        // can have the same title (or a hidden one). A row a user made by hand that shows exactly
+        // the same tag or collection is taken for the source's row (the owner's decision, 2026-11-12).
+        internal static bool ShowsSame(ContentSection s, string? sectionType, ICollection<string>? shows)
+            => shows != null && shows.Count > 0 && !string.IsNullOrEmpty(s.Id)
+               && string.Equals(s.SectionType ?? "", sectionType ?? "", StringComparison.OrdinalIgnoreCase)
+               && RowShows(s).Overlaps(shows);
+
+        // A row that shows only what is no longer there: it shows something (RowShows) and none of it
+        // exists (a collection or playlist made again with a new id, a tag that is gone). Only such a
+        // row may be found by its title (the last step, after the tracked id and ShowsSame): a row
+        // that shows something that exists, e.g. a user's own row with the same title, never is.
+        internal static bool ShowsOnlyGone(ContentSection s, ILibraryManager lm)
+        {
+            var ids = RowShows(s);
+            if (ids.Count == 0) return false;
+            foreach (var id in ids)
+            {
+                try
+                {
+                    // An id that is neither a Guid nor an internal id counts as there.
+                    if (Guid.TryParse(id, out var g) ? lm.GetItemById(g) != null
+                        : !long.TryParse(id, out var l) || lm.GetItemById(l) != null)
+                        return false;
+                }
+                catch (Exception swallowed) { PluginLog.Swallowed(swallowed); return false; }
+            }
+            return true;
+        }
+
+        // What a source's row shows for one user (see RowShows), worked out from the source: a tag
+        // row its tag, a collection row its collection, a playlist row the user's own playlist.
+        // Empty when it is not known (e.g. the tag or collection does not exist).
+        internal static HashSet<string> SourceRowShows(ILibraryManager lm, string? sectionType, string? tag, string? collectionName,
+            string? homeSectionLibraryId, string? playlistId)
+        {
+            var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            string Inv(long id) => id.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            try
+            {
+                if (sectionType == "items" && !string.IsNullOrWhiteSpace(tag))
+                {
+                    var tagItem = lm.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "Tag" }, Name = tag!.Trim(), Recursive = true }).FirstOrDefault();
+                    if (tagItem != null) ids.Add(Inv(tagItem.InternalId));
+                }
+                else if (sectionType == "boxset")
+                {
+                    if (!string.IsNullOrWhiteSpace(homeSectionLibraryId) && homeSectionLibraryId != "auto")
+                        ids.Add(homeSectionLibraryId!.Trim().Replace("-", ""));
+                    else if (!string.IsNullOrWhiteSpace(collectionName))
+                    {
+                        var coll = lm.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "BoxSet" }, Name = collectionName, Recursive = true }).FirstOrDefault();
+                        if (coll != null) { ids.Add(Inv(coll.InternalId)); ids.Add(coll.Id.ToString("N")); }
+                    }
+                }
+                else if (sectionType == "playlist" && Guid.TryParse(playlistId, out var g))
+                {
+                    var pl = lm.GetItemById(g);
+                    if (pl != null && pl.GetType().Name.Contains("Playlist")) { ids.Add(Inv(pl.InternalId)); ids.Add(pl.Id.ToString("N")); }
+                }
+            }
+            catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
+            return ids;
+        }
+
+        internal static HashSet<string> SourceRowShows(ILibraryManager lm, TagConfig tc, string sectionType, string userId)
+            => SourceRowShows(lm, sectionType, tc.Tag, tc.EnableCollection ? tc.CollectionName : null, tc.HomeSectionLibraryId,
+                tc.PlaylistMappings?.FirstOrDefault(m => string.Equals(m.UserId, userId, StringComparison.OrdinalIgnoreCase))?.PlaylistId);
+
+        // The row type of a source's row: the saved one, else DefaultSectionType.
+        internal static string SectionTypeOf(TagConfig tc, IJsonSerializer json)
+        {
+            var st = "";
+            try
+            {
+                var s = json.DeserializeFromString<Dictionary<string, string>>(string.IsNullOrEmpty(tc.HomeSectionSettings) ? "{}" : tc.HomeSectionSettings);
+                if (s != null) s.TryGetValue("SectionType", out st);
+            }
+            catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
+            return string.IsNullOrEmpty(st) ? DefaultSectionType(tc) : st!;
+        }
 
         // Removes a group's row for one user: by its tracked id, else (the id is gone, e.g. Copy & Sync
-        // re-created the user's rows with new ids) by its marker, else by its title. True when a row
-        // was removed. Never a top-list's row: not one a top-list tracks, and by marker or title never
-        // a row on a top-list's library either — a source and a top-list can have the same title.
-        private bool DeleteSectionForUser(long userInternalId, string userId, string sectionId, string sectionMarker, string settingsJson, CancellationToken cancellationToken, string? defaultTitle = null)
+        // re-created the user's rows with new ids) by its marker, else by what it shows (shows +
+        // sectionType, see ShowsSame), else by its title, only rows that show what is gone
+        // (ShowsOnlyGone). True when a row was removed. Never a top-list's row: not one a top-list tracks, and by marker, content
+        // or title never a row on a top-list's library either. Never a row another group tracks.
+        private bool DeleteSectionForUser(long userInternalId, string userId, string sectionId, string sectionMarker, string settingsJson, CancellationToken cancellationToken, string? defaultTitle = null,
+            ICollection<string>? shows = null, string? sectionType = null)
         {
             ContentSection[]? allSections = null;
             try { allSections = _userManager.GetHomeSections(userInternalId, cancellationToken)?.Sections ?? Array.Empty<ContentSection>(); }
@@ -5683,23 +5941,41 @@ namespace HomeScreenCompanion
                 }
             }
 
+            // Never a row another group tracks (same content or title, different source).
+            var trackedIds = new HashSet<string>(
+                (cfg?.Tags ?? new List<TagConfig>()).SelectMany(t => t.HomeSectionTracked ?? new List<HomeSectionTracking>())
+                    .Select(t => t.SectionId).Where(id => !string.IsNullOrEmpty(id) && id != sectionId));
+
+            if (shows != null && shows.Count > 0)
+            {
+                var byContent = allSections
+                    .Where(s => ShowsSame(s, sectionType, shows) && !trackedIds.Contains(s.Id) && !IsTopListRow(s))
+                    .Select(s => s.Id).ToArray();
+                if (byContent.Length > 0)
+                {
+                    _userManager.DeleteHomeSections(userInternalId, byContent, cancellationToken);
+                    _log.Debug($"  {UserName(userId)}: {RunLog.Plural(byContent.Length, "row")} removed by what it shows (the saved id {(realId ? sectionId : "-")} was gone)");
+                    return true;
+                }
+            }
+
+            // Last: by its title, only rows that show nothing that still exists (ShowsOnlyGone), so a
+            // row a user made with the same title is never removed.
+
             try
             {
                 var hint = _jsonSerializer.DeserializeFromString<Dictionary<string, string>>(settingsJson ?? "{}");
                 var cn = hint != null && hint.TryGetValue("CustomName", out var savedName) ? savedName : "";
                 // An empty saved title: the row was written with the default one (FillDefaultCustomName).
-                if (string.IsNullOrWhiteSpace(cn)) cn = defaultTitle ?? "";
-                if (!string.IsNullOrEmpty(cn))
+                // A hidden title is never searched for (SameTitle).
+                if (string.IsNullOrWhiteSpace(cn) && !IsTitleHidden(hint)) cn = defaultTitle ?? "";
+                if (!string.IsNullOrWhiteSpace(cn))
                 {
-                    // Never a row another group or top-list tracks (same title, different source).
-                    var trackedIds = new HashSet<string>(
-                        (cfg?.Tags ?? new List<TagConfig>()).SelectMany(t => t.HomeSectionTracked ?? new List<HomeSectionTracking>())
-                            .Select(t => t.SectionId).Where(id => !string.IsNullOrEmpty(id)));
                     var sameTitle = allSections.Where(s => SameTitle(s.CustomName, cn) && !string.IsNullOrEmpty(s.Id)).ToList();
                     foreach (var s in sameTitle.Where(IsTopListRow))
                         _log.Debug($"  {UserName(userId)}: '{s.CustomName}' ({s.Id}) kept — a top-list's row with the same title");
                     var fallbackIds = sameTitle
-                        .Where(s => !trackedIds.Contains(s.Id) && !IsTopListRow(s))
+                        .Where(s => !trackedIds.Contains(s.Id) && !IsTopListRow(s) && ShowsOnlyGone(s, _libraryManager))
                         .Select(s => s.Id).ToArray();
                     if (fallbackIds.Length > 0)
                     {
@@ -6248,7 +6524,8 @@ namespace HomeScreenCompanion
             return section;
         }
 
-        private bool IsScheduleActive(List<DateInterval> intervals) => IsScheduleActive(intervals, DateTime.Now);
+        // A run judges every schedule at the time it started (RunGate.ScheduleNow).
+        private bool IsScheduleActive(List<DateInterval> intervals) => IsScheduleActive(intervals, RunGate.ScheduleNow);
 
         internal static bool IsScheduleActive(List<DateInterval> intervals, DateTime now)
         {
@@ -6358,7 +6635,7 @@ namespace HomeScreenCompanion
             var pinned = noPinned ? new List<BaseItem>() : PinnedFor(config, tc);
             int share = RandomPick.PinnedShare(rows, tc, pinned.Count);
             bool addPinned = rows.Count == 0 || !rows.Contains(tc) || ReferenceEquals(rows[0], tc);
-            var r = RandomPick.Apply(tc, pool, pinned, share, addPinned, DateTime.Now);
+            var r = RandomPick.Apply(tc, pool, pinned, share, addPinned, RunGate.ScheduleNow);
             if (record && r.Random && _preview == null)
                 lock (_appliedPicks) _appliedPicks[GroupKey(tc)] = r.Period;
             if (log)
@@ -6379,7 +6656,7 @@ namespace HomeScreenCompanion
         private List<BaseItem>? SharedManualTitles(PluginConfiguration config, TagConfig tc, string tag)
         {
             var others = (config.Tags ?? new List<TagConfig>()).Where(t => t.Active && t.EnableTag && !t.OnlyCollection
-                    && IsScheduleActive(t.ActiveIntervals, DateTime.Now)
+                    && IsScheduleActive(t.ActiveIntervals)
                     && !string.Equals(GroupKey(t), GroupKey(tc), StringComparison.OrdinalIgnoreCase)
                     && t.AllTags().Contains(tag, StringComparer.OrdinalIgnoreCase)).ToList();
             if (others.Count == 0 || tc.OverrideWhenActive) return null;
@@ -6558,23 +6835,6 @@ namespace HomeScreenCompanion
             return (t >= from && DayOk(now.DayOfWeek)) || (t < to && DayOk(now.AddDays(-1).DayOfWeek));
         }
 
-        private BaseItem ResolveItemForMediaInfo(BaseItem item, Dictionary<long, BaseItem> seriesEpisodeCache)
-        {
-            if (!item.GetType().Name.Contains("Series")) return item;
-            if (!seriesEpisodeCache.TryGetValue(item.InternalId, out var cached))
-            {
-                cached = _libraryManager.GetItemList(new InternalItemsQuery
-                {
-                    IncludeItemTypes = new[] { "Episode" },
-                    Parent = item,
-                    Recursive = true,
-                    Limit = 1
-                }).FirstOrDefault() ?? item;
-                seriesEpisodeCache[item.InternalId] = cached;
-            }
-            return cached;
-        }
-
         private DateTimeOffset? GetSeriesLastPlayed(User user, BaseItem seriesItem,
             Dictionary<(Guid, long), DateTimeOffset?> cache,
             Dictionary<(Guid, long), (bool Played, DateTimeOffset? LastPlayedDate, int PlayCount)>? userDataCache = null)
@@ -6620,14 +6880,10 @@ namespace HomeScreenCompanion
             try
             {
                 dynamic dynItem = itemToCheck;
-                try {
-                    int defaultWidth = (int)dynItem.Width;
-                    if (defaultWidth >= 7680) info.Is8k = true;
-                    else if (defaultWidth >= 3800) info.Is4k = true;
-                    else if (defaultWidth >= 1900 && !info.Is4k && !info.Is8k) info.Is1080 = true;
-                    else if (defaultWidth >= 1200 && !info.Is1080 && !info.Is4k && !info.Is8k) info.Is720 = true;
-                    else if (defaultWidth > 0 && !info.Is720 && !info.Is1080 && !info.Is4k && !info.Is8k) info.IsSd = true;
-                } catch { }
+                // The resolution is the one Emby shows: the first word of the main video stream's
+                // DisplayTitle ("1080p H264"). The default stream if one is marked, else the first.
+                string? resolutionLabel = null;
+                bool labelFromDefault = false;
 
                 System.Collections.IEnumerable? streams = null;
                 try { streams = dynItem.GetMediaStreams(); } catch { }
@@ -6653,7 +6909,17 @@ namespace HomeScreenCompanion
 
                             if (type.Equals("Video", StringComparison.OrdinalIgnoreCase))
                             {
-                                try { int w = (int)stream.Width; if (w >= 7680) info.Is8k = true; else if (w >= 3800) info.Is4k = true; else if (w >= 1900 && !info.Is4k && !info.Is8k) info.Is1080 = true; else if (w >= 1200 && !info.Is1080 && !info.Is4k && !info.Is8k) info.Is720 = true; else if (w > 0 && !info.Is720 && !info.Is1080 && !info.Is4k && !info.Is8k) info.IsSd = true; } catch { }
+                                try
+                                {
+                                    bool isDefault = false;
+                                    try { isDefault = (bool)stream.IsDefault; } catch { }
+                                    if (resolutionLabel == null || (isDefault && !labelFromDefault))
+                                    {
+                                        resolutionLabel = stream.DisplayTitle?.ToString() ?? "";
+                                        labelFromDefault = isDefault;
+                                    }
+                                }
+                                catch { }
                                 if (codec.IndexOf("hevc", StringComparison.OrdinalIgnoreCase) >= 0 || codec.IndexOf("h265", StringComparison.OrdinalIgnoreCase) >= 0) info.IsHevc = true;
                                 if (codec.IndexOf("av1", StringComparison.OrdinalIgnoreCase) >= 0) info.IsAv1 = true;
                                 if (codec.IndexOf("h264", StringComparison.OrdinalIgnoreCase) >= 0 || codec.IndexOf("avc", StringComparison.OrdinalIgnoreCase) >= 0) info.IsH264 = true;
@@ -6679,6 +6945,7 @@ namespace HomeScreenCompanion
                         catch { }
                     }
                 }
+                ApplyResolution(ref info, resolutionLabel);
 
                 info.DateModifiedDays = TryGetDateModified(itemToCheck);
                 info.FileSizeMb = TryGetFileSize(itemToCheck);
@@ -6688,6 +6955,174 @@ namespace HomeScreenCompanion
             }
             catch { }
             return info;
+        }
+
+        // Emby's resolution words (first word of a video stream's DisplayTitle) → the filter's classes.
+        // 1440p, 1440i and 2K are one class ("1440p / 2K", owner 2026-11-13). The rarer 5K and 6K are known
+        // but in no class: they match no resolution rule and every "not" rule. Any other word (or none)
+        // leaves the resolution unknown.
+        private static void ApplyResolution(ref CachedMediaInfo info, string? displayTitle)
+        {
+            var title = (displayTitle ?? "").Trim();
+            int space = title.IndexOf(' ');
+            var word = (space < 0 ? title : title.Substring(0, space)).ToUpperInvariant();
+            switch (word)
+            {
+                case "8K": case "4320P": info.Is8k = true; break;
+                case "4K": case "2160P": info.Is4k = true; break;
+                case "1080P": case "1080I": info.Is1080 = true; break;
+                case "720P": case "720I": info.Is720 = true; break;
+                case "576P": case "576I": case "480P": case "480I": case "SD": info.IsSd = true; break;
+                case "1440P": case "1440I": case "2K": info.Is1440 = true; break;
+                case "5K": case "6K": break;
+                default: return;
+            }
+            info.ResolutionKnown = true;
+        }
+
+        private static readonly HashSet<string> ResolutionCriteria = new HashSet<string>(StringComparer.Ordinal)
+            { "8K", "4K", "1440p", "1080p", "720p", "SD" };
+
+        // A rule read from a file (stream flags, audio language, file size …): it can differ between a
+        // film's versions. NeedsMediaDetails uses it too.
+        private static bool IsFileCriterion(string criterion)
+        {
+            var crit = criterion.TrimStart('!');
+            int colon = crit.IndexOf(':');
+            return colon < 0 ? crit.Length > 0 : MediaDetailProperties.Contains(crit.Substring(0, colon));
+        }
+
+        // A film's or episode's other versions (Emby's own links, Video.GetAlternateVersionIds) with their
+        // file details, per run. Top-list and ranked copies are linked as versions too and never count.
+        private System.Collections.Concurrent.ConcurrentDictionary<long, List<(BaseItem Item, CachedMediaInfo Info)>> _otherVersions
+            = new System.Collections.Concurrent.ConcurrentDictionary<long, List<(BaseItem Item, CachedMediaInfo Info)>>();
+
+        // Movies and episodes have versions; an episode's versions are episodes.
+        private static bool HasVersions(BaseItem item) =>
+            item is MediaBrowser.Controller.Entities.Movies.Movie || item is MediaBrowser.Controller.Entities.TV.Episode;
+
+        private List<(BaseItem Item, CachedMediaInfo Info)> OtherVersions(BaseItem item)
+        {
+            if (!HasVersions(item) || !(item is Video video)) return new List<(BaseItem, CachedMediaInfo)>();
+            return _otherVersions.GetOrAdd(item.InternalId, _ =>
+            {
+                var list = new List<(BaseItem, CachedMediaInfo)>();
+                try
+                {
+                    foreach (var id in video.GetAlternateVersionIds())
+                    {
+                        if (id == item.InternalId) continue;
+                        var other = _libraryManager.GetItemById(id);
+                        if (other == null || other.GetType() != item.GetType() || !TopListCollectionMirror.IsOriginal(other)) continue;
+                        list.Add((other, ExtractMediaInfo(other)));
+                    }
+                }
+                catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
+                return list;
+            });
+        }
+
+        // A show's file details from all its episodes (owner 2026-11-13): each episode counts once, with
+        // its versions together (best resolution, a flag or language if any version has it). The show's
+        // resolution is the most common one among episodes with a known resolution, the higher one on a
+        // tie; a yes/no detail (HDR, codec, audio, language) counts when more than half of those episodes
+        // have it. Numbers (file size, dates) come from one episode, as before. Per run, made on demand.
+        private System.Collections.Concurrent.ConcurrentDictionary<long, CachedMediaInfo> _seriesInfo
+            = new System.Collections.Concurrent.ConcurrentDictionary<long, CachedMediaInfo>();
+
+        // Resolution classes in order; 5K/6K (known, no class) rank between 4K and 8K.
+        private static int ResolutionRank(CachedMediaInfo i) =>
+            !i.ResolutionKnown ? 0 : i.Is8k ? 7 : i.Is4k ? 5 : i.Is1440 ? 4 : i.Is1080 ? 3 : i.Is720 ? 2 : i.IsSd ? 1 : 6;
+
+        private static void SetResolutionRank(ref CachedMediaInfo i, int rank)
+        {
+            i.Is8k = rank == 7; i.Is4k = rank == 5; i.Is1440 = rank == 4; i.Is1080 = rank == 3; i.Is720 = rank == 2; i.IsSd = rank == 1;
+            i.ResolutionKnown = rank > 0;
+        }
+
+        private static bool IsSeries(BaseItem item) => item is MediaBrowser.Controller.Entities.TV.Series;
+
+        // An item's file details: a show's from its episodes, anything else's from its own file.
+        private CachedMediaInfo MediaInfoOf(BaseItem item) => IsSeries(item) ? SeriesMediaInfo(item) : ExtractMediaInfo(item);
+
+        // Rules that do not read files first: they are cheap, and "MediaType:Movie" then spares a show's
+        // episodes. The order never changes the result (AND/OR of side-effect-free checks).
+        private static IEnumerable<string> CheapFirst(IEnumerable<string> criteria) =>
+            criteria.OrderBy(c => IsFileCriterion(c) ? 1 : 0);
+
+        private CachedMediaInfo SeriesMediaInfo(BaseItem series)
+        {
+            return _seriesInfo.GetOrAdd(series.InternalId, _ =>
+            {
+                var empty = new CachedMediaInfo { AudioLanguages = new HashSet<string>(StringComparer.OrdinalIgnoreCase) };
+                List<BaseItem> episodes;
+                try
+                {
+                    episodes = _libraryManager.GetItemList(new InternalItemsQuery
+                    {
+                        IncludeItemTypes = new[] { "Episode" },
+                        SeriesIds = new[] { series.InternalId },
+                        Recursive = true,
+                        IsVirtualItem = false
+                    }).Where(e => e is MediaBrowser.Controller.Entities.TV.Episode && TopListCollectionMirror.IsOriginal(e))
+                      .OrderBy(e => e.InternalId).ToList();
+                }
+                catch (Exception swallowed) { PluginLog.Swallowed(swallowed); return empty; }
+                if (episodes.Count == 0) return empty;
+
+                var byId = episodes.ToDictionary(e => e.InternalId);
+                var info = new Dictionary<long, CachedMediaInfo>();
+                CachedMediaInfo InfoOf(BaseItem e) => info.TryGetValue(e.InternalId, out var ci) ? ci : (info[e.InternalId] = ExtractMediaInfo(e));
+
+                // One entry per episode: the episode and its versions in this show.
+                var units = new List<CachedMediaInfo>();
+                var seen = new HashSet<long>();
+                foreach (var ep in episodes)
+                {
+                    if (!seen.Add(ep.InternalId)) continue;
+                    var group = new List<BaseItem> { ep };
+                    try
+                    {
+                        if (ep is Video v)
+                            foreach (var id in v.GetAlternateVersionIds())
+                                if (byId.TryGetValue(id, out var other) && seen.Add(id)) group.Add(other);
+                    }
+                    catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
+
+                    var u = new CachedMediaInfo { AudioLanguages = new HashSet<string>(StringComparer.OrdinalIgnoreCase) };
+                    int best = 0;
+                    foreach (var g in group)
+                    {
+                        var c = InfoOf(g);
+                        best = Math.Max(best, ResolutionRank(c));
+                        u.IsHevc |= c.IsHevc; u.IsAv1 |= c.IsAv1; u.IsH264 |= c.IsH264;
+                        u.IsHdr |= c.IsHdr; u.IsHdr10 |= c.IsHdr10; u.IsDv |= c.IsDv;
+                        u.IsAtmos |= c.IsAtmos; u.IsTrueHd |= c.IsTrueHd; u.IsDtsHdMa |= c.IsDtsHdMa; u.IsDts |= c.IsDts;
+                        u.IsAc3 |= c.IsAc3; u.IsAac |= c.IsAac;
+                        u.Is71 |= c.Is71; u.Is51 |= c.Is51; u.IsStereo |= c.IsStereo; u.IsMono |= c.IsMono;
+                        if (c.AudioLanguages != null) u.AudioLanguages.UnionWith(c.AudioLanguages);
+                    }
+                    SetResolutionRank(ref u, best);
+                    units.Add(u);
+                }
+
+                // Numbers and dates from the first episode (lowest id), as one episode gave before.
+                var result = InfoOf(episodes[0]);
+                result.AudioLanguages = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var known = units.Where(u => u.ResolutionKnown).ToList();
+                int top = known.Count == 0 ? 0 : known.GroupBy(ResolutionRank)
+                    .OrderByDescending(g => g.Count()).ThenByDescending(g => g.Key).First().Key;
+                SetResolutionRank(ref result, top);
+                bool Most(Func<CachedMediaInfo, bool> has) => known.Count > 0 && known.Count(has) * 2 > known.Count;
+                result.IsHevc = Most(u => u.IsHevc); result.IsAv1 = Most(u => u.IsAv1); result.IsH264 = Most(u => u.IsH264);
+                result.IsHdr = Most(u => u.IsHdr); result.IsHdr10 = Most(u => u.IsHdr10); result.IsDv = Most(u => u.IsDv);
+                result.IsAtmos = Most(u => u.IsAtmos); result.IsTrueHd = Most(u => u.IsTrueHd); result.IsDtsHdMa = Most(u => u.IsDtsHdMa);
+                result.IsDts = Most(u => u.IsDts); result.IsAc3 = Most(u => u.IsAc3); result.IsAac = Most(u => u.IsAac);
+                result.Is71 = Most(u => u.Is71); result.Is51 = Most(u => u.Is51); result.IsStereo = Most(u => u.IsStereo); result.IsMono = Most(u => u.IsMono);
+                foreach (var lang in known.SelectMany(u => u.AudioLanguages).Distinct(StringComparer.OrdinalIgnoreCase).ToList())
+                    if (Most(u => u.AudioLanguages.Contains(lang))) result.AudioLanguages.Add(lang);
+                return result;
+            });
         }
 
         private bool ItemMatchesMediaInfo(BaseItem item, TagConfig tagConfig, bool debug,
@@ -6706,60 +7141,15 @@ namespace HomeScreenCompanion
             bool hasLegacy = legacy != null && legacy.Count > 0;
             if (!hasFilters && !hasLegacy) return true;
 
-            BaseItem itemToCheck;
-            bool is4k, is1080, is720, is8k, isSd, isHevc, isAv1, isH264;
-            bool isHdr, isHdr10, isDv, isAtmos, isTrueHd, isDtsHdMa, isDts, isAc3, isAac;
-            bool is51, is71, isStereo, isMono;
-            HashSet<string> audioLanguages;
-            double? cachedDateModifiedDays, cachedFileSizeMb;
-            double? cachedBitRate, cachedSampleRate, cachedBitsPerSample, cachedTrackNumber, cachedDiscNumber;
+            BaseItem itemToCheck = item; // metadata (Studios, Genres etc.) from the item itself
 
             if (!cachedInfo.HasValue && !NeedsMediaDetails(tagConfig))
                 cachedInfo = new CachedMediaInfo { AudioLanguages = new HashSet<string>(StringComparer.OrdinalIgnoreCase) };
 
-            if (cachedInfo.HasValue)
-            {
-                itemToCheck = item; // metadata (Studios, Genres etc.) from original item
-                var ci = cachedInfo.Value;
-                is4k = ci.Is4k; is8k = ci.Is8k; is1080 = ci.Is1080; is720 = ci.Is720; isSd = ci.IsSd;
-                isHevc = ci.IsHevc; isAv1 = ci.IsAv1; isH264 = ci.IsH264;
-                isHdr = ci.IsHdr; isHdr10 = ci.IsHdr10; isDv = ci.IsDv;
-                isAtmos = ci.IsAtmos; isTrueHd = ci.IsTrueHd; isDtsHdMa = ci.IsDtsHdMa;
-                isDts = ci.IsDts; isAc3 = ci.IsAc3; isAac = ci.IsAac;
-                is51 = ci.Is51; is71 = ci.Is71; isStereo = ci.IsStereo; isMono = ci.IsMono;
-                audioLanguages = ci.AudioLanguages ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                cachedDateModifiedDays = ci.DateModifiedDays;
-                cachedFileSizeMb = ci.FileSizeMb;
-                cachedBitRate = ci.BitRate;
-                cachedSampleRate = ci.SampleRate;
-                cachedBitsPerSample = ci.BitsPerSample;
-                cachedTrackNumber = ci.TrackNumber;
-                cachedDiscNumber = ci.DiscNumber;
-            }
-            else
-            {
-                itemToCheck = item;
-                if (item.GetType().Name.Contains("Series"))
-                    itemToCheck = seriesEpisodeCache != null
-                        ? ResolveItemForMediaInfo(item, seriesEpisodeCache)
-                        : (_libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "Episode" }, Parent = item, Recursive = true, Limit = 1 }).FirstOrDefault() ?? item);
-
-                var extracted = ExtractMediaInfo(itemToCheck);
-                is4k = extracted.Is4k; is8k = extracted.Is8k; is1080 = extracted.Is1080; is720 = extracted.Is720; isSd = extracted.IsSd;
-                isHevc = extracted.IsHevc; isAv1 = extracted.IsAv1; isH264 = extracted.IsH264;
-                isHdr = extracted.IsHdr; isHdr10 = extracted.IsHdr10; isDv = extracted.IsDv;
-                isAtmos = extracted.IsAtmos; isTrueHd = extracted.IsTrueHd; isDtsHdMa = extracted.IsDtsHdMa;
-                isDts = extracted.IsDts; isAc3 = extracted.IsAc3; isAac = extracted.IsAac;
-                is51 = extracted.Is51; is71 = extracted.Is71; isStereo = extracted.IsStereo; isMono = extracted.IsMono;
-                audioLanguages = extracted.AudioLanguages;
-                cachedDateModifiedDays = extracted.DateModifiedDays;
-                cachedFileSizeMb = extracted.FileSizeMb;
-                cachedBitRate = extracted.BitRate;
-                cachedSampleRate = extracted.SampleRate;
-                cachedBitsPerSample = extracted.BitsPerSample;
-                cachedTrackNumber = extracted.TrackNumber;
-                cachedDiscNumber = extracted.DiscNumber;
-            }
+            // The file details, read only when a file rule is checked (a show's means reading all its
+            // episodes, which a "MediaType:Movie AND 4K" source never needs).
+            CachedMediaInfo? selfInfo = cachedInfo;
+            CachedMediaInfo Self() => selfInfo ??= MediaInfoOf(item);
 
             string mediaType = item.GetType().Name;
             string[] itemTags = item.Tags ?? Array.Empty<string>();
@@ -6783,40 +7173,60 @@ namespace HomeScreenCompanion
             if (ownTags.Count > 0)
                 itemTags = itemTags.Where(t => !ownTags.Contains(t, StringComparer.OrdinalIgnoreCase)).ToArray();
 
+            // One rule on one file's details (this item's, or another version's for file rules).
+            bool EvalWith(string c, BaseItem on, CachedMediaInfo ci) => EvaluateCriterion(c, on,
+                ci.Is4k, ci.Is1080, ci.Is720, ci.Is8k, ci.IsSd,
+                ci.IsHevc, ci.IsAv1, ci.IsH264, ci.IsHdr, ci.IsHdr10, ci.IsDv, ci.IsAtmos, ci.IsTrueHd, ci.IsDtsHdMa, ci.IsDts,
+                ci.IsAc3, ci.IsAac, ci.Is51, ci.Is71, ci.IsStereo, ci.IsMono, personCache,
+                ci.AudioLanguages ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase), mediaType, itemTags,
+                userDataCache, ci.DateModifiedDays, ci.FileSizeMb, preloadedUsers, seriesLastPlayedCache,
+                ci.BitRate, ci.SampleRate, ci.BitsPerSample, ci.TrackNumber, ci.DiscNumber,
+                collectionMembershipCache, seriesEpisodeNamesCache, ci.Is1440);
+
+            // Films and episodes (a show has one summary, see SeriesMediaInfo, and no versions):
+            // a positive file rule is this version's own ("4K AND HDR" needs one version that is both;
+            // the collection then gets the version that matches). A "not" file rule is the whole film's:
+            // it holds only if no version has it, so "not 1080p" skips a film in 4K and 1080p. A file
+            // with an unknown resolution matches no resolution rule; for a "not" rule the film's known
+            // versions decide, and with none known it does not match.
+            bool EvalCrit(string c)
+            {
+                bool negated = c.Length > 0 && c[0] == '!';
+                bool resolutionRule = ResolutionCriteria.Contains(negated ? c.Substring(1) : c);
+                bool fileRule = IsFileCriterion(c);
+                var self = fileRule ? Self() : (cachedInfo ?? new CachedMediaInfo { AudioLanguages = new HashSet<string>(StringComparer.OrdinalIgnoreCase) });
+                if (!negated || !fileRule)
+                    return (!resolutionRule || self.ResolutionKnown) && EvalWith(c, itemToCheck, self);
+
+                var versions = new List<(BaseItem Item, CachedMediaInfo Info)> { (itemToCheck, self) };
+                versions.AddRange(OtherVersions(item));
+                if (resolutionRule)
+                {
+                    versions = versions.Where(v => v.Info.ResolutionKnown).ToList();
+                    if (versions.Count == 0) return false;
+                }
+                return versions.All(v => EvalWith(c, v.Item, v.Info));
+            }
+
             if (hasFilters)
             {
-                bool EvalCrit(string c) => EvaluateCriterion(c, itemToCheck, is4k, is1080, is720, is8k, isSd,
-                    isHevc, isAv1, isH264, isHdr, isHdr10, isDv, isAtmos, isTrueHd, isDtsHdMa, isDts,
-                    isAc3, isAac, is51, is71, isStereo, isMono, personCache, audioLanguages, mediaType, itemTags,
-                    userDataCache, cachedDateModifiedDays, cachedFileSizeMb, preloadedUsers, seriesLastPlayedCache,
-                    cachedBitRate, cachedSampleRate, cachedBitsPerSample, cachedTrackNumber, cachedDiscNumber,
-                    collectionMembershipCache, seriesEpisodeNamesCache);
                 bool EvalGroup(MediaInfoFilter f)
                 {
                     if (f.Criteria == null || f.Criteria.Count == 0) return true;
                     bool isOr = string.Equals(f.Operator, "OR", StringComparison.OrdinalIgnoreCase);
-                    return isOr ? f.Criteria.Any(EvalCrit) : f.Criteria.All(EvalCrit);
+                    return isOr ? CheapFirst(f.Criteria).Any(EvalCrit) : CheapFirst(f.Criteria).All(EvalCrit);
                 }
                 bool result = EvalGroup(filters![0]);
                 for (int gi = 1; gi < filters.Count; gi++)
                 {
-                    bool groupResult = EvalGroup(filters[gi]);
                     bool useOr = string.Equals(filters[gi].GroupOperator, "OR", StringComparison.OrdinalIgnoreCase);
-                    result = useOr ? result || groupResult : result && groupResult;
+                    var group = filters[gi];
+                    result = useOr ? result || EvalGroup(group) : result && EvalGroup(group);
                 }
                 return result;
             }
 
-            foreach (var cond in legacy!)
-            {
-                if (!EvaluateCriterion(cond, itemToCheck, is4k, is1080, is720, is8k, isSd, isHevc, isAv1, isH264,
-                    isHdr, isHdr10, isDv, isAtmos, isTrueHd, isDtsHdMa, isDts, isAc3, isAac, is51, is71, isStereo, isMono,
-                    personCache, audioLanguages, mediaType, itemTags, userDataCache, cachedDateModifiedDays, cachedFileSizeMb,
-                    preloadedUsers, seriesLastPlayedCache, cachedBitRate, cachedSampleRate, cachedBitsPerSample, cachedTrackNumber,
-                    cachedDiscNumber, collectionMembershipCache, seriesEpisodeNamesCache))
-                    return false;
-            }
-            return true;
+            return CheapFirst(legacy!).All(EvalCrit);
         }
 
         private bool EvaluateCriterion(string cond, BaseItem item, bool is4k, bool is1080, bool is720,
@@ -6839,7 +7249,8 @@ namespace HomeScreenCompanion
             double? cachedTrackNumber = null,
             double? cachedDiscNumber = null,
             Dictionary<string, HashSet<long>>? collectionMembershipCache = null,
-            Dictionary<long, List<string>>? seriesEpisodeNamesCache = null)
+            Dictionary<long, List<string>>? seriesEpisodeNamesCache = null,
+            bool is1440 = false)
         {
             bool negate = cond.Length > 0 && cond[0] == '!';
             if (negate) cond = cond.Substring(1);
@@ -7086,7 +7497,7 @@ namespace HomeScreenCompanion
             }
             return c switch
             {
-                "4K" => is4k, "8K" => is8k, "1080p" => is1080, "720p" => is720, "SD" => isSd,
+                "4K" => is4k, "8K" => is8k, "1440p" => is1440, "1080p" => is1080, "720p" => is720, "SD" => isSd,
                 "HEVC" => isHevc, "AV1" => isAv1, "H264" => isH264,
                 "HDR" => isHdr || isDv, "HDR10" => isHdr10, "DolbyVision" => isDv,
                 "Atmos" => isAtmos, "TrueHD" => isTrueHd, "DtsHdMa" => isDtsHdMa,
@@ -7170,12 +7581,7 @@ namespace HomeScreenCompanion
         };
 
         private static bool NeedsMediaDetails(TagConfig tagConfig)
-            => GetAllCriteria(tagConfig).Any(c =>
-            {
-                var crit = c.TrimStart('!');
-                int colon = crit.IndexOf(':');
-                return colon < 0 ? crit.Length > 0 : MediaDetailProperties.Contains(crit.Substring(0, colon));
-            });
+            => GetAllCriteria(tagConfig).Any(IsFileCriterion);
 
         private static IEnumerable<string> GetAllCriteria(TagConfig tagConfig)
         {
