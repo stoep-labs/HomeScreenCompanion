@@ -219,14 +219,9 @@ namespace HomeScreenCompanion
         public List<string> PinnedItemIds { get; set; } = new List<string>();
         // "Random pick": the source's Max (less its pinned titles) is filled with titles picked at
         // random from everything it finds, the same pick for each period (RandomPickEvery
-        // "15Minutes", "Hour", "Day" or "Week").
+        // "Hour", "Day" or "Week"; see RandomPick.Every).
         public bool RandomPick { get; set; } = false;
         public string RandomPickEvery { get; set; } = "Day";
-        // 4.8.0.966: a Manual source marked "Pinned" gives its titles as pinned titles to the Random
-        // pick source with the same tag. Still read; no longer offered for new sources.
-        public bool Pinned { get; set; } = false;
-        // 4.8.0.966 only, no longer used: pinned titles always count toward Max.
-        public bool RandomPickCountPinned { get; set; } = true;
 
         // AI source settings
         public string AiProvider { get; set; } = "OpenAI";

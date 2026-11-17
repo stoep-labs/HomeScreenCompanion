@@ -9,11 +9,13 @@ using System.Threading.Tasks;
 namespace HomeScreenCompanion
 {
     /// <summary>
-    /// Renews the Random pick of sources whose period (15 minutes, hour, day or week, see
-    /// RandomPick) has moved on since the pick they last applied. Cheap when nothing is due: it
-    /// only compares period keys. A due source gets a Run Group limited to its tags and its
-    /// collection (HomeScreenCompanionTask.RunRandomPickAsync), through the same paced code;
-    /// a Dry Run changes nothing. One log line per source: "Random pick: +7 −7 (Spotlight)".
+    /// Renews the Random pick of sources whose period (hour, day or week, see RandomPick) has
+    /// moved on since the pick they last applied. Checks every 15 minutes, so a new hour is picked
+    /// up within 15 minutes; cheap when nothing is due (it only compares period keys). A due source
+    /// gets a Run Group limited to its tags, collection and playlists (no home rows, top-lists or
+    /// tag art; HomeScreenCompanionTask.RunRandomPickAsync), through the same paced code; a Dry Run
+    /// changes nothing. One log line per source: "Random pick: +7 −7 (Spotlight)". Also in the
+    /// page's Run menu (RunMenuTasks), without a log tab of its own (owner 2026-11-17).
     /// </summary>
     public class RandomPickTask : IScheduledTask, IConfigurableScheduledTask
     {
@@ -30,7 +32,7 @@ namespace HomeScreenCompanion
 
         public string Key => "HomeScreenCompanionRandomPick";
         public string Name => "Random pick";
-        public string Description => "Makes a new random pick for sources with Random pick when their period (15 minutes, hour, day or week) changes.";
+        public string Description => "Makes a new random pick for sources with Random pick when their period (hour, day or week) changes.";
         public string Category => "Home Screen Companion";
 
         public bool IsHidden => false;
@@ -62,7 +64,7 @@ namespace HomeScreenCompanion
                 .GroupBy(HomeScreenCompanionTask.GroupKey, StringComparer.OrdinalIgnoreCase))
             {
                 var t = group.First();
-                var period = RandomPick.PeriodKey(t, now);
+                var period = RandomPick.PeriodKey(t, config, now);
                 if (applied.TryGetValue(group.Key, out var last) && last == period) continue;
                 // Not written to the state (a dry run, a source left to the sync): said once a period.
                 bool quiet = config.DryRunMode || t.SourceType == "AI" || task.OnlyAddsSharedTag(config, t);

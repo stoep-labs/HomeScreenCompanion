@@ -1446,7 +1446,8 @@ public class HomeScreenCompanionService : IService
         // The tasks the Run menu may start.
         private static readonly HashSet<string> RunMenuTasks = new HashSet<string>(StringComparer.Ordinal)
         {
-            "HomeScreenCompanionSyncTask", "HomeSectionSyncTask", "TopListSyncTask", "MergeTopListVersionsTask", "ContinueWatchingBumpTask", "OriginalPostersTask"
+            "HomeScreenCompanionSyncTask", "HomeSectionSyncTask", "TopListSyncTask", "MergeTopListVersionsTask", "ContinueWatchingBumpTask", "OriginalPostersTask",
+            "HomeScreenCompanionRandomPick"
         };
 
         public object Post(RunTaskRequest request)

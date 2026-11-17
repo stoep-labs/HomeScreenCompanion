@@ -22,67 +22,68 @@ namespace HomeScreenCompanion
     /// per row: the total is their sum, and the pinned titles take their places from the first
     /// rows with a Max (a row with Max 0 takes all its titles).
     ///
-    /// The pick is worked out, not stored: it comes from the tag and the period (a 15-minute slot,
-    /// the hour, the day or the Monday of the week), so every sync in the same period picks the
-    /// same titles (no tag churn, nothing to save, Dry Run changes nothing) and the next period
-    /// brings a new pick. Each title gets a rank from a hash of the seed and the title, the lowest
-    /// ranks are taken: a title that joins or leaves the source changes at most one pick, and a
-    /// higher Max only adds titles. Max counts titles: a film's versions are separate items, all
-    /// get the tag and take one place together. Top-list and ranked copies are never picked
-    /// (TopListCollectionMirror.IsOriginal): the collection mirror puts them in collections.
+    /// The pick is worked out, not stored: it comes from the tag and the period (the hour, the day
+    /// or the Monday of the week), so every sync in the same period picks the same titles (no tag
+    /// churn, nothing to save, Dry Run changes nothing) and the next period brings a new pick. Each
+    /// title gets a rank from a hash of the seed and the title, the lowest ranks are taken: a title
+    /// that joins or leaves the source changes at most one pick, and a higher Max only adds titles.
+    /// Max counts titles: a film's versions are separate items, all get the tag and take one place
+    /// together. Top-list and ranked copies are never picked (TopListCollectionMirror.IsOriginal):
+    /// the collection mirror puts them in collections.
     ///
-    /// 4.8.0.966 had pinned titles as Manual List sources with "Pinned" and the same tag. They
-    /// still work: they count as pinned titles of a Random pick source with that tag.
+    /// The owner's rules (2026-11-17): the shortest period is an hour; a ranked collection (Keep
+    /// the list order) gets at most one new pick a day, as each pick makes and removes its copies;
+    /// a source that makes a top-list has no Random pick (its pinned titles still apply).
     /// </summary>
     public static class RandomPick
     {
-        public const string Every15Minutes = "15Minutes", EveryHour = "Hour", EveryDay = "Day", EveryWeek = "Week";
+        public const string EveryHour = "Hour", EveryDay = "Day", EveryWeek = "Week";
 
         // Pinned titles and Random pick apply to sources that tag titles from what they find: not to
         // Rotating from existing (tags nothing) nor Your Next Watch (per user).
         internal static bool Applies(TagConfig t) => !RotatingRow.Is(t) && !HomeScreenCompanionTask.IsNextWatch(t);
 
-        internal static bool On(TagConfig t) => t.RandomPick && t.Limit > 0 && Applies(t);
+        internal static bool On(TagConfig t) => t.RandomPick && t.Limit > 0 && Applies(t) && !SourceTopLists.IsOn(t);
 
         internal static bool HasPinned(TagConfig t) => Applies(t) && (t.PinnedItemIds?.Count ?? 0) > 0;
 
         // The source's titles are shaped here (pinned first, then the pick or the first titles).
         internal static bool Shapes(TagConfig t) => On(t) || HasPinned(t);
 
-        internal static string Every(TagConfig t)
+        /// <summary>
+        /// How often the source gets a new pick: Hour, Day or Week. Anything else is Day (a
+        /// "15Minutes" from a build before the owner's rules is an hour). A ranked collection gets
+        /// at most one pick a day.
+        /// </summary>
+        internal static string Every(TagConfig t, PluginConfiguration? config)
         {
             var e = (t.RandomPickEvery ?? "").Trim();
-            foreach (var v in new[] { Every15Minutes, EveryHour, EveryWeek })
-                if (string.Equals(e, v, StringComparison.OrdinalIgnoreCase)) return v;
-            return EveryDay;
+            string every = string.Equals(e, EveryWeek, StringComparison.OrdinalIgnoreCase) ? EveryWeek
+                : string.Equals(e, EveryHour, StringComparison.OrdinalIgnoreCase) || string.Equals(e, "15Minutes", StringComparison.OrdinalIgnoreCase) ? EveryHour
+                : EveryDay;
+            if (every == EveryHour && config != null && RankedCollections.Wants(config, t)) every = EveryDay;
+            return every;
         }
 
-        internal static string EveryLabel(TagConfig t)
+        internal static string EveryLabel(TagConfig t, PluginConfiguration? config)
         {
-            switch (Every(t))
+            switch (Every(t, config))
             {
-                case Every15Minutes: return "15 minutes";
                 case EveryHour: return "hour";
                 case EveryWeek: return "week";
                 default: return "day";
             }
         }
 
-        // A Manual source marked Pinned (4.8.0.966) whose titles count as pinned for its tag.
-        internal static bool IsPinnedSource(TagConfig t) => t.Pinned && string.Equals(t.SourceType, "Manual", StringComparison.OrdinalIgnoreCase);
-
         /// <summary>
-        /// The period a pick is for, in server time: "Q2026-11-13T10:15" (15-minute slot),
-        /// "H2026-11-13T10", "D2026-11-13", or "W2026-11-09" (that week's Monday). The day and week
-        /// keys are the ones 4.8.0.966 used.
+        /// The period a pick is for, in server time: "H2026-11-13T10", "D2026-11-13", or
+        /// "W2026-11-09" (that week's Monday).
         /// </summary>
         public static string PeriodKey(string every, DateTime now)
         {
             var c = CultureInfo.InvariantCulture;
             switch (every)
             {
-                case Every15Minutes:
-                    return "Q" + now.ToString("yyyy-MM-dd'T'HH", c) + ":" + (now.Minute / 15 * 15).ToString("00", c);
                 case EveryHour:
                     return "H" + now.ToString("yyyy-MM-dd'T'HH", c);
                 case EveryWeek:
@@ -93,7 +94,7 @@ namespace HomeScreenCompanion
             }
         }
 
-        internal static string PeriodKey(TagConfig t, DateTime now) => PeriodKey(Every(t), now);
+        internal static string PeriodKey(TagConfig t, PluginConfiguration? config, DateTime now) => PeriodKey(Every(t, config), now);
 
         public static string Seed(string tag, string periodKey) => (tag ?? "").Trim().ToLowerInvariant() + "|" + periodKey;
 
@@ -158,7 +159,7 @@ namespace HomeScreenCompanion
         /// One row of a source: the pinned titles (when this row adds them) and its own titles, cut
         /// to Max less the pinned places (share). pool is in the source's order.
         /// </summary>
-        internal static Result Apply(TagConfig t, List<BaseItem> pool, IList<BaseItem> pinned, int share, bool addPinned, DateTime now)
+        internal static Result Apply(TagConfig t, PluginConfiguration? config, List<BaseItem> pool, IList<BaseItem> pinned, int share, bool addPinned, DateTime now)
         {
             pool = pool.Where(TopListCollectionMirror.IsOriginal).ToList();
             var filmOf = PopularityCounter.FilmKeys(pool.Concat(pinned).ToList());
@@ -172,13 +173,13 @@ namespace HomeScreenCompanion
                 var groups = rest.Select(filmOf).Distinct(StringComparer.OrdinalIgnoreCase)
                     .Select(k => new KeyValuePair<string, int>(k, 1)).ToList();
                 r.Pool = groups.Count;
-                r.Period = PeriodKey(t, now);
+                r.Period = PeriodKey(t, config, now);
                 var chosen = Choose(groups, Math.Max(0, t.Limit - share), Seed(t.Tag, r.Period));
                 picks = rest.Where(i => chosen.Contains(filmOf(i))).ToList();
             }
             else if (t.Limit > 0)
             {
-                picks = FirstTitles(rest, Math.Max(0, t.Limit - share), filmOf);
+                picks = HomeScreenCompanionTask.FirstTitles(rest, Math.Max(0, t.Limit - share), filmOf);
                 r.Pool = rest.Select(filmOf).Distinct(StringComparer.OrdinalIgnoreCase).Count();
             }
             else
@@ -191,23 +192,6 @@ namespace HomeScreenCompanion
             r.Items.AddRange(picks);
             r.Picked = picks.Select(filmOf).Distinct(StringComparer.OrdinalIgnoreCase).Count();
             return r;
-        }
-
-        /// <summary>
-        /// The first max titles of items, in their order: a film's versions together count as one.
-        /// </summary>
-        internal static List<BaseItem> FirstTitles(List<BaseItem> items, int max, Func<BaseItem, string>? filmOf = null)
-        {
-            filmOf = filmOf ?? PopularityCounter.FilmKeys(items);
-            var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var result = new List<BaseItem>();
-            foreach (var i in items)
-            {
-                var k = filmOf(i);
-                if (!taken.Contains(k)) { if (taken.Count >= max) continue; taken.Add(k); }
-                result.Add(i);
-            }
-            return result;
         }
     }
 

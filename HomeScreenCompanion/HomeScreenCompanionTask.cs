@@ -854,23 +854,27 @@ namespace HomeScreenCompanion
                                             } catch { }
                                         }
 
-                                        // Top-list and ranked copies are never a source's titles: the collection
-                                        // mirror puts a film's copies in its collections (TopListMirrorCollections).
-                                        if (!IsTaggableTopLevelItem(itemToTag) || !TopListCollectionMirror.IsOriginal(itemToTag))
+                                        if (!IsTaggableTopLevelItem(itemToTag))
                                             continue;
 
-                                        var imdb = itemToTag.GetProviderId("Imdb");
-                                        if (!string.IsNullOrEmpty(imdb) && blacklist.Contains(imdb))
+                                        // Top-list and ranked copies are never a source's titles: a copy counts as
+                                        // its original (the collection mirror puts copies in the film's collections,
+                                        // and a playlist can hold a copy picked from a top-list row).
+                                        foreach (var title in OriginalsOf(itemToTag, imdbLookup))
                                         {
-                                            _log.Debug($"    Blacklisted: {itemToTag.Name} ({imdb})");
-                                            continue;
-                                        }
+                                            var imdb = title.GetProviderId("Imdb");
+                                            if (!string.IsNullOrEmpty(imdb) && blacklist.Contains(imdb))
+                                            {
+                                                _log.Debug($"    Blacklisted: {title.Name} ({imdb})");
+                                                continue;
+                                            }
 
-                                        if (passesFilters != null && !passesFilters(itemToTag)) continue;
+                                            if (passesFilters != null && !passesFilters(title)) continue;
 
-                                        if (!matchedLocalItems.Contains(itemToTag))
-                                        {
-                                            matchedLocalItems.Add(itemToTag);
+                                            if (!matchedLocalItems.Contains(title))
+                                            {
+                                                matchedLocalItems.Add(title);
+                                            }
                                         }
                                     }
                                     _log.Debug($"  {matchedLocalItems.Count} usable movies/series in source");
@@ -881,7 +885,7 @@ namespace HomeScreenCompanion
                                 }
 
                                 if (effectiveLimit < NoLimit)
-                                    matchedLocalItems = RandomPick.FirstTitles(matchedLocalItems, effectiveLimit);
+                                    matchedLocalItems = FirstTitles(matchedLocalItems, effectiveLimit);
                             }
                         }
                         else if (tagConfig.SourceType == "Manual")
@@ -1028,7 +1032,7 @@ namespace HomeScreenCompanion
                                 config.AiConnections,
                                 config.AiSystemPrompt,
                                 recentlyWatchedContext,
-                                AiAskCount(effectiveLimit, config),
+                                AiAskCount(AiLimit(tagConfig), config),
                                 cancellationToken);
                             fetchTimer.Stop();
 
@@ -1304,6 +1308,11 @@ namespace HomeScreenCompanion
                 // A failed group keeps its extra tags too, like its Tag above.
                 foreach (var tc in config.Tags.Where(t => failedGroups.Contains(GroupKey(t))))
                     foreach (var t in tc.AllTags()) failedFetches.Add(t);
+                // A failed group with Random pick keeps its current pick as it is: its other lists'
+                // new pick is not added on top (owner 2026-11-17), as in Run Group (_keepExisting).
+                foreach (var tc in config.Tags.Where(t => failedGroups.Contains(GroupKey(t)) && RandomPick.On(t))
+                    .GroupBy(GroupKey, StringComparer.OrdinalIgnoreCase).Select(g => g.First()).ToList())
+                    KeepCurrentPick(config, tc, desiredTagsMap, desiredCollectionsMap, collectionOrder, dryRun);
                 _log.Debug($"Fetch phase done in {RunLog.Elapsed(phaseTimer.Elapsed)}");
 
                 // Playlist sync — once per group, with the union of all its sources.
@@ -1658,7 +1667,10 @@ namespace HomeScreenCompanion
                             if (!dryRun && collectionDescriptions.ContainsKey(cName))
                                 ApplyCollectionMeta(existingColl, cName, collectionDescriptions, debug);
                             if (!dryRun)
+                            {
                                 ApplyCollectionSortName(existingColl, cName, collectionSortNames.GetValueOrDefault(cName));
+                                HealImportedMark(existingColl, cName, config);
+                            }
                             if (!dryRun && collectionSources.TryGetValue(cName, out var _artSrc2))
                             {
                                 var _artItems2 = _ranked ? RankedArtItems(collectionOrder[cName]) : OrderedItems(allItemsById, desiredIds);
@@ -1919,7 +1931,7 @@ namespace HomeScreenCompanion
                 _log.Error($"Sync aborted: {ex.Message}");
                 WriteExceptionDebug(ex);
             }
-            finally { IsRunning = false; PersistLog(); RealPosterBadges.QueueRebuild(); }
+            finally { ReleaseRunState(); IsRunning = false; PersistLog(); RealPosterBadges.QueueRebuild(); }
         }
 
         public async Task<(bool Success, string Message)> RunSingleEntryAsync(string entryName, CancellationToken cancellationToken)
@@ -1958,6 +1970,7 @@ namespace HomeScreenCompanion
                 }
                 finally
                 {
+                    LastSingleRun = null;   // the run's stats are not kept after it (see ReleaseRunState)
                     _pickOnly = false;
                     _log = savedLog;
                     LastRunStatus = savedStatus;
@@ -1981,6 +1994,7 @@ namespace HomeScreenCompanion
             }
             finally
             {
+                ReleaseRunState();
                 IsRunning = false;
                 PersistLog();
                 RealPosterBadges.QueueRebuild();   // ranked copies this run made get their film's badge
@@ -2140,6 +2154,7 @@ namespace HomeScreenCompanion
             catch (Exception ex) { preview.Message = "Preview failed: " + ex.Message; }
             finally
             {
+                ReleaseRunState();
                 _preview = null;
                 _log = savedLog;
                 _writtenTags = savedWrittenTags;
@@ -2507,10 +2522,13 @@ namespace HomeScreenCompanion
             // The same goes for each of the source's extra tags (outTags: the Tag and its extra tags).
             var outTags = tagConfig.AllTags();
             var _keptByTag = new Dictionary<string, HashSet<Guid>>(StringComparer.OrdinalIgnoreCase);
+            var _sharedTags = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             if (_preview == null)
                 foreach (var t in outTags.Where(t => TagUsedElsewhereInSchedule(config, tagConfig, t)))
+                {
                     if (SharedManualTitles(config, tagConfig, t) is List<BaseItem> _kept) _keptByTag[t] = new HashSet<Guid>(_kept.Select(i => i.Id));
-            var _sharedTags = new HashSet<string>(outTags.Where(t => _preview == null && TagUsedElsewhereInSchedule(config, tagConfig, t) && !_keptByTag.ContainsKey(t)), StringComparer.OrdinalIgnoreCase);
+                    else _sharedTags.Add(t);
+                }
             bool _tagShared = _sharedTags.Contains(tagName);
             if (_preview == null)
                 foreach (var t in outTags.Where(t => !_sharedTags.Contains(t))) TagCacheManager.Instance.RemoveTagFromAllEntries(t);
@@ -2640,14 +2658,18 @@ namespace HomeScreenCompanion
                             BaseItem itemToTag = child;
                             if (child.GetType().Name.Contains("PlaylistItem")) { try { var inner = ((dynamic)child).Item; if (inner != null) itemToTag = inner; } catch { } }
                             if (itemToTag.GetType().Name.Contains("Episode")) { try { var series = ((dynamic)itemToTag).Series; if (series != null) itemToTag = series; } catch { } }
-                            if (!IsTaggableTopLevelItem(itemToTag) || !TopListCollectionMirror.IsOriginal(itemToTag)) continue;
-                            var imdb = itemToTag.GetProviderId("Imdb");
-                            if (!string.IsNullOrEmpty(imdb) && blacklist.Contains(imdb)) continue;
-                            if (passesFilters != null && !passesFilters(itemToTag)) continue;
-                            if (!srcMatched.Contains(itemToTag)) srcMatched.Add(itemToTag);
+                            if (!IsTaggableTopLevelItem(itemToTag)) continue;
+                            // A top-list or ranked copy counts as its original (same as the full run).
+                            foreach (var title in OriginalsOf(itemToTag, imdbLookup))
+                            {
+                                var imdb = title.GetProviderId("Imdb");
+                                if (!string.IsNullOrEmpty(imdb) && blacklist.Contains(imdb)) continue;
+                                if (passesFilters != null && !passesFilters(title)) continue;
+                                if (!srcMatched.Contains(title)) srcMatched.Add(title);
+                            }
                         }
                         if (srcLimit < NoLimit)
-                            srcMatched = RandomPick.FirstTitles(srcMatched, srcLimit);
+                            srcMatched = FirstTitles(srcMatched, srcLimit);
                         foreach (var m in srcMatched)
                             if (!matchedLocalItems.Contains(m)) matchedLocalItems.Add(m);
                         _perSrc.Add((src, srcMatched));
@@ -2794,7 +2816,7 @@ namespace HomeScreenCompanion
                         config.AiConnections,
                         config.AiSystemPrompt,
                         recentlyWatchedContext,
-                        AiAskCount(effectiveLimit, config),
+                        AiAskCount(AiLimit(tagConfig), config),
                         cancellationToken);
                     fetchTimer.Stop();
 
@@ -2950,8 +2972,13 @@ namespace HomeScreenCompanion
                 return (true, "");
             }
 
-            // Keep what the group has now (see _keepExisting): its tagged titles and collection members
-            // join the list, after it (top-list and ranked copies are not the group's own titles).
+            // Keep what the group has now (see _keepExisting): its tagged titles, its part of the top-list
+            // and its collection members join the list, after it (top-list and ranked copies are not the
+            // group's own titles). A tag another group in schedule also writes says nothing about which
+            // titles are this group's: only the titles with a tag no one else writes count, and of a tag
+            // shared only with plain Manual Lists the titles they do not have (_keptByTag). When none of
+            // the group's tags tells (_ownUnknown), its playlist is left as it is, like the full sync does.
+            bool _ownUnknown = false;
             if (_keepExisting)
             {
                 var _keptTlFolder = Path.Combine(Plugin.Instance!.DataFolderPath, "toplists") + Path.DirectorySeparatorChar;
@@ -2959,14 +2986,37 @@ namespace HomeScreenCompanion
                     && !i.Path.StartsWith(_keptTlFolder, StringComparison.OrdinalIgnoreCase) && !RankedCollections.IsRankedPath(i.Path);
                 var _kept = new List<BaseItem>();
                 if (tagConfig.EnableTag && !tagConfig.OnlyCollection)
-                    _kept.AddRange(_libraryManager.GetItemList(new InternalItemsQuery { Tags = new[] { tagName }, IncludeItemTypes = new[] { "Movie", "Series" }, Recursive = true, IsVirtualItem = false }));
-                else if (SourceTopLists.IsOn(tagConfig))
-                    _kept.AddRange(TopListMembers.Load(tagName, _libraryManager, _jsonSerializer) ?? new List<BaseItem>());
+                {
+                    foreach (var t in outTags.Where(t => !_sharedTags.Contains(t)))
+                    {
+                        var othersHave = _keptByTag.TryGetValue(t, out var k) ? k : null;
+                        _kept.AddRange(_libraryManager.GetItemList(new InternalItemsQuery { Tags = new[] { t }, IncludeItemTypes = new[] { "Movie", "Series" }, Recursive = true, IsVirtualItem = false })
+                            .Where(i => othersHave == null || !othersHave.Contains(i.Id)));
+                    }
+                    _ownUnknown = outTags.All(t => _sharedTags.Contains(t));
+                }
+                if (SourceTopLists.IsOn(tagConfig))
+                    _kept.AddRange(TopListMembers.LoadPart(tagName, GroupKey(tagConfig), _libraryManager, _jsonSerializer)
+                        ?? (TopListMembers.GroupsOf(config, tagName).Count > 1 ? null : TopListMembers.Load(tagName, _libraryManager, _jsonSerializer))
+                        ?? new List<BaseItem>());
                 if (tagConfig.EnableCollection
                     && _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { "BoxSet" }, Name = cName, Recursive = true }).FirstOrDefault() is BaseItem _keptColl)
                     _kept.AddRange(_libraryManager.GetItemList(new InternalItemsQuery { CollectionIds = new[] { _keptColl.InternalId }, Recursive = true, IsVirtualItem = false }));
+                // Random pick: the source's current pick stays as it is, no new pick on top of it (owner
+                // 2026-11-17; else every period would add one more pick to the tag). Only its pinned
+                // titles stay from the new list.
+                if (RandomPick.On(tagConfig))
+                {
+                    var _pinnedIds = new HashSet<Guid>(PinnedFor(tagConfig).Select(i => i.Id));
+                    matchedLocalItems.RemoveAll(i => !_pinnedIds.Contains(i.Id));
+                    _randomCounted = null;
+                    _srcTitles.Clear();   // the per-URL counts were for the new pick: not counted this time
+                    _log.Info("  Random pick: the current pick is kept until all the source's lists return titles again");
+                }
+                // By id: the queries return other objects for the titles already in the list.
+                var _inList = new HashSet<Guid>(matchedLocalItems.Select(i => i.Id));
                 foreach (var i in _kept.Where(Own))
-                    if (!matchedLocalItems.Contains(i)) matchedLocalItems.Add(i);
+                    if (_inList.Add(i.Id)) matchedLocalItems.Add(i);
             }
 
             // For non-MediaInfo sources, apply output level selection (expand down from Series/Movie)
@@ -3028,7 +3078,8 @@ namespace HomeScreenCompanion
                     .Select(RankKey)
                     .Where(id => !string.IsNullOrEmpty(id))
                     .ToList());
-                SaveTopListPart(config, tagConfig, tagName, matchedLocalItems);
+                // Some URLs empty with "Preserve…" on: the group's saved titles stay too, as in the full sync.
+                SaveTopListPart(config, tagConfig, tagName, matchedLocalItems, keepOld: _keepExisting);
             }
 
             // Apply tags (scoped to this entry's tag only)
@@ -3358,6 +3409,7 @@ namespace HomeScreenCompanion
                         if (toAdd.Count > 0) await AddToCollectionGently(existingColl.InternalId, toAdd, cancellationToken);
                         if (toRemove.Count > 0 && existingColl is BoxSet boxSet) await RemoveFromCollectionGently(boxSet, toRemove, cancellationToken);
                         ApplyCollectionSortName(existingColl, cName, tagConfig.CollectionSortName);
+                        HealImportedMark(existingColl, cName, config);
                         collResult = toAdd.Count + toRemove.Count;
                         _collArtCheck = collResult > 0;
                         _collItemsAdded = toAdd.Count;
@@ -3412,19 +3464,27 @@ namespace HomeScreenCompanion
                 RankedCollections.RestoreDisplayOrders(config.Tags.Where(t => RankedCollections.Wants(config, t))
                     .Select(t => string.IsNullOrWhiteSpace(t.CollectionName) ? t.Tag.Trim() : t.CollectionName.Trim()), _libraryManager);
 
-            if (tagConfig.EnablePlaylist && !_pickOnly)
+            // The Random pick task syncs the playlist too (owner 2026-11-17), so it shows the same pick
+            // as the tag; home rows and top-lists are left to the syncs.
+            if (tagConfig.EnablePlaylist)
             {
                 _log.Blank();
                 _log.Info("» Playlists");
                 if (dryRun) _log.Skip("Dry run — playlists are not changed");
             }
-            if (_pickOnly) { }   // the Random pick task changes only tags and the collection
-            else if (IsNextWatch(tagConfig))
+            if (IsNextWatch(tagConfig))
             {
                 // Each user's own picks; nothing is written for a user whose list could not be made.
                 if (_nextWatchPerUser != null && _nextWatchPerUser.Count > 0)
                     await SyncPlaylistsForEntryAsync(tagConfig, new List<BaseItem>(), dryRun, gs, _nextWatchPerUser, cancellationToken);
                 _nextWatchPerUser = null;
+            }
+            else if (_ownUnknown && tagConfig.EnablePlaylist)
+            {
+                // Which tagged titles are the group's is not known (see _ownUnknown): like the full sync,
+                // the playlist is left as it is rather than lose the empty URL's titles.
+                gs.Warnings.Add("Playlist left unchanged because the source failed or returned nothing");
+                _log.Skip($"Playlist for '{gs.DisplayName}' left unchanged — source failed or returned nothing");
             }
             else
                 await SyncPlaylistsForEntryAsync(tagConfig, collectionOutputItems, dryRun, gs, null, cancellationToken);
@@ -3455,7 +3515,8 @@ namespace HomeScreenCompanion
                     }
                 }
 
-                if (!_pickOnly) Plugin.Instance!.SaveConfiguration();
+                // Also after a Random pick: its playlist mappings and the card's last-run count.
+                Plugin.Instance!.SaveConfiguration();
             }
 
             var _boxSetFound = ApplyTagToSourceBoxSet(tagConfig, tagName, dryRun, cancellationToken);
@@ -3709,9 +3770,16 @@ namespace HomeScreenCompanion
         // Another group in schedule (not this one) writes the same tag (default: tc's Tag), as its
         // Tag or as one of its extra tags.
         private static bool TagUsedElsewhereInSchedule(PluginConfiguration config, TagConfig tc, string? tagName = null)
+            => OtherTagWritersInSchedule(config, tc, tagName).Any();
+
+        // The other groups in schedule (not tc's) that write tag (default: tc's Tag), as their Tag
+        // or as one of their extra tags. Shared by TagUsedElsewhereInSchedule and SharedManualTitles
+        // so the two always agree on who else writes a tag.
+        private static IEnumerable<TagConfig> OtherTagWritersInSchedule(PluginConfiguration config, TagConfig tc, string? tagName = null)
         {
             var tag = (tagName ?? tc.Tag ?? "").Trim();
-            return tag.Length > 0 && (config.Tags ?? new List<TagConfig>()).Any(t => t.Active && t.EnableTag && !t.OnlyCollection
+            if (tag.Length == 0) return Enumerable.Empty<TagConfig>();
+            return (config.Tags ?? new List<TagConfig>()).Where(t => t.Active && t.EnableTag && !t.OnlyCollection
                 && IsScheduleActive(t.ActiveIntervals, RunGate.ScheduleNow)
                 && !string.Equals(GroupKey(t), GroupKey(tc), StringComparison.OrdinalIgnoreCase)
                 && t.AllTags().Contains(tag, StringComparer.OrdinalIgnoreCase));
@@ -4015,6 +4083,22 @@ namespace HomeScreenCompanion
             _viewersByDays.Clear();
             _weekAgoByTag.Clear();
             _nextWatch = null;
+        }
+
+        // At the end of every run (full sync, Run Group, preview): lets go of what the run read
+        // (the whole library list, everyone's watch data, the Next Watch index), which this
+        // long-lived task would otherwise hold until the next run. Every run starts fresh with
+        // StartPopularity / StartPlaybackHistory, so nothing is reused across runs.
+        private void ReleaseRunState()
+        {
+            lock (_playedSeries) _playedSeries.Clear();
+            _popularity = null;
+            _popularityScope = new List<BaseItem>();
+            _viewersByDays.Clear();
+            _weekAgoByTag.Clear();
+            _nextWatch = null;
+            _nextWatchPerUser = null;
+            _playHistory = null;
         }
 
         // ── "Your Next Watch" (source type NextWatch) ─────────────────────────────────────────
@@ -4406,6 +4490,39 @@ namespace HomeScreenCompanion
         private int TitleCount(List<BaseItem> items) =>
             items.Select(PopularityCounter.FilmKeys(items)).Distinct(StringComparer.OrdinalIgnoreCase).Count();
 
+        /// <summary>
+        /// The titles an item from a collection or playlist stands for: itself, or for a top-list or
+        /// ranked copy the originals with its IMDb id (all versions; imdbLookup holds no copies).
+        /// None when the copy has no IMDb id or its original is gone: a copy is never a title.
+        /// </summary>
+        private static IEnumerable<BaseItem> OriginalsOf(BaseItem item, Dictionary<string, List<BaseItem>> imdbLookup)
+        {
+            if (TopListCollectionMirror.IsOriginal(item)) return new[] { item };
+            var imdb = item.GetProviderId("Imdb");
+            return !string.IsNullOrEmpty(imdb) && imdbLookup.TryGetValue(imdb, out var originals)
+                ? originals.Where(o => o.GetType() == item.GetType() && TopListCollectionMirror.IsOriginal(o))
+                : Enumerable.Empty<BaseItem>();
+        }
+
+        /// <summary>
+        /// The first max titles of items, in their order: a film's versions together count as one
+        /// (all of them are kept), so a source's Max counts titles, as TitleCount does. filmOf: the
+        /// film keys to use (Random pick passes keys worked out with its pinned titles).
+        /// </summary>
+        internal static List<BaseItem> FirstTitles(List<BaseItem> items, int max, Func<BaseItem, string>? filmOf = null)
+        {
+            filmOf = filmOf ?? PopularityCounter.FilmKeys(items);
+            var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var result = new List<BaseItem>();
+            foreach (var i in items)
+            {
+                var k = filmOf(i);
+                if (!taken.Contains(k)) { if (taken.Count >= max) continue; taken.Add(k); }
+                result.Add(i);
+            }
+            return result;
+        }
+
         // Stores each source's titles against its Limit (the "9 of 10" chip on the group's card;
         // saved with the run's config save). A source without a Limit, or not counted (-1), is
         // recorded as having none. Your Next Watch is skipped: its Limit is per user.
@@ -4539,10 +4656,10 @@ namespace HomeScreenCompanion
 
         // Run Group: this group's part of each source top-list built from its tag (the other groups'
         // parts stay as the last run left them). empty: the group is switched off or out of schedule.
-        private void SaveTopListPart(PluginConfiguration config, TagConfig tagConfig, string tagName, IEnumerable<BaseItem> items)
+        private void SaveTopListPart(PluginConfiguration config, TagConfig tagConfig, string tagName, IEnumerable<BaseItem> items, bool keepOld = false)
         {
             if (!TopListMembers.Wanted(config, tagName)) return;
-            if (!TopListMembers.SavePart(tagName, GroupKey(tagConfig), items, _jsonSerializer)
+            if (!TopListMembers.SavePart(tagName, GroupKey(tagConfig), items, _jsonSerializer, keepOld)
                 || !TopListMembers.Combine(tagName, TopListMembers.GroupsOf(config, tagName), _jsonSerializer))
                 _log.Warn($"Top-list '{tagName}': its titles could not be saved — it keeps its last titles (see the plugin log)");
         }
@@ -6585,10 +6702,13 @@ namespace HomeScreenCompanion
         // everything the source matches afterwards (ApplyRandomPick).
         private static int FetchLimit(TagConfig t) => t.Limit <= 0 || RandomPick.On(t) ? NoLimit : t.Limit;
 
-        // A source's pinned titles (see RandomPick): its own PinnedItemIds, any movie or show in the
-        // library (the source's filters and blacklist do not apply to them), and for a Random pick
-        // the titles of 4.8.0.966 Manual sources marked Pinned with the same tag (on, in schedule).
-        private List<BaseItem> PinnedFor(PluginConfiguration config, TagConfig tc)
+        // How many titles an AI source asks for (AiAskCount): from its own Max, also with Random pick,
+        // which then picks among all the answers (owner 2026-11-17: not the whole AI cap, a paid call).
+        private static int AiLimit(TagConfig t) => t.Limit <= 0 ? NoLimit : t.Limit;
+
+        // A source's pinned titles (see RandomPick): its PinnedItemIds, any movie or show in the
+        // library (the source's filters and blacklist do not apply to them).
+        private List<BaseItem> PinnedFor(TagConfig tc)
         {
             var pinned = new List<BaseItem>();
             if (!RandomPick.Applies(tc)) return pinned;
@@ -6598,17 +6718,6 @@ namespace HomeScreenCompanion
                 if (long.TryParse(id, out var internalId)) item = _libraryManager.GetItemById(internalId);
                 else if (Guid.TryParse(id, out var guid)) item = _libraryManager.GetItemById(guid);
                 if (item != null && IsTaggableTopLevelItem(item) && TopListCollectionMirror.IsOriginal(item) && !pinned.Contains(item)) pinned.Add(item);
-            }
-            var tag = (tc.Tag ?? "").Trim();
-            if (!RandomPick.On(tc) || tag.Length == 0) return pinned;
-            foreach (var t in (config.Tags ?? new List<TagConfig>()).Where(t => RandomPick.IsPinnedSource(t) && t.Active && t.EnableTag && !t.OnlyCollection
-                && IsScheduleActive(t.ActiveIntervals)
-                && !string.Equals(GroupKey(t), GroupKey(tc), StringComparison.OrdinalIgnoreCase)
-                && t.AllTags().Contains(tag, StringComparer.OrdinalIgnoreCase)))
-            {
-                var bl = new HashSet<string>(t.Blacklist ?? new List<string>(), StringComparer.OrdinalIgnoreCase);
-                foreach (var i in ManualItems(t, bl, t.Limit <= 0 ? NoLimit : t.Limit, new GroupRunStats()))
-                    if (!pinned.Contains(i)) pinned.Add(i);
             }
             return pinned;
         }
@@ -6624,6 +6733,45 @@ namespace HomeScreenCompanion
             RandomPickState.Save(done);
         }
 
+        // Full sync, a group with Random pick of which a list failed (failedGroups, Preserve): its tags
+        // and collection stay exactly as they are, rather than the other lists' new pick being added
+        // to the old one each sync (owner 2026-11-17). Its tags are already never removed
+        // (failedFetches); here the additions are taken back, for a tag no other group in schedule
+        // writes, and the collection (when no other group in schedule uses it) is left out of the
+        // collection step, which keeps it as a failed group's (failedFetches). The real-time cache
+        // gets the titles that keep the tag. Pinned titles are still added.
+        private void KeepCurrentPick(PluginConfiguration config, TagConfig tc, Dictionary<Guid, HashSet<string>> desiredTags,
+            Dictionary<string, HashSet<long>> desiredCollections, Dictionary<string, List<BaseItem>> collectionOrder, bool dryRun)
+        {
+            var pinned = new HashSet<Guid>(PinnedFor(tc).Select(i => i.Id));
+            string name = string.IsNullOrWhiteSpace(tc.Name) ? tc.Tag.Trim() : tc.Name.Trim();
+            if (tc.EnableTag && !tc.OnlyCollection)
+                foreach (var t in tc.AllTags())
+                {
+                    if (TagUsedElsewhereInSchedule(config, tc, t)) continue;   // the others' titles decide too
+                    var has = _libraryManager.GetItemList(new InternalItemsQuery { Tags = new[] { t }, Recursive = true, IsVirtualItem = false });
+                    var hasIds = new HashSet<Guid>(has.Select(i => i.Id));
+                    foreach (var kv in desiredTags)
+                        if (kv.Value.Contains(t) && !hasIds.Contains(kv.Key) && !pinned.Contains(kv.Key)) kv.Value.Remove(t);
+                    if (!dryRun && IsListSource(tc))
+                    {
+                        TagCacheManager.Instance.RemoveTagFromAllEntries(t);
+                        foreach (var imdb in has.Where(i => hasIds.Contains(i.Id) && IsTaggableTopLevelItem(i)).Select(i => i.GetProviderId("Imdb")).Where(id => !string.IsNullOrEmpty(id)))
+                            TagCacheManager.Instance.AddToCache($"imdb_{imdb}", t);
+                    }
+                }
+            if (tc.EnableCollection)
+            {
+                string cName = CollectionNameOf(tc);
+                bool shared = (config.Tags ?? new List<TagConfig>()).Any(t => t.Active && t.EnableCollection
+                    && IsScheduleActive(t.ActiveIntervals, RunGate.ScheduleNow)
+                    && !string.Equals(GroupKey(t), GroupKey(tc), StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(CollectionNameOf(t), cName, StringComparison.OrdinalIgnoreCase));
+                if (!shared) { desiredCollections.Remove(cName); collectionOrder.Remove(cName); }
+            }
+            _log.Info($"  Random pick ({name}): a list failed, the current pick is kept until all the source's lists return titles again");
+        }
+
         // Pinned titles and Max (see RandomPick) for one row of a source: its pinned titles first
         // (added by the group's first row), then a random pick or its first titles. The pinned
         // titles take places in the Max of the first rows with a Max. noPinned: a source that
@@ -6632,10 +6780,10 @@ namespace HomeScreenCompanion
         {
             var rows = _preview != null ? _preview.Group
                 : (config.Tags ?? new List<TagConfig>()).Where(t => string.Equals(GroupKey(t), GroupKey(tc), StringComparison.OrdinalIgnoreCase)).ToList();
-            var pinned = noPinned ? new List<BaseItem>() : PinnedFor(config, tc);
+            var pinned = noPinned ? new List<BaseItem>() : PinnedFor(tc);
             int share = RandomPick.PinnedShare(rows, tc, pinned.Count);
             bool addPinned = rows.Count == 0 || !rows.Contains(tc) || ReferenceEquals(rows[0], tc);
-            var r = RandomPick.Apply(tc, pool, pinned, share, addPinned, RunGate.ScheduleNow);
+            var r = RandomPick.Apply(tc, config, pool, pinned, share, addPinned, RunGate.ScheduleNow);
             if (record && r.Random && _preview == null)
                 lock (_appliedPicks) _appliedPicks[GroupKey(tc)] = r.Period;
             if (log)
@@ -6655,10 +6803,7 @@ namespace HomeScreenCompanion
         // adds the tag and the full sync takes it off.
         private List<BaseItem>? SharedManualTitles(PluginConfiguration config, TagConfig tc, string tag)
         {
-            var others = (config.Tags ?? new List<TagConfig>()).Where(t => t.Active && t.EnableTag && !t.OnlyCollection
-                    && IsScheduleActive(t.ActiveIntervals)
-                    && !string.Equals(GroupKey(t), GroupKey(tc), StringComparison.OrdinalIgnoreCase)
-                    && t.AllTags().Contains(tag, StringComparer.OrdinalIgnoreCase)).ToList();
+            var others = OtherTagWritersInSchedule(config, tc, tag).ToList();
             if (others.Count == 0 || tc.OverrideWhenActive) return null;
             foreach (var t in others)
             {
@@ -7951,9 +8096,8 @@ namespace HomeScreenCompanion
             }
             if (tc.SourceType != "MediaInfo" && (tc.MediaInfoFilters?.Count > 0 || tc.MediaInfoConditions?.Count > 0))
                 parts.Add($"{GetAllCriteria(tc).Count()} extra filter conditions");
-            parts.Add(RandomPick.On(tc) ? $"random pick of {tc.Limit} every {RandomPick.EveryLabel(tc)}"
+            parts.Add(RandomPick.On(tc) ? $"random pick of {tc.Limit} every {RandomPick.EveryLabel(tc, Plugin.Instance?.Configuration)}"
                 : effectiveLimit >= NoLimit ? "no limit" : $"limit {effectiveLimit}");
-            if (RandomPick.IsPinnedSource(tc)) parts.Add("pinned");
             if (RandomPick.HasPinned(tc)) parts.Add($"{tc.PinnedItemIds.Count} pinned titles");
             if ((tc.Blacklist?.Count ?? 0) > 0) parts.Add($"{tc.Blacklist!.Count} blacklisted");
             var features = new List<string>();
@@ -8110,7 +8254,7 @@ namespace HomeScreenCompanion
         /// <summary>Results block + Summary for a single-group run.</summary>
         private void WriteSingleRunFooter(GroupRunStats gs, DateTime startTime, bool dryRun, bool logMissing)
         {
-            LastSingleRun = gs;
+            if (_pickOnly) LastSingleRun = gs;   // read and let go by RunRandomPickAsync
             _log.Blank();
             _log.Info("Results");
             WriteGroupBlock(gs, dryRun, logMissing);
@@ -8328,17 +8472,18 @@ namespace HomeScreenCompanion
         // HSC just made collection <name>, so no collection with that name was in Emby: the imported
         // one is gone (deleted in Emby, or the source's collection name was changed). The new one is
         // HSC's own: its name leaves the imported file and its sources are no longer imported (saved
-        // with the config after the run).
-        private static void ForgetImportedCollection(string name)
+        // with the config after the run). Also cleared on the run's own config object (a Save during
+        // the run replaced Plugin.Instance.Configuration), so a later RecordImportedCollections(config)
+        // in the same run does not put the name back.
+        private static void ForgetImportedCollection(string name, PluginConfiguration? runConfig = null)
         {
-            var cfg = Plugin.Instance?.Configuration;
+            var configs = new[] { Plugin.Instance?.Configuration, runConfig }.Where(c => c != null).Distinct();
             var dir = Plugin.Instance?.DataFolderPath;
             lock (_importedFileLock)
             {
-                foreach (var t in (cfg?.Tags ?? new List<TagConfig>()).Where(t => t.CollectionImported))
+                foreach (var t in configs.SelectMany(c => c!.Tags ?? new List<TagConfig>()).Where(t => t.CollectionImported))
                 {
-                    var cn = string.IsNullOrWhiteSpace(t.CollectionName) ? (t.Tag ?? "").Trim() : t.CollectionName.Trim();
-                    if (!string.Equals(cn, name, StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!string.Equals(CollectionNameOf(t), name.Trim(), StringComparison.OrdinalIgnoreCase)) continue;
                     t.CollectionImported = false;
                     t.CollectionPosterReplaced = false; t.CollectionBackgroundReplaced = false;
                     t.CollectionThumbReplaced = false; t.CollectionBannerReplaced = false;
@@ -8356,6 +8501,27 @@ namespace HomeScreenCompanion
             }
         }
 
+        // Every sync of an existing collection (full sync and Run Group, never in a dry run): a
+        // collection HSC made itself is HSC's, so a source still marked imported for it, or its name
+        // still in the imported file, is healed. Covers installs that met the bug before the fix
+        // (HSC made the collection, the mark stayed) and a Save from a page loaded before the run
+        // that sent the old mark back. A collection HSC did not make is never touched here, and the
+        // created list never holds an imported collection (CollectionOwnership.FromHistory leaves
+        // imported names out).
+        private void HealImportedMark(BaseItem coll, string cName, PluginConfiguration? runConfig)
+        {
+            try
+            {
+                if (TagAnchor.IsAnchor(coll, _jsonSerializer) || !CollectionOwnership.IsCreated(coll, _libraryManager)) return;
+                bool marked = new[] { Plugin.Instance?.Configuration, runConfig }.Any(c => (c?.Tags ?? new List<TagConfig>())
+                    .Any(t => t.CollectionImported && string.Equals(CollectionNameOf(t), cName.Trim(), StringComparison.OrdinalIgnoreCase)));
+                if (!marked && !RecordImportedCollections(null).Contains(cName.Trim())) return;
+                ForgetImportedCollection(cName, runConfig);
+                _log.Info($"Collection \"{cName}\" was made by HSC, so it is no longer marked imported (it is deleted with its source like any HSC collection)");
+            }
+            catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
+        }
+
         private static List<string> LoadFileHistory(string filename)
         {
             try { var path = Path.Combine(Plugin.Instance.DataFolderPath, filename); if (File.Exists(path)) return File.ReadAllLines(path).Select(l => l.Trim()).Where(l => !string.IsNullOrEmpty(l)).ToList(); } catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
@@ -8369,13 +8535,17 @@ namespace HomeScreenCompanion
 
         // A film's versions (e.g. 2160p and 1080p files) are separate items that Emby shows as one
         // movie. A collection gets one of them, the first (lowest id), like Emby's own grouping;
-        // this returns the ids of the other versions. Anything that is not a movie is kept.
+        // this returns the ids of the other versions. Anything that is not a movie is kept. The same
+        // item listed twice (e.g. two objects for one film) is one item, never its own extra version:
+        // that would leave the film out of the collection altogether.
         internal static HashSet<long> ExtraVersionIds(IEnumerable<BaseItem> items)
         {
             var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var seenIds = new HashSet<long>();
             var extra = new HashSet<long>();
             foreach (var item in items.Where(i => i is MediaBrowser.Controller.Entities.Movies.Movie).OrderBy(i => i.InternalId))
             {
+                if (!seenIds.Add(item.InternalId)) continue;
                 var key = VersionKey(item);
                 if (key != null && !seen.Add(key)) extra.Add(item.InternalId);
             }
