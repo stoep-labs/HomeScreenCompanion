@@ -1,4 +1,4 @@
-﻿using MediaBrowser.Common.Net;
+using MediaBrowser.Common.Net;
 using HttpRequestOptions = MediaBrowser.Common.Net.HttpRequestOptions;
 using SkiaSharp;
 using MediaBrowser.Controller.Entities;
@@ -823,6 +823,8 @@ namespace HomeScreenCompanion
         public bool IgnoreMarkedAsWatched { get; set; }
         // Null in backups made before Gentle mode: the current setting is kept.
         public bool? GentleModeEnabled { get; set; }
+        // Null in backups made before "Prioritize high quality": the current setting is kept.
+        public bool? PrioritizeHighQuality { get; set; }
         public bool TopListMirrorCollections { get; set; }
         public bool ShowCopyPasteButtons { get; set; }
         public bool ShowImportCollectionButton { get; set; }
@@ -879,6 +881,8 @@ namespace HomeScreenCompanion
         public bool? OrigPostersSeries { get; set; }
         public bool? OrigPostersSeasons { get; set; }
         public bool? OrigPostersEpisodes { get; set; }
+        // Row shuffle sets (null in older backups: the current sets stay).
+        public List<RowShuffleSet>? RowShuffleSets { get; set; }
     }
 
     public class BackupTopList
@@ -1677,7 +1681,7 @@ public class HomeScreenCompanionService : IService
             var found = new List<BaseItem>();
             foreach (var id in source.ManualItemIds ?? new List<string>())
             {
-                var item = TitleRefs.Resolve(id, source.ManualItemRefs);
+                var item = TitleRefs.Resolve(id, source.ManualItemRefs, source);
                 if (item != null) found.Add(item);
             }
             return ArtTopLevel(found);
@@ -2014,6 +2018,28 @@ public class HomeScreenCompanionService : IService
 
 
 
+        public object Post(RowTakeOverRequest request)
+        {
+            var config = Plugin.Instance?.Configuration;
+            if (config == null || request == null) return new RowTakeOverResponse();
+            return new RowTakeOverResponse { Options = RowTakeOver.Find(config, _libraryManager, _userManager, _jsonSerializer,
+                request.Name, request.Tag, request.CollectionName, request.TagRow, request.CollectionRow) };
+        }
+
+        public object Get(RowTakeOverListRequest request)
+        {
+            var config = Plugin.Instance?.Configuration;
+            if (config == null) return new RowTakeOverResponse();
+            return new RowTakeOverResponse { Options = RowTakeOver.List(config, _libraryManager, _userManager, _jsonSerializer) };
+        }
+
+        public object Post(RowShufflePreviewRequest request)
+        {
+            var config = Plugin.Instance?.Configuration;
+            if (config == null || request?.Set == null) return new RowShufflePreviewResponse();
+            return RowShuffle.Preview(config, _userManager, request.Set, request.UserId);
+        }
+
         public object Get(HscDebugMethodsRequest request)
         {
             var lines = new System.Text.StringBuilder();
@@ -2207,7 +2233,12 @@ public class HomeScreenCompanionService : IService
                         Name = tc.Tag,
                         Recursive = true
                     }).FirstOrDefault();
-                    if (tagItem != null) settingsDict["_queryTagId"] = tagItem.InternalId.ToString();
+                    // A tag row without its tag would show every title (the tag is gone while no item
+                    // has it, e.g. the anchor was lost): the rows are left as they are, and the next
+                    // sync puts the tag back on the anchor and writes them.
+                    if (tagItem == null)
+                        return new HscApplyTagHomeSectionsResponse { Success = true, Message = $"Tag '{tc.Tag}' does not exist in the library: rows left as they are until the next sync." };
+                    settingsDict["_queryTagId"] = tagItem.InternalId.ToString();
                 }
 
                 // Build section marker (same pattern as the task)
@@ -2973,7 +3004,9 @@ public class HomeScreenCompanionService : IService
                     catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
                 }
 
-                // First pass: deduplicate and preserve query order
+                // First pass: deduplicate and preserve query order. A film in the chosen libraries more
+                // than once: its first copy, or with "Prioritize high quality" its best (as the runs do).
+                if (BestCopy.Enabled) items = BestCopy.OnePerFilm(items.Where(i => !string.IsNullOrEmpty(i.Path)).ToList());
                 var seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 var selected = new List<(string BaseName, string FilePath, BaseItem Item)>();
                 foreach (var item in items)
@@ -4164,6 +4197,7 @@ public class HomeScreenCompanionService : IService
                     PreserveTagsOnEmptyResult = config.PreserveTagsOnEmptyResult,
                     IgnoreMarkedAsWatched     = config.IgnoreMarkedAsWatched,
                     GentleModeEnabled         = config.GentleModeEnabled,
+                    PrioritizeHighQuality     = config.PrioritizeHighQuality,
                     TopListMirrorCollections  = config.TopListMirrorCollections,
                     ShowCopyPasteButtons      = config.ShowCopyPasteButtons,
                     ShowImportCollectionButton = config.ShowImportCollectionButton,
@@ -4264,7 +4298,8 @@ public class HomeScreenCompanionService : IService
                     OrigPostersMovies    = config.OrigPostersMovies,
                     OrigPostersSeries    = config.OrigPostersSeries,
                     OrigPostersSeasons   = config.OrigPostersSeasons,
-                    OrigPostersEpisodes  = config.OrigPostersEpisodes
+                    OrigPostersEpisodes  = config.OrigPostersEpisodes,
+                    RowShuffleSets       = (config.RowShuffleSets ?? new List<RowShuffleSet>()).Where(s => s != null).Select(RowShuffle.Copy).ToList()
                 };
                 file.Sections.Add("HomeSync");
             }
@@ -4322,6 +4357,7 @@ public class HomeScreenCompanionService : IService
                     config.PreserveTagsOnEmptyResult = s.PreserveTagsOnEmptyResult;
                     config.IgnoreMarkedAsWatched     = s.IgnoreMarkedAsWatched;
                     if (s.GentleModeEnabled != null) config.GentleModeEnabled = s.GentleModeEnabled.Value;
+                    if (s.PrioritizeHighQuality != null) config.PrioritizeHighQuality = s.PrioritizeHighQuality.Value;
                     mirrorChanged = config.TopListMirrorCollections != s.TopListMirrorCollections;
                     config.TopListMirrorCollections  = s.TopListMirrorCollections;
                     config.ShowCopyPasteButtons      = s.ShowCopyPasteButtons;
@@ -4429,6 +4465,10 @@ public class HomeScreenCompanionService : IService
                     if (h.OrigPostersSeries.HasValue)   config.OrigPostersSeries   = h.OrigPostersSeries.Value;
                     if (h.OrigPostersSeasons.HasValue)  config.OrigPostersSeasons  = h.OrigPostersSeasons.Value;
                     if (h.OrigPostersEpisodes.HasValue) config.OrigPostersEpisodes = h.OrigPostersEpisodes.Value;
+                    // Row keys are names (src:<name>/<tag>, tl:<tag>), so they work on another server.
+                    // A restored set starts again from its start order.
+                    if (h.RowShuffleSets != null)
+                        config.RowShuffleSets = RowShuffle.Restored(h.RowShuffleSets);
                     response.Applied.Add("Home screen sync");
                 }
 
@@ -4993,7 +5033,7 @@ public class HomeScreenCompanionService : IService
                 foreach (var id in (t.ManualItemIds ?? new List<string>()).Concat(t.PinnedItemIds ?? new List<string>()))
                 {
                     if (string.IsNullOrWhiteSpace(id) || file.Items.ContainsKey(id)) continue;
-                    var item = TitleRefs.Resolve(id, titleRefs);
+                    var item = TitleRefs.Resolve(id, titleRefs, t);
                     if (item == null) continue; // already gone here; the import reports it as missing
                     file.Items[id] = ItemRefFor(item);
                 }

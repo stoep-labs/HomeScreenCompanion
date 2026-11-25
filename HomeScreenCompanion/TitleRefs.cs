@@ -24,7 +24,7 @@ namespace HomeScreenCompanion
 
     /// <summary>
     /// Pinned titles (PinnedItemIds) and a Manual List (ManualItemIds) store Emby item ids. Each id
-    /// has a TitleRef (IMDb / TMDb / TVDb id, else name + year): an id that is gone, or now is one of
+    /// has a TitleRef (IMDb / TMDb / TVDb id; never matched by name): an id that is gone, or now is one of
     /// HSC's copies, is looked up by it, always as the original library item. A run puts the new id
     /// in the config (Refresh); a save from the settings page keeps the refs (Carry).
     /// </summary>
@@ -66,47 +66,60 @@ namespace HomeScreenCompanion
             if (item == null || !HomeScreenCompanionTask.IsTaggableTopLevelItem(item) || !TopListCollectionMirror.IsOriginal(item)) return false;
             string? data = null;
             try { data = Plugin.Instance?.DataFolderPath; } catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
-            return string.IsNullOrEmpty(data) || string.IsNullOrEmpty(item.Path)
-                || !item.Path.StartsWith(data.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+            if (string.IsNullOrEmpty(data) || string.IsNullOrEmpty(item.Path)) return true;
+            return !item.Path.StartsWith(data!.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
         }
 
         // The title's item: by its id, else by its ref (from refs, else from the saved config: the
         // page's Preview and Copy send the card without refs). Null when it is in the library under neither.
-        internal static BaseItem? Resolve(string id, IEnumerable<TitleRef>? refs)
+        // source: the source it is on, so a title in several libraries is taken from its top-list's libraries.
+        internal static BaseItem? Resolve(string id, IEnumerable<TitleRef>? refs, TagConfig? source = null)
         {
             var item = ById(id);
             if (IsOriginal(item)) return item;
             var r = refs?.FirstOrDefault(x => x != null && string.Equals(x.Id, id, StringComparison.OrdinalIgnoreCase));
             if (r == null) AllRefs(Plugin.Instance?.Configuration).TryGetValue(id ?? "", out r);
-            return r == null ? null : Find(r);
+            return r == null ? null : Find(r, PreferredLibraries(source));
         }
 
-        // The library's original item for a ref: by IMDb, TMDb, TVDb id (TMDb and TVDb numbers are
-        // only unique per type), then by name + year.
-        internal static BaseItem? Find(TitleRef r)
+        // The libraries chosen for the source's top-list (TopListLibraryIds, the only library choice a
+        // source has); null when it makes no top-list or takes all libraries.
+        internal static TopListLibraries? PreferredLibraries(TagConfig? source)
         {
-            if (_libraryManager == null || r == null) return null;
+            var lm = _libraryManager;
+            if (lm == null || source == null || !SourceTopLists.IsOn(source)) return null;
+            if (!(source.TopListLibraryIds ?? new List<string>()).Any(x => !string.IsNullOrWhiteSpace(x))) return null;
+            try { var libs = TopListLibraries.For(source.TopListLibraryIds, lm); return libs.Gone ? null : libs; }
+            catch (Exception swallowed) { PluginLog.Swallowed(swallowed); return null; }
+        }
+
+        // The library's original item for a ref: by IMDb, TMDb or TVDb id (TMDb and TVDb numbers are
+        // only unique per type), never by name (owner 2026-11-23). Found in several libraries: one in
+        // prefer first (the source's top-list libraries), then the lowest id.
+        internal static BaseItem? Find(TitleRef r, TopListLibraries? prefer = null)
+        {
+            var lm = _libraryManager;
+            if (lm == null || r == null) return null;
             var types = string.IsNullOrEmpty(r.Type) ? new[] { "Movie", "Series" } : new[] { r.Type };
-            BaseItem? Pick(InternalItemsQuery q)
-            {
-                q.IncludeItemTypes = types;
-                q.Recursive = true;
-                q.IsVirtualItem = false;
-                try { return _libraryManager.GetItemList(q).Where(IsOriginal).OrderBy(i => i.InternalId).FirstOrDefault(); }
-                catch (Exception swallowed) { PluginLog.Swallowed(swallowed); return null; }
-            }
             foreach (var (p, v) in new[] { ("Imdb", r.Imdb), ("Tmdb", r.Tmdb), ("Tvdb", r.Tvdb) })
             {
                 if (string.IsNullOrWhiteSpace(v)) continue;
-                var hit = Pick(new InternalItemsQuery { AnyProviderIdEquals = new List<KeyValuePair<string, string>> { new KeyValuePair<string, string>(p, v) } });
-                if (hit != null) return hit;
+                var q = new InternalItemsQuery
+                {
+                    AnyProviderIdEquals = new List<KeyValuePair<string, string>> { new KeyValuePair<string, string>(p, v) },
+                    IncludeItemTypes = types,
+                    Recursive = true,
+                    IsVirtualItem = false
+                };
+                try
+                {
+                    var hit = lm.GetItemList(q).Where(IsOriginal)
+                        .OrderBy(i => prefer == null || prefer.Contains(i) ? 0 : 1).ThenBy(i => i.InternalId).FirstOrDefault();
+                    if (hit != null) return hit;
+                }
+                catch (Exception swallowed) { PluginLog.Swallowed(swallowed); }
             }
-            if (string.IsNullOrWhiteSpace(r.Name)) return null;
-            var q = new InternalItemsQuery { Name = r.Name };
-            if (r.Year.HasValue) q.Years = new[] { r.Year.Value };
-            var byName = Pick(q);
-            return byName != null && string.Equals(byName.Name, r.Name, StringComparison.OrdinalIgnoreCase)
-                && (!r.Year.HasValue || byName.ProductionYear == r.Year) ? byName : null;
+            return null;
         }
 
         // Every ref in the config by id (pinned and hand-picked), and the titles moved this session.
@@ -178,16 +191,17 @@ namespace HomeScreenCompanion
             foreach (var t in tags)
             {
                 if (t == null) continue;
+                var prefer = PreferredLibraries(t);
                 if ((t.ManualItemIds?.Count ?? 0) > 0)
                 {
                     var refs = t.ManualItemRefs ?? new List<TitleRef>();
-                    if (RefreshList(t.ManualItemIds!, ref refs, "Hand-picked", apply, info, logged, found)) changed = true;
+                    if (RefreshList(t.ManualItemIds!, ref refs, "Hand-picked", apply, info, logged, found, t.TopListLibraryIds, prefer)) changed = true;
                     t.ManualItemRefs = refs;
                 }
                 if ((t.PinnedItemIds?.Count ?? 0) > 0)
                 {
                     var refs = t.PinnedItemRefs ?? new List<TitleRef>();
-                    if (RefreshList(t.PinnedItemIds!, ref refs, "Pinned", apply, info, logged, found)) changed = true;
+                    if (RefreshList(t.PinnedItemIds!, ref refs, "Pinned", apply, info, logged, found, t.TopListLibraryIds, prefer)) changed = true;
                     t.PinnedItemRefs = refs;
                 }
             }
@@ -195,7 +209,7 @@ namespace HomeScreenCompanion
         }
 
         private static bool RefreshList(List<string> ids, ref List<TitleRef> refs, string what, bool apply, Action<string> info,
-            HashSet<string> logged, Dictionary<string, BaseItem?> found)
+            HashSet<string> logged, Dictionary<string, BaseItem?> found, List<string>? libraryIds, TopListLibraries? prefer)
         {
             bool changed = false;
             var newIds = new List<string>();
@@ -222,8 +236,9 @@ namespace HomeScreenCompanion
                 BaseItem? hit = null;
                 if (stored != null)
                 {
-                    var cacheKey = what + "|" + id;
-                    if (!found.TryGetValue(cacheKey, out hit)) found[cacheKey] = hit = Find(stored);
+                    // Per chosen libraries too: two sources can prefer different ones.
+                    var cacheKey = id + "|" + (prefer == null ? "" : string.Join(",", libraryIds ?? new List<string>()));
+                    if (!found.TryGetValue(cacheKey, out hit)) found[cacheKey] = hit = Find(stored, prefer);
                 }
                 if (hit == null)
                 {
